@@ -1736,6 +1736,53 @@ a:hover {
   color: var(--text);
 }
 
+.improve-approval-form {
+  display: grid;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.improve-approval-form label {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.improve-approval-form label span,
+.improve-approval-footer > span {
+  color: var(--text-subtle);
+  font-weight: 400;
+}
+
+.improve-approval-form textarea {
+  width: 100%;
+  min-height: 88px;
+  padding: 9px 10px;
+  resize: vertical;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  outline: none;
+  background: var(--surface);
+  line-height: 1.45;
+}
+
+.improve-approval-form textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.improve-approval-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.improve-approval-footer > span {
+  font-size: 11.5px;
+}
+
 .improve-form {
   padding-top: 14px;
   border-top: 1px solid var(--border);

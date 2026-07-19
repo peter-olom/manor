@@ -16,6 +16,7 @@ import { configureSelfImprovementRequestState, SelfImprovementRequestState } fro
 import { registerSelfImprovementRoutes } from "../../src/server/self-improvement-routes.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { sendWorkerMessage } from "../../src/server/worker-client-router.js";
+import { SELF_IMPROVEMENT_OPERATOR_CONTEXT_MAX_LENGTH } from "../../src/shared/self-improvement.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -78,6 +79,8 @@ test("self-improvement request state persists required evidence and dismissal re
   const { dir, state } = await createRequestState();
   try {
     const created = state.create(requestInput());
+    assert.equal(created.operatorContext, null);
+    state.update(created.id, { operatorContext: "Keep the retry narrowly scoped to stale networks." });
     const dismissed = state.dismiss(created.id, "Already covered by another fix.");
     const reloaded = new SelfImprovementRequestState(path.join(dir, "requests.json"), () => undefined, () => undefined);
     await state.flush();
@@ -86,6 +89,7 @@ test("self-improvement request state persists required evidence and dismissal re
     assert.equal(dismissed.status, "dismissed");
     assert.equal(dismissed.dismissedReason, "Already covered by another fix.");
     assert.equal(reloaded.get(created.id)?.proposedChange, "Add retry handling around broker cleanup.");
+    assert.equal(reloaded.get(created.id)?.operatorContext, "Keep the retry narrowly scoped to stale networks.");
   } finally {
     await removeTempDir(dir);
   }
@@ -563,7 +567,11 @@ test("approval creates a visible session and preserves immediate Worker completi
   });
   const server = await listen(app);
   try {
-    const response = await fetch(`${server.origin}/api/self-improvement/requests/${created.id}/approve`, { method: "POST" });
+    const response = await fetch(`${server.origin}/api/self-improvement/requests/${created.id}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ operatorContext: "Preserve the current cleanup timeout and add focused retry coverage." })
+    });
     const payload = await response.json() as { error?: string; request?: { status?: string; threadId?: string | null; pairId?: string | null } };
 
     assert.equal(response.status, 202, payload.error);
@@ -572,10 +580,12 @@ test("approval creates a visible session and preserves immediate Worker completi
     assert.equal(payload.request?.pairId, "pair-approved");
     assert.equal(state.get(created.id)?.pairId, "pair-approved");
     assert.equal(state.get(created.id)?.status, "changes_ready");
+    assert.equal(state.get(created.id)?.operatorContext, "Preserve the current cleanup timeout and add focused retry coverage.");
     assert.equal(createdPairs.length, 1);
     assert.equal(createdPairs[0]?.threadId, "thread-approved");
     assert.equal(createdPairs[0]?.cwd, sourceDir);
     assert.match(createdPairs[0]?.task ?? "", /active Manor source checkout/);
+    assert.match(createdPairs[0]?.task ?? "", /Additional operator context:\nPreserve the current cleanup timeout and add focused retry coverage\./);
     assert.doesNotMatch(createdPairs[0]?.task ?? "", /isolated self-improvement worktree/);
     assert.match(workerDeveloperInstructions, /Stay on the existing checkout/);
     assert.doesNotMatch(workerDeveloperInstructions, /Create or reuse the explicitly requested isolated branch or worktree/);
@@ -602,6 +612,39 @@ test("approval creates a visible session and preserves immediate Worker completi
     await removeTempDir(sourceDir);
     await removeTempDir(requestDir);
     await removeTempDir(storeDir);
+  }
+});
+
+test("approval rejects additional operator context above the shared limit", async () => {
+  const { dir, state } = await createRequestState();
+  const app = express();
+  app.use(express.json({ limit: "32kb" }));
+  const created = state.create(requestInput());
+  registerSelfImprovementRoutes({
+    app,
+    requests: state,
+    hostController: { getStatus: async () => { throw new Error("eligibility should not run"); } } as never,
+    store: {} as never,
+    imageStore: { resolveViews: () => [] } as never,
+    fileStore: { resolveViews: () => [] } as never,
+    artifactsDir: dir
+  });
+  const server = await listen(app);
+  try {
+    const response = await fetch(`${server.origin}/api/self-improvement/requests/${created.id}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ operatorContext: "x".repeat(SELF_IMPROVEMENT_OPERATOR_CONTEXT_MAX_LENGTH + 1) })
+    });
+    const payload = await response.json() as { error?: string };
+
+    assert.equal(response.status, 409);
+    assert.match(payload.error ?? "", /8,000 characters or fewer/);
+    assert.equal(state.get(created.id)?.status, "pending");
+    assert.equal(state.get(created.id)?.operatorContext, null);
+  } finally {
+    await server.close();
+    await removeTempDir(dir);
   }
 });
 
@@ -714,7 +757,11 @@ test("approval deletes the Worker and pair when post-pair setup fails", async ()
   });
   const server = await listen(app);
   try {
-    const response = await fetch(`${server.origin}/api/self-improvement/requests/${created.id}/approve`, { method: "POST" });
+    const response = await fetch(`${server.origin}/api/self-improvement/requests/${created.id}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ operatorContext: "Keep this guidance available if Worker startup needs to be retried." })
+    });
     const payload = await response.json() as { error?: string };
 
     assert.equal(response.status, 409);
@@ -724,6 +771,7 @@ test("approval deletes the Worker and pair when post-pair setup fails", async ()
     assert.equal(store.getThread("thread-setup-failure"), undefined);
     assert.equal(state.get(created.id)?.status, "pending");
     assert.equal(state.get(created.id)?.threadId, null);
+    assert.equal(state.get(created.id)?.operatorContext, "Keep this guidance available if Worker startup needs to be retried.");
 
     deletedWorkers.length = 0;
     deletedPairs.length = 0;

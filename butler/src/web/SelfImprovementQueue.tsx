@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { postJson } from "./api";
 import { WarningIcon } from "./icons";
-import type { SelfImprovementQueueResponse, SelfImprovementRequestView } from "../shared/self-improvement";
+import { SELF_IMPROVEMENT_OPERATOR_CONTEXT_MAX_LENGTH, type SelfImprovementQueueResponse, type SelfImprovementRequestView } from "../shared/self-improvement";
 
 export function formatSelfImprovementTime(value: number | null | undefined): string {
   if (!value) return "-";
@@ -37,6 +37,7 @@ export function SelfImprovementQueue({
 }) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [operatorContext, setOperatorContext] = useState("");
   const [dismissReason, setDismissReason] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
   const [prTitle, setPrTitle] = useState("");
@@ -47,6 +48,7 @@ export function SelfImprovementQueue({
   );
 
   useEffect(() => {
+    setOperatorContext(selected?.operatorContext ?? "");
     setDismissReason("");
     setCommitMessage(selected ? `Self-improvement: ${selected.trigger}` : "");
     setPrTitle(selected?.trigger ?? "");
@@ -112,7 +114,6 @@ export function SelfImprovementQueue({
                 </div>
                 <div className="improve-actions">
                   {selected.threadId || selected.pairId ? <button className="button" type="button" disabled={actionInProgress} onClick={() => void openSession(selected)}>Open session</button> : null}
-                  {selected.status === "pending" ? <button className="button is-primary" type="button" disabled={!eligibility?.enabled || actionInProgress} onClick={() => void runAction("approve")}>Approve</button> : null}
                   {selected.status === "approved" || selected.status === "running" || selected.status === "changes_ready" || selected.status === "committed" || selected.status === "pr_opened" ? <button className="button" type="button" disabled={actionInProgress} onClick={() => void runAction("discard")}>Close request</button> : null}
                   <button className="button is-danger" type="button" disabled={actionInProgress} onClick={() => void deleteRequest()}>{busyAction === "delete" ? "Deleting…" : "Delete"}</button>
                 </div>
@@ -133,11 +134,35 @@ export function SelfImprovementQueue({
                 <DetailRow label="Proposed change" value={selected.proposedChange} />
                 <DetailRow label="Risk" value={selected.risk} />
                 <DetailRow label="Desired outcome" value={selected.desiredOutcome} />
+                <DetailRow label="Operator context" value={selected.status === "pending" ? null : selected.operatorContext} />
                 <DetailRow label="Workspace" value={selected.workspaceCwd} />
                 <DetailRow label="Branch" value={selected.branchName} />
                 <DetailRow label="Commit" value={selected.commitSha} />
                 <DetailRow label="Pull request" value={selected.pullRequestUrl} />
               </dl>
+
+              {selected.status === "pending" ? (
+                <div className="improve-approval-form">
+                  <label htmlFor="self-improvement-operator-context">Additional context <span>Optional</span></label>
+                  <textarea
+                    id="self-improvement-operator-context"
+                    value={operatorContext}
+                    maxLength={SELF_IMPROVEMENT_OPERATOR_CONTEXT_MAX_LENGTH}
+                    placeholder="Add guidance, constraints, or details for the Worker."
+                    disabled={actionInProgress}
+                    onInput={(event) => setOperatorContext(event.currentTarget.value)}
+                  />
+                  <div className="improve-approval-footer">
+                    <span>This context will be included in the approved job.</span>
+                    <button
+                      className="button is-primary"
+                      type="button"
+                      disabled={!eligibility?.enabled || actionInProgress}
+                      onClick={() => void runAction("approve", { operatorContext })}
+                    >{busyAction === "approve" ? "Approving…" : "Approve"}</button>
+                  </div>
+                </div>
+              ) : null}
 
               {selected.status === "pending" ? (
                 <div className="improve-form">

@@ -4,6 +4,7 @@ import path from "node:path";
 import { buildButlerDelegationContract } from "./butler-agent-delegation-contract-builder.js";
 import { buildDelegationDeveloperInstructions } from "./butler-agent-delegation-instructions.js";
 import { buildSelfImprovementTask } from "./butler-self-improvement.js";
+import { SELF_IMPROVEMENT_OPERATOR_CONTEXT_MAX_LENGTH } from "../shared/self-improvement.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { FileReferenceStore } from "./file-store.js";
 import type { HostControllerClient } from "./host-controller-client.js";
@@ -66,11 +67,19 @@ export function registerSelfImprovementRoutes(access: RouteAccess): void {
     try {
       const current = requests.get(request.params.requestId);
       if (!current || current.status !== "pending") throw new Error("Only pending self-improvement requests can be approved.");
+      const operatorContext = readText(request.body?.operatorContext);
+      if (operatorContext.length > SELF_IMPROVEMENT_OPERATOR_CONTEXT_MAX_LENGTH) {
+        throw new Error(`Additional context must be ${SELF_IMPROVEMENT_OPERATOR_CONTEXT_MAX_LENGTH.toLocaleString()} characters or fewer.`);
+      }
       const prepareWorkerWorkspace = access.prepareWorkerWorkspace ?? ensureWorkspaceWritableForWorker;
       const eligibility = await resolveSelfImprovementEligibility(hostController, prepareWorkerWorkspace);
       if (!eligibility.enabled) throw new Error(`Self-improvement is disabled: ${eligibility.reasons.join(" ")}`);
       if (requests.hasSourceCheckoutOwner(current.id)) throw new Error("Another self-improvement worker is already using the active Manor source checkout.");
-      const approved = requests.update(current.id, { status: "approved", approvedAt: Date.now() });
+      const approved = requests.update(current.id, {
+        status: "approved",
+        approvedAt: Date.now(),
+        operatorContext: operatorContext || null
+      });
       await requests.flush();
       approvedRequestId = approved.id;
       const task = buildSelfImprovementTask({ request: approved });

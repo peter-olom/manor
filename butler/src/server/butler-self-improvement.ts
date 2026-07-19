@@ -164,6 +164,7 @@ export function buildSelfImprovementTask(input: {
     request ? `Proposed change:\n${request.proposedChange}` : null,
     request ? `Risk:\n${request.risk}` : null,
     (request?.desiredOutcome ?? input.desiredOutcome)?.trim() ? `Desired outcome:\n${(request?.desiredOutcome ?? input.desiredOutcome)?.trim()}\n` : null,
+    request?.operatorContext ? `Additional operator context:\n${request.operatorContext}` : null,
     request?.sourceThreadId ? `Source job: ${request.sourceThreadId}` : sourceThread ? `Source job: ${sourceThread.id}` : null,
     request?.sourceProjectLabel ? `Source project: ${request.sourceProjectLabel}` : sourceThread ? `Source project: ${sourceThread.supervisor.projectLabel}` : null,
     workerReport ? `Blocked report summary: ${workerReport.summary}` : null,

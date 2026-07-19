@@ -8,6 +8,8 @@ export type SelfImprovementRequestStatus =
   | "committed"
   | "pr_opened";
 
+export const SELF_IMPROVEMENT_OPERATOR_CONTEXT_MAX_LENGTH = 8_000;
+
 export interface SelfImprovementRequestView {
   id: string;
   status: SelfImprovementRequestStatus;
@@ -19,6 +21,7 @@ export interface SelfImprovementRequestView {
   proposedChange: string;
   risk: string;
   desiredOutcome: string | null;
+  operatorContext: string | null;
   sourceThreadId: string | null;
   sourceProjectLabel: string | null;
   createdBy: "butler" | "operator";

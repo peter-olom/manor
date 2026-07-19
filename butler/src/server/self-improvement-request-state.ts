@@ -13,6 +13,7 @@ type RequestInput = {
   proposedChange?: unknown;
   risk?: unknown;
   desiredOutcome?: unknown;
+  operatorContext?: unknown;
   sourceThreadId?: unknown;
   sourceProjectLabel?: unknown;
   createdBy?: unknown;
@@ -80,6 +81,7 @@ function normalizeRequest(raw: Partial<SelfImprovementRequestView> & { id?: stri
     proposedChange,
     risk,
     desiredOutcome: nullableText(raw.desiredOutcome),
+    operatorContext: nullableText(raw.operatorContext),
     sourceThreadId: nullableText(raw.sourceThreadId),
     sourceProjectLabel: nullableText(raw.sourceProjectLabel),
     createdBy: raw.createdBy === "operator" ? "operator" : "butler",
@@ -151,6 +153,7 @@ export class SelfImprovementRequestState {
       proposedChange: text(input.proposedChange),
       risk: text(input.risk),
       desiredOutcome: nullableText(input.desiredOutcome),
+      operatorContext: nullableText(input.operatorContext),
       sourceThreadId: nullableText(input.sourceThreadId),
       sourceProjectLabel: nullableText(input.sourceProjectLabel),
       createdBy: input.createdBy === "operator" ? "operator" : "butler",
