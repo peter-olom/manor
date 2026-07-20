@@ -64,6 +64,19 @@ test("vision inspection enforces image count and size limits before model execut
   await assert.rejects(oversized.inspect({ imageReferenceIds: ["1"], question: "Inspect" }), /3 MiB/);
 });
 
+test("vision inspection rejects in-memory images outside the PI image MIME allowlist", async () => {
+  const service = new VisionInspectionService({
+    piAuthPath: "/tmp/unused",
+    imageStore: { resolveViews: () => [] } as never
+  });
+  for (const mimeType of ["image/svg+xml", "image/bmp", "image/tiff", "image/avif"]) {
+    await assert.rejects(
+      service.inspectImages({ images: [{ id: "x", name: `x.${mimeType.split("/")[1]}`, mimeType, buffer: Buffer.from([0x01]) }], question: "Inspect" }),
+      /image\/jpeg, image\/png, image\/gif, image\/webp/
+    );
+  }
+});
+
 test("Worker vision inspection rejects image ids outside the job payload", async () => {
   await assert.rejects(handleHarnessVisionAction({
     action: "vision.inspect",
@@ -71,7 +84,13 @@ test("Worker vision inspection rejects image ids outside the job payload", async
     threadId: "thread-1",
     allowedImageReferenceIds: ["image-1"],
     store: { addEvent() {} } as never,
-    visionInspection: { inspect: async () => { throw new Error("should not run"); } } as never
+    visionInspection: { inspect: async () => { throw new Error("should not run"); } } as never,
+    access: {
+      imageStore: {
+        get: (id: string) => ({ id, name: `${id}.png`, mimeType: "image/png", sizeBytes: 1, createdAt: 1, url: `/images/${id}` })
+      } as never,
+      fileStore: { get: () => null } as never
+    }
   }), /registered to this job/);
 });
 
@@ -93,7 +112,13 @@ test("Worker vision inspection returns structured companion evidence", async () 
         model: { provider: "ollama-cloud", id: "gemma4" },
         analyzedAt: 1
       })
-    } as never
+    } as never,
+    access: {
+      imageStore: {
+        get: (id: string) => ({ id, name: `${id}.png`, mimeType: "image/png", sizeBytes: 1, createdAt: 1, url: `/images/${id}` })
+      } as never,
+      fileStore: { get: () => null } as never
+    }
   });
   assert.match(result?.text ?? "", /Invalid password/);
   assert.equal((result?.data.inspection as { model: { id: string } }).model.id, "gemma4");

@@ -477,7 +477,7 @@ export class HarnessService {
         }
       };
     }
-    const visionResult = await handleHarnessVisionAction({ action, params, threadId: capability.threadId, store: this.store, visionInspection: this.visionInspection, allowedImageReferenceIds: thread.jobPayload?.attachments.images ?? [] });
+    const visionResult = await handleHarnessVisionAction({ action, params, threadId: capability.threadId, store: this.store, visionInspection: this.visionInspection, allowedImageReferenceIds: thread.jobPayload?.attachments.images ?? [], access: this.inputActionAccess ? { imageStore: this.inputActionAccess.imageStore, fileStore: this.inputActionAccess.fileStore } : null });
     if (visionResult) return visionResult;
     const proofResult = await handleHarnessProofAction({
       action,

@@ -1,9 +1,11 @@
 import { complete, type Api, type Model } from "@earendil-works/pi-ai/compat";
 
+import type { ImageContent } from "@earendil-works/pi-ai";
 import type { ImageReferenceStore } from "./image-store.js";
 import { contentToText } from "./butler-agent-helpers.js";
 import { createManorModelRegistry, modelToModelOption, parseProviderModelRef } from "./model-provider-config.js";
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
+import { isPiImageMimeType } from "./pi-image-loader.js";
 
 export type VisionInspection = {
   summary: string;
@@ -65,7 +67,47 @@ export class VisionInspectionService {
     if (references.some((reference) => reference.sizeBytes > 3 * 1024 * 1024)) throw new Error("Each inspected image must be 3 MiB or smaller.");
     if (references.reduce((total, reference) => total + reference.sizeBytes, 0) > 12 * 1024 * 1024) throw new Error("Inspected images must be 12 MiB or smaller in total.");
     if (input.question.length > 4_000) throw new Error("The inspection question must be 4,000 characters or shorter.");
+    const images = await this.options.imageStore.loadPiImages(input.imageReferenceIds);
+    return this.runInspection({
+      images,
+      imageDescriptors: references.map((reference) => ({ id: reference.id, name: reference.name })),
+      question: input.question,
+      signal: input.signal
+    });
+  }
 
+  /**
+   * Inspect pre-resolved in-memory images (for example same-job proof artifacts).
+   * The caller is responsible for ownership and source validation before calling.
+   */
+  async inspectImages(input: { images: Array<{ id: string; name: string; mimeType: string; buffer: Buffer }>; question: string; signal?: AbortSignal }): Promise<VisionInspection> {
+    const settings = getActiveManorSettings().vision;
+    if (!settings.enabled) throw new Error("Vision assistance is disabled in Settings → Runtime.");
+    const images = input.images;
+    if (images.length === 0) throw new Error("inspect_images requires at least one available image attachment.");
+    if (images.length > 4) throw new Error("inspect_images accepts at most 4 images per request.");
+    if (images.some((image) => image.buffer.byteLength > 3 * 1024 * 1024)) throw new Error("Each inspected image must be 3 MiB or smaller.");
+    if (images.reduce((total, image) => total + image.buffer.byteLength, 0) > 12 * 1024 * 1024) throw new Error("Inspected images must be 12 MiB or smaller in total.");
+    if (input.question.length > 4_000) throw new Error("The inspection question must be 4,000 characters or shorter.");
+    const rejected = images.filter((image) => !isPiImageMimeType(image.mimeType));
+    if (rejected.length > 0) {
+      throw new Error(`Inspected images must be one of image/jpeg, image/png, image/gif, image/webp (rejected: ${rejected.map((image) => image.mimeType).join(", ")}).`);
+    }
+    const piImages: ImageContent[] = images.map((image) => ({
+      type: "image",
+      data: image.buffer.toString("base64"),
+      mimeType: image.mimeType
+    }));
+    return this.runInspection({
+      images: piImages,
+      imageDescriptors: images.map((image) => ({ id: image.id, name: image.name })),
+      question: input.question,
+      signal: input.signal
+    });
+  }
+
+  private async runInspection(input: { images: ImageContent[]; imageDescriptors: Array<{ id: string; name: string }>; question: string; signal?: AbortSignal }): Promise<VisionInspection> {
+    const settings = getActiveManorSettings().vision;
     input.signal?.throwIfAborted();
     const registry = await createManorModelRegistry(this.options.piAuthPath, process.env, {
       preferredModelRef: settings.companionModel
@@ -81,7 +123,6 @@ export class VisionInspectionService {
     }
     const auth = await registry.getApiKeyAndHeaders(model);
     if (!auth.ok) throw new Error(auth.error);
-    const images = await this.options.imageStore.loadPiImages(input.imageReferenceIds);
     input.signal?.throwIfAborted();
 
     const response = await (this.options.completeModel ?? complete)(model, {
@@ -99,11 +140,11 @@ export class VisionInspectionService {
             type: "text",
             text: [
               `Question: ${input.question.trim() || "Describe the attached images accurately."}`,
-              `Images: ${references.map((reference, index) => `${index + 1}. ${reference.name}`).join("; ")}`,
+              `Images: ${input.imageDescriptors.map((descriptor, index) => `${index + 1}. ${descriptor.name}`).join("; ")}`,
               "Return an object with string summary and arrays visibleText, observations, spatialRelationships, uncertainties."
             ].join("\n")
           },
-          ...images
+          ...input.images
         ]
       }]
     }, {
@@ -134,7 +175,7 @@ export class VisionInspectionService {
       observations: textList(parsed.observations),
       spatialRelationships: textList(parsed.spatialRelationships),
       uncertainties: textList(parsed.uncertainties),
-      images: references.map((reference) => ({ id: reference.id, name: reference.name })),
+      images: input.imageDescriptors.map((descriptor) => ({ id: descriptor.id, name: descriptor.name })),
       model: { provider: model.provider, id: model.id },
       analyzedAt: Date.now()
     };

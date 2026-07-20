@@ -17,7 +17,7 @@ function printHelp() {
   manor-harness [--thread <jobId>] assist --summary "<text>" [--details "<text>"] [--question "<text>"]
   manor-harness [--thread <jobId>] payload current
   manor-harness [--thread <jobId>] payload update [--status completed|blocked] [--summary "<text>"] [--details "<text>"] [--evidence-json '<json>' ...]
-  manor-harness [--thread <jobId>] vision inspect --image <referenceId> [--image <referenceId> ...] --question "<text>"
+  manor-harness [--thread <jobId>] vision inspect --image <referenceId> [--image <referenceId> ...] [--proof-run <runId> [--proof-artifact <label> ...]] --question "<text>"
   manor-harness [--thread <jobId>] memory [--provenance]
   manor-harness [--thread <jobId>] memory project [--provenance]
   manor-harness [--thread <jobId>] memory search --query "<text>" [--limit <n>] [--job] [--global] [--provenance]
@@ -547,6 +547,10 @@ async function main() {
       imageReferenceIds: readRepeatedFlag(args, "--image"),
       question: readFlag(args, "--question")
     };
+    const proofRunId = readFlag(args, "--proof-run");
+    if (proofRunId) params.proofRunId = proofRunId;
+    const proofArtifacts = readRepeatedFlag(args, "--proof-artifact");
+    if (proofArtifacts.length > 0) params.proofArtifacts = proofArtifacts;
   } else if (args[0] === "memory") {
     const subcommand = args[1]?.startsWith("--") ? "" : args[1];
     if (!subcommand) {

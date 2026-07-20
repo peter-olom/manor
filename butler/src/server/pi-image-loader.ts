@@ -5,12 +5,16 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 
 const PI_MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 const PI_MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024;
-const PI_IMAGE_MIME_TYPES = new Set([
+export const PI_IMAGE_MIME_TYPES = new Set([
   "image/jpeg",
   "image/png",
   "image/gif",
   "image/webp"
 ]);
+
+export function isPiImageMimeType(mimeType: string): boolean {
+  return PI_IMAGE_MIME_TYPES.has(mimeType.trim().toLowerCase());
+}
 
 export type PiImageFile = {
   path: string;
