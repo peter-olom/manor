@@ -20,6 +20,7 @@ export function createManorSettingsApplyHandler(input: {
   pairStore?: PairStore | null;
   store: ButlerStateStore;
   getSseHub: () => ButlerSseHub | null | undefined;
+  syncContentAdmissionPolicy?: () => Promise<void>;
   now?: () => number;
 }): () => Promise<void> {
   return async () => {
@@ -30,6 +31,7 @@ export function createManorSettingsApplyHandler(input: {
     // Move daily schedules before any awaited refresh can let the scheduler
     // observe new settings with an old next-run instant.
     input.pairStore?.recomputeAutomationSchedules(input.now?.() ?? Date.now());
+    await input.syncContentAdmissionPolicy?.().catch((error) => console.warn("Content admission policy sync failed after settings update", error));
     await input.piRpcWorkerClient.refreshModels().catch((error) => console.warn("Pi RPC model refresh failed after settings update", error));
     await input.butlerAgent.refreshModelSettings().catch((error) => console.warn("Butler model refresh failed after settings update", error));
     await input.pairSessions?.refreshModelSettings().catch((error) => console.warn("Pair session model refresh failed after settings update", error));

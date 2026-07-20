@@ -3,6 +3,18 @@ import test from "node:test";
 
 import { buildPairUrl, readPairUrlState, writePairUrl, type PairUrlHistory } from "../../src/web/pair-url-state.js";
 
+test("security settings URL selects the Content Admission Review section", () => {
+  const state = readPairUrlState("http://manor.local/settings/security");
+  assert.equal(state.viewMode, "settings");
+  assert.equal(state.settingsSection, "security");
+});
+
+test("legacy network settings URL opens the combined Security section", () => {
+  const state = readPairUrlState("http://manor.local/settings/network");
+  assert.equal(state.viewMode, "settings");
+  assert.equal(state.settingsSection, "security");
+});
+
 test("session selection is read from the URL", () => {
   const state = readPairUrlState("http://manor.local/?session=pair-b&view=worker");
   assert.equal(state.sessionId, "pair-b");

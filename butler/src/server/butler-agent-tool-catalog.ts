@@ -82,25 +82,25 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "start_preview_browser_session",
     label: "Start preview browser session",
-    description: "Attach a browser sidecar to a preview Butler is handling directly. Never use this instead of Worker when the operator explicitly asked for delegation.",
+    description: "Attach a browser sidecar to a preview Butler is handling directly. Initial page content passes through Content Admission Review and may be warned or withheld. Never use this instead of Worker when the operator explicitly asked for delegation.",
     uiEffects: [{ kind: "refreshThreads", description: "Refreshes preview state when a browser session begins." }]
   },
   {
     name: "start_browser_session",
     label: "Start browser session",
-    description: "Start a live recorded browser session for direct Butler work. Never use this instead of Worker when the operator explicitly asked for delegation.",
+    description: "Start a live recorded browser session for direct Butler work. Initial page content passes through Content Admission Review and may be warned or withheld. Never use this instead of Worker when the operator explicitly asked for delegation.",
     uiEffects: [{ kind: "refreshThreads", description: "Refreshes thread state when a browser session begins." }]
   },
   {
     name: "browser_session_state",
     label: "Browser session state",
-    description: "Inspect one active browser session state before further actions.",
+    description: "Inspect one active browser session state before further actions. Visible content passes through Content Admission Review and may be warned or withheld.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while monitoring live browser state." }]
   },
   {
     name: "browser_session_action",
     label: "Browser session action",
-    description: "Execute one explicit action in an active browser session, including manual screenshots.",
+    description: "Execute one explicit action in an active browser session, including manual screenshots. Visible page and action output pass through Content Admission Review and may be warned or withheld.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while driving a live browser session." }]
   },
   {

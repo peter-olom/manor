@@ -21,3 +21,18 @@
 - Treat model-family names as regression examples, not as a registry. Put current examples in tests when they document behavior, but make the implementation follow OpenCode transform parity instead of static allowlists that will age poorly.
 - Do not show a thinking option unless the transport can send the corresponding upstream payload. MiniMax M3 requires OpenCode-style native `thinking` objects, so expose its variants only after the Pi route can send that native payload correctly.
 - When syncing OpenCode Go behavior, inspect OpenCode's transform logic first. Preserve the order of special cases because earlier matches, such as MiniMax M3, intentionally override broader family rules.
+
+## Content Admission And Runtime Security
+
+- Treat Manor as a trusted personal appliance. Do not describe Butler, Worker, previews, or CAR as a complete sandbox or exfiltration boundary.
+- Keep the Worker useful as a normal unprivileged development environment. Repository work, installs, builds, tests, scripts, Python, Node, and Git should run normally. Do not reintroduce broad command or package-manager guards.
+- Keep Butler and Worker HTTP/S clients configured for Manor's proxy. Fresh installations default to Internet mode while the proxy blocks private and internal destinations. Preserve an existing Restricted policy during upgrades, and do not describe it as covering preview, browser, desktop-proof, host, image-pull, non-proxy, or direct Butler traffic.
+- Keep Content Admission Review at the standard repository, web search/fetch, and browser ingress points. Add new external-content surfaces to CAR at their shared admission boundary instead of reviewing every downstream file read.
+- Run CAR as an isolated defensive model task. Treat all supplied content as suspicious data, disable web tools, require the strict verdict schema, and never give the reviewer the active agent's conversation, memory, or tools.
+- Cache CAR verdicts by source and content identity without persisting the full reviewed payload. Bounded evidence excerpts may quote source text, so keep the cache inside trusted appliance state. Do not repeat reviews or warnings for unchanged content during normal use.
+- Keep the security modes explicit: Review warns and continues, Enforce blocks hostile web and browser delivery and fails hostile repository operations after review, and Off bypasses CAR.
+- Keep Review as the default. CAR runs automatically for interactive work and automations and must not add an operator confirmation step.
+- In Enforce mode, repository content may already be present on disk when the command fails. Keep that limitation visible in product copy and documentation.
+- Keep CAR coverage claims bounded. Repository admission samples selected commit objects, filenames, instruction-bearing files, and instruction-like matches. Web and browser inputs also have size limits.
+- Keep CAR separate from acceptance, adversarial, proof, and correctness reviews. CAR screens incoming content; the other reviews judge completed work.
+- Preserve the remaining boundaries: non-root Worker, no Worker Docker socket, read-only inputs, authenticated broker and harness actions, private service networks, and no arbitrary host port publishing.

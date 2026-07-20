@@ -1,8 +1,12 @@
 # Manor
 
-Manor is a Docker-first personal agent workspace.
+Manor is a Docker-first personal agent workspace built to get real work done end to end.
 
-It puts Butler in charge of supervision, routes work to provider-backed Workers, and gives each job private previews, disposable services, and stack-scoped runtime state without exposing raw app ports on the host.
+Manor optimizes for ease of use and functionality. Butler and Workers get enough freedom to investigate, build, test, browse, and finish work with very little hand-holding.
+
+The base appliance includes practical controls at known boundaries. Operators can layer on stricter network, secret, host, and runtime controls for their own risk model. Manor is open source so operators can inspect the tradeoffs, adapt the appliance, and connect it to infrastructure they already trust.
+
+Butler handles supervision, provider-backed Workers handle execution, and Content Admission Review checks bounded representations of standard external content. Jobs can also use private previews, disposable services, and stack-scoped runtime state without exposing raw app ports on the host.
 
 ## Contents
 
@@ -13,6 +17,7 @@ It puts Butler in charge of supervision, routes work to provider-backed Workers,
 - [Source Distribution](#source-distribution)
 - [Core Model](#core-model)
 - [Execution Rule](#execution-rule)
+- [Content Admission Review](#content-admission-review)
 - [Async Verification Model](#async-verification-model)
 - [Runtime Surfaces](#runtime-surfaces)
 - [Auth](#auth)
@@ -25,7 +30,7 @@ It puts Butler in charge of supervision, routes work to provider-backed Workers,
 
 Manor is usable, but early. Expect rough edges around setup, upgrades, and advanced runtime workflows.
 
-The current goal is a dependable single-operator appliance: clear Docker setup, honest trust boundaries, durable worker state, and practical runtime isolation for agent-led development work.
+The current goal is a dependable single-operator appliance: clear Docker setup, honest trust boundaries, durable Worker state, and enough freedom for agents to finish useful work without constant supervision.
 
 ## Screenshot
 
@@ -43,7 +48,8 @@ The project optimizes for a specific way of working:
 - one trusted operator, not a hosted multi-tenant product
 - warm long-running agents instead of throwaway prompt sessions
 - explicit supervision through Butler
-- isolated previews for installs, builds, and app runtime
+- a normal Worker environment for repository work, installs, builds, tests, and scripts
+- disposable previews when clean runtime state, live services, or proof are useful
 - evidence over status-only reporting
 - private ingress and narrow host exposure
 - simple primitives before broad orchestration layers
@@ -122,7 +128,7 @@ Manor runs as one Docker Compose project with these services:
 - `worker`: the Pi RPC Worker host
 - `runtime-broker`: the Docker control plane for previews, stack leases, and disposable services
 - `host-controller`: the narrow restart/update sidecar that survives Manor appliance restarts
-- `egress`: the restricted outbound proxy for Butler and Worker execution
+- `egress`: the outbound proxy for Butler and Worker execution, with Internet and restricted modes
 - `preview-egress`: the separate outbound path for preview runtimes
 - `playwright`: the browser automation sidecar
 - `desktop-proof`: optional headed desktop proof sidecar for Electron/native app smoke checks
@@ -160,26 +166,53 @@ Switching an active Worker to another provider or model starts a cold handoff. M
 
 ## Execution Rule
 
-Manor keeps repository work and runtime work separate on purpose.
+The Worker is a normal unprivileged development environment.
 
-- do repository, git, and edit work in the active Worker
-- do package installs, app startup, builds, and browser checks in previews
-- use snapshot previews for app startup, builds, and disposable smoke runs
+- use the active Worker for repository work, installs, builds, tests, scripts, and Git
+- use snapshot previews when a clean runtime, isolated service, or disposable smoke run is useful
+- use browser sessions when rendered UI behavior or durable browser proof matters
 - use sticky stack or preview leases when the operator wants a warm reusable runtime across jobs
 - use the optional desktop proof sidecar only when native headed app verification is needed
-- treat worker-side package installation as an exception, not the default path
 
 ### Installing Worker CLIs
 
 Standalone CLIs can be installed from the Worker CLI when their installer supports an unprivileged destination under `~/.local`. Manor keeps `~/.local` and `~/.config` on persistent Worker volumes, so the executable and its user configuration survive normal restarts and container recreation. Removing those volumes also removes the installed tools and configuration.
 
-Outbound access remains restricted. Add any required installer, release, API, or control-plane hostnames that are not built in through **Settings → Network**. Runtime egress changes apply immediately. Allow subdomains only when the CLI needs them. For example, Asiri can install its binary under `~/.local/bin`, while `asiri.dev` must be allowed for its API requests.
+Worker outbound HTTP and HTTPS defaults to the Internet through Manor's proxy. The proxy blocks private and internal destinations. Switch to **Restricted** under **Settings → Security → Runtime egress** when you want built-in and operator-approved hosts only. New proxy requests use changes immediately; existing connections may stay open.
 
 Tools that require `apt`, root access, system-wide paths, or additional operating-system libraries must use the Power User workflow: bake them into the Worker image and rebuild Manor. A user-space CLI that depends on a missing system library belongs in that image as well. This keeps the system layer reproducible while allowing self-contained CLIs to be installed when needed.
+
+## Content Admission Review
+
+Content Admission Review, or CAR, reviews a bounded representation at the main routes where external instructions enter Manor:
+
+- standard repository clone and update operations
+- provider-backed web search and fetch results
+- browser page content and action output
+
+The reviewer gets one defensive job. It treats the content supplied to it as suspicious data, has no web tools, and returns a strict `clear`, `suspicious`, or `hostile` verdict. It does not share the active agent's conversation or follow instructions found in the content.
+
+CAR reviews content by source and content identity. The same content reuses its cached verdict. Manor does not persist the full reviewed payload. The cache keeps the digest, verdict, confidence, bounded evidence excerpts, explanation, safe summary, and review time.
+
+The operator chooses the behavior and reviewer model under **Settings → Security**. The model picker can pin CAR to one authenticated model. Automatic selection uses the first authenticated background model available.
+
+- **Review** warns on suspicious or hostile content and keeps work moving. If the reviewer is unavailable, Manor says so and continues.
+- **Enforce** withholds hostile web and browser content. Hostile repository operations fail after review, and their imported files remain on disk for inspection or removal. An unavailable reviewer blocks admission.
+- **Off** passes content through without CAR.
+
+Review is the default. CAR runs automatically during interactive work and automations, including jobs that start at odd hours. It does not pause for confirmation.
+
+CAR is separate from Butler's acceptance and adversarial reviews. CAR looks for hostile incoming instructions. Butler's other reviews decide whether completed work is correct, well evidenced, and ready to accept.
+
+CAR covers Manor's standard ingress paths. A Worker can still use another network client, package installer, or custom tool that CAR does not see. Restricted runtime egress and operator-owned infrastructure controls remain the stronger boundary when that matters.
+
+Runtime egress is a separate control. It applies to outbound HTTP and HTTPS sent through the shared Butler and Worker proxy. Worker has no direct public network, so software that ignores the proxy normally fails. The control does not cover preview runtimes, Playwright browser or desktop-proof sessions, Docker or Ollama image pulls, host traffic, or named Manor services on the proxy bypass list. Butler is connected to a public network, so Butler software that ignores the proxy can bypass this setting. Preview runtimes use their own egress profile.
 
 ## Async Verification Model
 
 Manor is built for async work. The operator should be able to state intent, step back, and get a reviewed outcome instead of supervising every command.
+
+This review model checks the quality and completeness of work after execution. It does a different job from CAR.
 
 For delegated implementation, investigation, debugging, UI, API, deploy, and verification work, Butler now turns the request into an internal execution contract:
 
@@ -243,7 +276,7 @@ Current preview behavior:
 - previews are gateway-only and do not publish raw host ports
 - previews are heartbeat-gated during startup
 - preview egress defaults to normal outbound internet access
-- previews are the default place for installs, builds, app startup, and runtime verification
+- previews are available for clean installs, disposable builds, app startup, and runtime verification
 - `none`, named profiles, and custom domain policies remain available when a preview needs stricter outbound control
 
 ### Stacks
@@ -360,9 +393,10 @@ Current trust boundaries:
 - Butler and the Worker host are separate services
 - Butler contains only its own Pi-backed supervisor agent
 - Pi RPC Worker sessions execute in the Worker host
-- Worker execution does not get direct internet access
-- external outbound traffic from Butler and Worker execution goes through the restricted `egress` proxy; local Ollama traffic stays inside the appliance
-- operators can add or remove trusted runtime hostnames in Settings → Network; changes apply live to the shared Butler and Worker proxy while built-in domains remain read-only
+- Worker execution reaches the Internet through Manor's proxy rather than a separate unmonitored route
+- Content Admission Review checks bounded representations from standard repository, web, and browser ingress; unchanged content reuses a hash-based verdict cache
+- outbound HTTP and HTTPS from Butler and Worker clients that honor Manor's configured proxy goes through `egress`; Internet is the default and Restricted allowlisting is optional, while the proxy blocks private destinations
+- operators can add or remove trusted proxy hostnames in Settings → Security → Runtime egress; the allowlist applies only in Restricted mode and built-in domains remain read-only
 - user-installed Worker CLIs persist in the Worker tools volume and remain unprivileged
 - preview runtimes keep private runtime networking and get direct outbound internet by default
 - optional preview egress profiles remain available for stricter outbound control
@@ -373,6 +407,8 @@ Current trust boundaries:
 - Butler routes previews instead of publishing arbitrary app ports on the host
 
 This is an architecture-first containment model, not a claim of full internal sandboxing.
+
+Content Admission Review is a high-value prompt-injection screen with a bounded job. Repository review uses a bounded snapshot of selected commit objects, filenames, instruction-bearing files, and instruction-like matches. Web and browser inputs are bounded before review as well. Arbitrary network clients, package installers, host-mounted changes, absolute binary paths, and content outside those representations can bypass CAR. In Enforce mode, hostile web and browser content is withheld; a hostile repository import fails after review, and its files remain on disk for inspection or removal. Operators who need stronger guarantees should add their own infrastructure controls and use Restricted runtime egress where its proxy boundary applies.
 
 For vulnerability reporting and remote-use hardening, see the [security policy](SECURITY.md).
 
@@ -404,7 +440,7 @@ For contribution workflow and validation expectations, see the [contributing gui
 - `docker/butler/`: Butler image and auth helpers
 - `docker/butler-gateway/`: Butler reverse proxy
 - `docker/worker/`: image for the Pi RPC Worker and Worker CLI
-- `docker/egress/`: restricted outbound proxy
+- `docker/egress/`: outbound proxy with Internet and restricted modes
 - `docker/host-controller/`: restart/update controller with its own scoped token
 - `docker/preview-egress/`: optional restrictive preview egress control plane
 - `docker/runtime-broker/`: preview, service, and stack runtime broker

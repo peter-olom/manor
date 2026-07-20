@@ -1,7 +1,5 @@
 if [[ -n "${MANOR_REAL_PATH:-}" ]]; then
-  export PATH="/opt/manor/worker/install-guard-bin:${MANOR_REAL_PATH}"
-elif [[ ":${PATH}:" != *":/opt/manor/worker/install-guard-bin:"* ]]; then
-  export PATH="/opt/manor/worker/install-guard-bin:${PATH}"
+  export PATH="${MANOR_REAL_PATH}"
 fi
 
 if [[ -f "${HOME}/.cargo/env" ]]; then

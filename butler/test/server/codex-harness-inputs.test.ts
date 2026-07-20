@@ -12,6 +12,8 @@ import { ReferenceMutationQueue } from "../../src/server/reference-mutation-queu
 
 test("Worker guidance names immutable inputs, job outputs, and publishing", () => {
   const guidance = formatHarnessRuntimeModel().join("\n");
+  assert.match(guidance, /Worker shell is a normal development environment/);
+  assert.match(guidance, /Use previews when a clean runtime, service lifecycle, isolation, or browser proof is useful/);
   assert.match(guidance, /read-only at \/inputs/);
   assert.match(guidance, /\/outputs\/<jobId>/);
   assert.match(guidance, /manor-harness input publish <path> --from <referenceId>/);

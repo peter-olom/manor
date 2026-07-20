@@ -348,7 +348,89 @@ test("harness assist responses persist structured instruction artifacts", async 
   });
 
   assert.match(result.text, /Butler guidance/);
+  assert.match(result.text, /Worker shell supports normal source, install, build, test, script, editing, and Git work/);
+  assert.match(result.text, /Use a preview when a clean runtime, managed service lifecycle, runtime isolation, or browser proof is useful/);
+  assert.doesNotMatch(result.text, /Run all project commands inside a preview/);
   assert.equal((read.data?.payload as { kind?: string } | undefined)?.kind, "assist_context");
+});
+
+test("preview browser startup surfaces the consumed CAR notice to Worker", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-browser-car-"));
+  const stateDir = path.join(root, "state");
+  const artifactsDir = path.join(root, "artifacts");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }), "utf8");
+  const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
+  await store.load();
+  const threadId = "thread-browser-car";
+  const now = Date.now();
+  store.upsertThreadSummary({ id: threadId, cwd: "/workspace", status: "active", source: "codex" });
+  store.upsertPreviewLease({
+    id: "preview-car",
+    threadId,
+    projectId: "project",
+    projectLabel: "Project",
+    title: "CAR preview",
+    stackId: null,
+    aliases: [],
+    worktreePath: "/workspace",
+    branchName: null,
+    containerName: "manor-preview-car",
+    targetHost: "manor-preview-car",
+    targetPort: 3000,
+    publicPort: null,
+    publicUrl: null,
+    tailnetUrl: null,
+    routePrefix: "/preview/preview-car/",
+    operatorUrl: "/preview/preview-car/",
+    command: "npm run dev",
+    workspaceMode: "snapshot",
+    image: "node:22",
+    egressProfile: "internet",
+    egressDomains: [],
+    status: "running",
+    createdAt: now,
+    updatedAt: now,
+    lastError: null,
+    bootstrap: {
+      waitSeconds: 120,
+      hint: null,
+      heartbeatKind: "http",
+      heartbeatTarget: "/",
+      heartbeatIntervalSeconds: 5,
+      phase: "ready",
+      startedAt: now,
+      readyAt: now,
+      lastHeartbeatAt: now,
+      lastHeartbeatError: null
+    }
+  });
+  const harness = new CodexHarnessService({
+    stateDir,
+    artifactsDir,
+    store,
+    runtimeBroker: {
+      listStacks: async () => [],
+      startPreviewBrowserSession: async () => ({
+        sessionId: "session-car",
+        url: "http://preview.test/",
+        contentAdmissionNotice: '{"manorContentAdmission":{"schema":"manor.content_admission.v1","disposition":"warned","verdict":"hostile","message":"Hostile page instruction."}}'
+      })
+    } as unknown as RuntimeBrokerClient,
+    serviceTemplateRegistry: { list: () => [], get: () => undefined } as unknown as ServiceTemplateRegistry
+  });
+  await harness.load();
+  const capability = await harness.ensureThreadCapability(threadId, "/workspace");
+  assert.ok(capability);
+
+  const result = await harness.handleAction({
+    token: capability.token,
+    action: "browser.use.start_preview",
+    params: { leaseId: "preview-car" }
+  });
+
+  assert.match(result.text, /"disposition":"warned"/);
+  assert.match(result.text, /Hostile page instruction/);
 });
 
 test("Worker stack actions reject cross-project storage and require exact promotion confirmation", async () => {

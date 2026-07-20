@@ -28,7 +28,7 @@ For local Butler hot reload:
 
 Use the canonical launcher for lifecycle work so source builds, health checks, and any gitignored machine-local override are applied consistently.
 
-When working through Manor itself, do package installs, app startup, builds, and browser checks inside previews. Keep repository edits in the active Worker.
+When working through Manor itself, use the active Worker for repository edits, package installs, builds, tests, and scripts. Use previews when the work benefits from clean runtime state, a disposable service, or browser proof.
 
 Worker behavior must remain consistent across Manor's supported providers. OpenAI/Codex, Ollama Local, Ollama Cloud, and OpenCode Go sessions all run through Pi RPC. Keep provider discovery, authentication, and reasoning transforms in their provider adapters. Shared Worker code should depend on normalized contracts.
 
@@ -45,6 +45,10 @@ npm run build
 If your change touches runtime behavior, also verify the Docker stack, relevant logs, and the affected preview or service lifecycle.
 
 If your change touches shared Worker behavior, validate the affected providers through the Pi RPC path.
+
+If your change introduces a new route for external repository, web, or browser content, decide where that content enters Manor and connect that boundary to Content Admission Review. Avoid per-file review loops. Keep CAR isolated from the active agent and add a regression test for the admission path.
+
+Changes to CAR, network defaults, broker authorization, or Worker execution should state the real limitation they introduce or preserve. Manor favors a capable personal appliance with targeted controls. Broad command guards and claims of complete isolation do not fit that model.
 
 ## Releases
 
@@ -86,4 +90,4 @@ Avoid unrelated formatting churn. Do not include local state, generated test art
 
 ## Project Direction
 
-Manor is a trusted single-operator worker appliance. It is not trying to become a generic multi-tenant platform, a hosted sandbox product, or a heavy orchestration framework.
+Keep Manor focused on a trusted single-operator appliance with small, explicit primitives.

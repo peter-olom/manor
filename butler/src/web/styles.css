@@ -6820,18 +6820,20 @@ a:hover {
 
 .runtime-egress-dashboard {
   display: none;
-  min-height: 100%;
-  overflow: auto;
-  padding: 32px 36px 64px;
+  min-height: 0;
+  overflow: visible;
 }
 
 .runtime-egress-dashboard.is-active {
   display: block;
 }
 
-.runtime-egress-dashboard > .settings-section {
-  width: min(760px, 100%);
-  margin: 0 auto;
+.runtime-egress-dashboard .settings-subgroup-head p {
+  max-width: 650px;
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .runtime-egress-feedback {
@@ -6880,9 +6882,34 @@ a:hover {
   padding: 0 2px;
 }
 
-.runtime-egress-list-head h3 {
+.runtime-egress-list-head h4 {
   margin: 0;
   font-size: 15px;
+}
+
+.settings-scope-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-scope-card {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-subtle);
+}
+
+.settings-scope-card strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.settings-scope-card p {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
 }
 
 .runtime-egress-list-head p,
@@ -8531,11 +8558,11 @@ a.file-explorer-name:hover {
 .extension-notice.is-error { border-color: var(--danger); }
 
 @media (max-width: 620px) {
-  .runtime-egress-dashboard { padding: 20px 16px 44px; }
   .runtime-egress-form { grid-template-columns: 1fr; padding: 16px; }
   .runtime-egress-form .button,
   .runtime-egress-form .runtime-egress-subdomains { width: 100%; margin-top: 0; }
   .runtime-egress-row { align-items: flex-start; }
+  .settings-scope-grid { grid-template-columns: 1fr; }
   .extension-dialog-backdrop { align-items: end; padding: 0; }
   .extension-dialog { width: 100%; max-height: 88vh; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
   .extension-runtime-ui { right: 10px; bottom: 10px; width: calc(100vw - 20px); }

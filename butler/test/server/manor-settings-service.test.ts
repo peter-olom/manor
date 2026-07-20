@@ -154,6 +154,26 @@ test("ManorSettingsService seeds env once and preserves UI edits", async () => {
   }
 });
 
+test("content admission settings support defaults, env seeds, and UI persistence", async () => {
+  assert.equal(normalizeManorSettings({}).security.contentAdmissionMode, "review");
+  assert.equal(normalizeManorSettings({}).security.contentAdmissionModel, null);
+  assert.equal(normalizeManorSettings({ security: { contentAdmissionMode: "invalid" } }).security.contentAdmissionMode, "review");
+  const dbPath = path.join(await mkdtemp(path.join(os.tmpdir(), "manor-settings-car-")), "settings.sqlite");
+  const seeded = new ManorSettingsService(dbPath, {
+    MANOR_CONTENT_ADMISSION_MODE: "enforce",
+    MANOR_CONTENT_ADMISSION_MODEL: "ollama-cloud/reviewer"
+  } as NodeJS.ProcessEnv);
+  await seeded.load();
+  assert.equal(seeded.getSettings().security.contentAdmissionMode, "enforce");
+  assert.equal(seeded.getSettings().security.contentAdmissionModel, "ollama-cloud/reviewer");
+  await seeded.patch({ security: { contentAdmissionMode: "off", contentAdmissionModel: "openai-codex/reviewer" } });
+  const reloaded = new ManorSettingsService(dbPath, { MANOR_CONTENT_ADMISSION_MODE: "review" } as NodeJS.ProcessEnv);
+  await reloaded.load();
+  assert.equal(reloaded.getSettings().security.contentAdmissionMode, "off");
+  assert.equal(reloaded.getSettings().security.contentAdmissionModel, "openai-codex/reviewer");
+  assert.equal(reloaded.getProvenance().security, "ui");
+});
+
 test("ManorSettingsService ignores retired provider patches", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-settings-provider-patch-"));
   const dbPath = path.join(dir, "settings.sqlite");

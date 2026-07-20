@@ -7,6 +7,7 @@ import { promises as fs } from "node:fs";
 import { chromium } from "playwright";
 import { DEFAULT_AFTER_ACTION_PAUSE_MS, humanClickLocator, humanFillLocator, humanScroll, humanTypeText, locatorPoint, movePointer, requireScreenshotFileName, requireScreenshotLabel, setProofWaitOverlay, shortPause, waitOverlayText } from "./human-proof-actions.mjs";
 import { PREVIEW_ANNOTATION_LAYER_SCRIPT } from "./preview-annotation-layer.mjs";
+import { browserSessionSummary, refreshContentSnapshot } from "./browser-content-snapshot.mjs";
 
 const port = Number(process.env.MANOR_PLAYWRIGHT_PORT ?? "3777");
 const sessionTtlMs = Number(process.env.MANOR_PLAYWRIGHT_SESSION_TTL_MS ?? `${30 * 60 * 1000}`);
@@ -621,38 +622,6 @@ function normalizeResolution(value) {
   return { name, viewport: RESOLUTION_PROFILES[name] };
 }
 
-function sessionSummary(session) {
-  return {
-    sessionId: session.sessionId,
-    runId: session.runId,
-    mode: session.mode,
-    targetUrl: session.targetUrl,
-    outputDir: session.outputDir,
-    startedAt: session.startedAt,
-    lastActivityAt: session.lastActivityAt,
-    status: session.status,
-    title: session.title,
-    url: session.url,
-    resolution: session.resolution,
-    viewport: session.viewport,
-    actionCount: session.actions.length,
-    previewAnnotationLayer: Boolean(session.previewAnnotationLayer),
-    annotationLayerInstalled: Boolean(session.annotationLayerInstalled),
-    annotationBatchCount: session.annotationBatches.length,
-    annotations: {
-      targets: session.annotationTargets,
-      batches: session.annotationBatches,
-      insertions: session.annotationInsertions
-    },
-    auth: {
-      headerCount: Object.keys(session.headers).length,
-      cookieCount: session.cookies.length,
-      cookieNames: session.cookies.map((entry) => entry.name),
-      usedSessionCookie: session.cookies.some((entry) => entry.name === "better-auth.session_token")
-    }
-  };
-}
-
 async function captureScreenshot(session, fileName, label) {
   if (!session.page || session.page.isClosed()) {
     return;
@@ -883,6 +852,8 @@ async function startSession(input) {
     annotationInsertToken,
     annotationBatches: [],
     annotationInsertions: []
+    ,visibleContent: ""
+    ,contentDigest: ""
   };
 
   if (previewAnnotationLayer) {
@@ -960,6 +931,7 @@ async function startSession(input) {
 
     session.title = await page.title().catch(() => "");
     session.url = page.url() || targetUrl;
+    await refreshContentSnapshot(session);
 
     await installPreviewAnnotationLayer(session);
     await captureScreenshot(session, "ready.png", "Ready screenshot");
@@ -968,7 +940,7 @@ async function startSession(input) {
     throw error;
   }
 
-  return sessionSummary(session);
+  return browserSessionSummary(session);
 }
 
 async function runAction(session, input) {
@@ -987,6 +959,7 @@ async function runAction(session, input) {
   const screenshotFileName = type === "screenshot" || autoCapture ? requireScreenshotFileName(input.fileName) : null;
   const actionLabel = `${type}${typeof input.selector === "string" && input.selector.trim() ? ` ${input.selector.trim()}` : ""}`;
   const phase = session.phaseTracker.start("action", actionLabel);
+  let actionOutput = null;
 
   try {
     if (type === "click") {
@@ -1109,7 +1082,7 @@ async function runAction(session, input) {
       }
       const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
       const runner = new AsyncFunction("page", "context", "browser", "chromium", "session", script);
-      await runner(
+      actionOutput = await runner(
         session.page,
         session.context,
         session.browser,
@@ -1129,6 +1102,7 @@ async function runAction(session, input) {
 
     session.title = await session.page.title().catch(() => session.title);
     session.url = session.page.url() || session.url;
+    await refreshContentSnapshot(session);
     session.lastActivityAt = now();
 
     if (autoCapture && type !== "screenshot") {
@@ -1148,7 +1122,8 @@ async function runAction(session, input) {
       ok: true,
       action: {
         type,
-        durationMs: Math.max(0, now() - startedAt)
+        durationMs: Math.max(0, now() - startedAt),
+        output: actionOutput
       },
       state: {
         title: session.title,
@@ -1157,6 +1132,8 @@ async function runAction(session, input) {
         resolution: session.resolution,
         viewport: session.viewport,
         actionCount: session.actions.length
+        ,visibleContent: session.visibleContent
+        ,contentDigest: session.contentDigest
       }
     };
   } catch (error) {
@@ -1455,7 +1432,7 @@ const server = http.createServer(async (request, response) => {
         writeJson(response, 404, { error: "Session not found" });
         return;
       }
-      writeJson(response, 200, { ok: true, session: sessionSummary(session) });
+      writeJson(response, 200, { ok: true, session: browserSessionSummary(session) });
       return;
     }
 

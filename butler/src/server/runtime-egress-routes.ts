@@ -58,6 +58,16 @@ export function registerRuntimeEgressRoutes(access: RuntimeEgressRouteAccess): v
     }
   });
 
+  access.app.put("/api/runtime-egress/mode", async (request, response) => {
+    try {
+      const mode = request.body?.mode === "restricted" ? "restricted" : request.body?.mode === "internet" ? "internet" : null;
+      if (!mode) throw new Error("Choose internet or restricted runtime access.");
+      response.json(await access.client.setMode(mode));
+    } catch (error) {
+      sendError(response, error);
+    }
+  });
+
   access.app.delete("/api/runtime-egress/domains/:domain", async (request, response) => {
     try {
       response.json(await access.client.remove(request.params.domain));

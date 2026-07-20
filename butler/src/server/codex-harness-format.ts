@@ -29,7 +29,7 @@ export function formatHarnessExecutionContract(thread: CodexThreadRecord): strin
 
 export function formatHarnessRuntimeModel(): string[] {
   return [
-    "Runtime rule: the Worker shell is only for source files, repository inspection, editing, and Git. Run all installs, builds, tests, scripts, servers, conversions, and project code in a preview through manor-harness.",
+    "The Worker shell is a normal development environment for source, installs, builds, tests, scripts, and Git. Use previews when a clean runtime, service lifecycle, isolation, or browser proof is useful.",
     "Uploaded inputs are mounted read-only at /inputs in both Worker and previews. Write derived files under /outputs/<jobId>, then publish them with manor-harness input publish <path> --from <referenceId> so Manor creates a linked immutable version.",
     "Previews run app code. Services provide supporting infrastructure such as databases, queues, object storage, or mail capture.",
     "Browser-use sessions already capture tracing, video, a ready screenshot, a final screenshot, and per-action screenshots unless you disable auto-capture.",

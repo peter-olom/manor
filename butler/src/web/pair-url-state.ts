@@ -28,9 +28,11 @@ export function readPairUrlState(href?: string): PairUrlState {
   return {
     sessionId,
     viewMode,
-    settingsSection: prefix === "settings" && SETTINGS_SECTION_IDS.has(section as SettingsSectionId)
-      ? section as SettingsSectionId
-      : "runtime",
+    settingsSection: prefix === "settings" && section === "network"
+      ? "security"
+      : prefix === "settings" && SETTINGS_SECTION_IDS.has(section as SettingsSectionId)
+        ? section as SettingsSectionId
+        : "runtime",
     terminalTarget: readInitialTerminalTarget(url.searchParams.get("terminal")) ?? DEFAULT_TERMINAL_TARGET
   };
 }

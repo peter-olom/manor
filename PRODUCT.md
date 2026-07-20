@@ -10,9 +10,11 @@ Manor is used by one trusted operator who supervises Butler and provider-backed 
 
 ## Product Purpose
 
-Manor keeps long-running agent work organized, observable, and contained. Success means the operator can delegate work, inspect evidence, and make high-risk runtime decisions without guessing what the agents or containers are doing.
+Manor keeps long-running agent work organized, observable, and moving. Success means the operator can delegate work, inspect evidence, and make high-risk runtime decisions without guessing what the agents or containers are doing.
 
 The main product promise is async leverage. The operator should give intent, then Butler and the active Worker should do the investigation, execution, verification, and proof gathering with very little hand-holding.
+
+The Worker gets normal development tools and practical Internet access so it can finish the job. Manor applies targeted controls at known boundaries: external content admission, private destinations, broker authorization, runtime ownership, and operator-controlled infrastructure.
 
 A Worker is Manor's product role across providers. Manor runs every Worker through Pi RPC, including OpenAI/Codex, Ollama, and OpenCode Go models. Butler keeps one job contract and review model across providers.
 
@@ -36,6 +38,12 @@ Do not make Manor feel like a hosted multi-tenant SaaS dashboard, a decorative A
 - Infer work depth internally from the operator's intent instead of asking the operator to choose it.
 - Treat taste, intent fit, and verification quality as part of completion, especially for UI, API, writing, and operator-facing workflows.
 - Make Butler acceptance adversarial: the worker submits evidence, Butler decides whether it is good enough.
+- Review bounded representations from standard repository, web, and browser ingress at their shared admission points.
+- Keep Content Admission Review separate from acceptance and correctness review so the operator can understand what each verdict means.
+- Review unchanged external content once, then reuse the verdict without adding friction to every file read or browser action.
+- Offer Review, Enforce, and Off as clear operator choices. Keep the limits of each mode visible.
+- Let CAR run automatically during unattended automations without creating a confirmation queue for the operator.
+- Let operators add infrastructure controls when their risk model needs stronger egress or secret boundaries.
 - Give the operator a compact proof dossier so they can trust the result without reading the full worker transcript.
 - Show the active Worker provider, model, and reasoning option where that identity affects a decision.
 - Treat provider changes as explicit cold handoffs that preserve the job record without implying hidden state transfer.

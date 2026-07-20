@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { getOperatorCloseoutBlocker } from "../../src/server/butler-closeout-gate.js";
 import { buildButlerDelegationTools } from "../../src/server/butler-agent-stack-preview-tools.js";
+import { buildButlerDelegationContract } from "../../src/server/butler-agent-delegation-contract-builder.js";
 import { buildButlerCodexTools } from "../../src/server/butler-agent-codex-tools.js";
 import { buildDelegationRoutingDecision } from "../../src/server/butler-delegation-routing.js";
 import { normalizeWorkerClaimsReport } from "../../src/server/butler-orchestration.js";
@@ -108,6 +109,24 @@ test("delegation routing is derived from Butler's explicit tool call", () => {
   const readOnlyDecision = buildDelegationRoutingDecision({ task: "What is the Runner setting?" });
   assert.equal(readOnlyDecision.taskClass, "read_only");
   assert.equal(readOnlyDecision.reviewRecommendation.required, true);
+});
+
+test("delegation payload makes sub-agent roles capability-conditional", async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "manor-sub-agent-contract-"));
+  const result = await buildButlerDelegationContract({
+    store: await createStore(),
+    threadId: "thread-sub-agent-contract",
+    task: "Review the implementation.",
+    workspace: { cwd: workspace, branchName: null },
+    orchestration: routingDecision()
+  });
+  const contractText = result.contract.notes.join("\n");
+  const payloadText = JSON.stringify(result.payload);
+
+  assert.match(contractText, /If the current Worker surface exposes a sub-agent capability/);
+  assert.match(contractText, /otherwise perform the perspectives yourself/);
+  assert.match(payloadText, /sub-agent capability/);
+  assert.doesNotMatch(contractText, /Run sub-agents inside the worker thread/);
 });
 
 test("delegation starts worker directly with deterministic routing metadata", async () => {

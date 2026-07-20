@@ -275,7 +275,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
     access.defineButlerTool({
       name: "start_preview_browser_session",
       label: "Start preview browser session",
-      description: "Attach a browser sidecar to one preview and begin a live recorded session.",
+      description: "Attach a browser sidecar to one preview and begin a live recorded session. Initial page content passes through Content Admission Review and may be warned or withheld.",
       promptSnippet:
         "start_preview_browser_session: open a live browser session only for preview work Butler is handling directly. If the operator explicitly asked for delegation or Worker, call delegate_to_worker instead. The timer and recording begin immediately; stop the session later to persist proof.",
       parameters: Type.Object({
@@ -327,7 +327,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           content: [
             {
               type: "text",
-              text: `Started browser session ${session.sessionId} for ${preview.title}. Recording is live until the session is stopped.`
+              text: `Started browser session ${session.sessionId} for ${preview.title}. Recording is live until the session is stopped.${session.contentAdmissionNotice ? `\n${session.contentAdmissionNotice}` : ""}`
             }
           ],
           details: {
@@ -340,7 +340,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
     access.defineButlerTool({
       name: "start_browser_session",
       label: "Start browser session",
-      description: "Start a live recorded browser session for a direct URL.",
+      description: "Start a live recorded browser session for a direct URL. Initial page content passes through Content Admission Review and may be warned or withheld.",
       promptSnippet:
         "start_browser_session: open a live browser session only for work Butler is handling directly. If the operator explicitly asked for delegation or Worker, call delegate_to_worker instead. Proof is persisted only after stop_browser_session.",
       parameters: Type.Object({
@@ -399,7 +399,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           content: [
             {
               type: "text",
-              text: `Started browser session ${session.sessionId}. Recording is live until the session is stopped.`
+              text: `Started browser session ${session.sessionId}. Recording is live until the session is stopped.${session.contentAdmissionNotice ? `\n${session.contentAdmissionNotice}` : ""}`
             }
           ],
           details: {
@@ -411,7 +411,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
     access.defineButlerTool({
       name: "browser_session_state",
       label: "Browser session state",
-      description: "Inspect one active browser session state.",
+      description: "Inspect one active browser session state. Visible content passes through Content Admission Review and may be warned or withheld.",
       promptSnippet: "browser_session_state: use this to confirm session health, URL, and action count before continuing.",
       parameters: Type.Object({
         sessionId: Type.String({ minLength: 1 })
@@ -425,7 +425,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           content: [
             {
               type: "text",
-              text: `Session ${result.session.sessionId} is active at ${result.session.url}. Actions=${result.session.actionCount}.`
+              text: `Session ${result.session.sessionId} is active at ${result.session.url}. Actions=${result.session.actionCount}.${result.session.contentAdmissionNotice ? `\n${result.session.contentAdmissionNotice}` : ""}`
             }
           ],
           details: result
@@ -435,7 +435,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
     access.defineButlerTool({
       name: "browser_session_action",
       label: "Browser session action",
-      description: "Run one explicit action in an active browser session, including manual screenshots. Evaluate runs an async Node body with Playwright page/context/browser/chromium and read-only session; read DOM through page.evaluate.",
+      description: "Run one explicit action in an active browser session, including manual screenshots. Visible page and action output pass through Content Admission Review and may be warned or withheld. Evaluate runs an async Node body with Playwright page/context/browser/chromium and read-only session; read DOM through page.evaluate.",
       promptSnippet:
         "browser_session_action: use this for stepwise browser control. Always provide a specific evidence label and .png fileName; set autoCapture=false only when no screenshot should be stored.",
       parameters: Type.Object({
@@ -496,7 +496,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         };
 
         requireCaptureMetadata(typedParams.label, typedParams.fileName, `Browser ${typedParams.actionType} action`);
-        const sessionState = await access.runtimeBroker.inspectBrowserSession(typedParams.sessionId.trim());
+        const sessionState = await access.runtimeBroker.inspectBrowserSession(typedParams.sessionId.trim(), { consumeContentAdmissionNotice: false });
         assertRuntimeResourceOwned(access, sessionState.tracked, `Browser session ${typedParams.sessionId.trim()}`);
         const result = await access.runtimeBroker.runBrowserSessionAction(typedParams.sessionId.trim(), {
           type: typedParams.actionType.trim(),
@@ -561,7 +561,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           leaseId?: string;
         };
 
-        const sessionState = await access.runtimeBroker.inspectBrowserSession(typedParams.sessionId.trim());
+        const sessionState = await access.runtimeBroker.inspectBrowserSession(typedParams.sessionId.trim(), { consumeContentAdmissionNotice: false });
         assertRuntimeResourceOwned(access, sessionState.tracked, `Browser session ${typedParams.sessionId.trim()}`);
         const requestedLeaseId = typedParams.leaseId?.trim() || null;
         if (requestedLeaseId) {

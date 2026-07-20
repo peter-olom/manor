@@ -53,6 +53,7 @@ test("Manor Worker tools expose bounded preview, browser, and report operations"
   assert.ok(browserStart.parameters.properties.headers);
   assert.ok(browserStart.parameters.properties.cookies);
   assert.ok(browserStart.parameters.properties.session_cookie);
+  assert.match(browserStart.description, /server-generated manorContentAdmission control object.*warning or withholding/i);
 });
 
 test("Manor Worker extension registers manor_report", async () => {
@@ -85,6 +86,7 @@ test("manor_browser_action exposes only sidecar-supported action names", () => {
   assert.match(browserAction.description, /evaluate \(not exec\)/i);
   assert.match(browserAction.description, /page\.evaluate/i);
   assert.match(browserAction.description, /auto_capture=false for nonvisual/i);
+  assert.match(browserAction.description, /Content Admission Review.*warned or withheld/i);
   assert.match(browserAction.parameters.properties?.script?.description ?? "", /async Node body.*page available.*page\.evaluate/i);
 });
 

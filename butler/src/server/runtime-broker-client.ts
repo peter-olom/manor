@@ -7,6 +7,7 @@ import type {
   StackLeaseStatus,
   StackStorageMode
 } from "./types.js";
+import { admitExternalContent, formatContentAdmissionForAgent, formatContentAdmissionNotice } from "./content-admission-review.js";
 
 type LeasePayload = {
   id: string;
@@ -173,6 +174,9 @@ type BrowserSessionSummaryPayload = {
   viewport?: { width: number; height: number };
   startedAt: number;
   actionCount: number;
+  visibleContent?: string;
+  contentDigest?: string;
+  contentAdmissionNotice?: string;
 };
 
 type BrowserSessionStatePayload = {
@@ -197,6 +201,9 @@ type BrowserSessionStatePayload = {
       cookieNames: string[];
       usedSessionCookie: boolean;
     };
+    visibleContent?: string;
+    contentDigest?: string;
+    contentAdmissionNotice?: string;
   };
   tracked: {
     kind: "preview" | "browser";
@@ -224,6 +231,8 @@ type BrowserSessionActionPayload = {
     url: string;
     status: number | null;
     actionCount: number;
+    visibleContent?: string;
+    contentDigest?: string;
   };
 };
 
@@ -549,7 +558,7 @@ export class RuntimeBrokerClient {
         postLoadWaitMs: input.postLoadWaitMs
       })
     });
-    return payload.session;
+    return this.admitBrowserSummary(payload.session);
   }
 
   async startBrowserSession(input: {
@@ -583,13 +592,15 @@ export class RuntimeBrokerClient {
         postLoadWaitMs: input.postLoadWaitMs
       })
     });
-    return payload.session;
+    return this.admitBrowserSummary(payload.session);
   }
 
-  async inspectBrowserSession(sessionId: string): Promise<BrowserSessionStatePayload> {
-    return this.request<BrowserSessionStatePayload>(`/browser/sessions/${encodeURIComponent(sessionId)}`, {
+  async inspectBrowserSession(sessionId: string, options: { consumeContentAdmissionNotice?: boolean } = {}): Promise<BrowserSessionStatePayload> {
+    const payload = await this.request<BrowserSessionStatePayload>(`/browser/sessions/${encodeURIComponent(sessionId)}`, {
       method: "GET"
     });
+    await this.admitBrowserSummary(payload.session, options.consumeContentAdmissionNotice !== false);
+    return payload;
   }
 
   async runBrowserSessionAction(
@@ -621,7 +632,35 @@ export class RuntimeBrokerClient {
     if (!payload.ok) {
       throw new Error(payload.error || `Browser-use action ${input.type} failed.`);
     }
+    const notices: string[] = [];
+    const visibleContent = payload.state.visibleContent ?? "";
+    if (visibleContent) {
+      const admission = await admitExternalContent("browser", visibleContent, payload.state.url);
+      if (admission.notified) notices.push(formatContentAdmissionNotice(admission));
+    }
+    if (payload.action.output !== undefined && payload.action.output !== null) {
+      const output = typeof payload.action.output === "string" ? payload.action.output : JSON.stringify(payload.action.output);
+      const admission = await admitExternalContent("browser", output, `${payload.state.url} action=${input.type}`);
+      payload.action.output = formatContentAdmissionForAgent(admission);
+    }
+    if (notices.length > 0) {
+      const actionOutput = payload.action.output;
+      payload.action.output = actionOutput === undefined || actionOutput === null || actionOutput === ""
+        ? notices.join("\n\n")
+        : `${notices.join("\n\n")}\n\n${typeof actionOutput === "string" ? actionOutput : JSON.stringify(actionOutput)}`;
+    }
+    delete payload.state.visibleContent;
     return payload;
+  }
+
+  private async admitBrowserSummary(summary: BrowserSessionSummaryPayload, consumeNotification = true): Promise<BrowserSessionSummaryPayload> {
+    const visibleContent = summary.visibleContent ?? "";
+    if (visibleContent) {
+      const admission = await admitExternalContent("browser", visibleContent, summary.url, { consumeNotification });
+      if (admission.notified) summary.contentAdmissionNotice = formatContentAdmissionNotice(admission);
+    }
+    delete summary.visibleContent;
+    return summary;
   }
 
   async stopBrowserSession(sessionId: string, reason?: string): Promise<BrowserSessionStopPayload> {

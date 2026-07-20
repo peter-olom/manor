@@ -45,6 +45,7 @@ export const SETTINGS_GROUP_KEYS: SettingsGroupKey[] = [
   "providers.opencodeGo",
   "worker",
   "butler",
+  "security",
   "vision",
   "modelTasks",
   "memory",
@@ -137,6 +138,10 @@ export const DEFAULT_MANOR_SETTINGS: ManorSettings = {
   butler: {
     defaultModel: null,
     defaultThinkingLevel: "medium"
+  },
+  security: {
+    contentAdmissionMode: "review",
+    contentAdmissionModel: null
   },
   vision: {
     enabled: true,
@@ -325,6 +330,10 @@ function thinkingLevel(value: unknown): SettingsThinkingLevel {
   return value === "off" || value === "none" || value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" ? value : "medium";
 }
 
+function contentAdmissionMode(value: unknown): ManorSettings["security"]["contentAdmissionMode"] {
+  return value === "off" || value === "enforce" ? value : "review";
+}
+
 function memoryEffort(value: unknown): ManorSettings["memory"]["synthesisEffort"] {
   return value === "low" || value === "medium" || value === "high" ? value : null;
 }
@@ -349,6 +358,7 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
   const opencodeGo = isRecord(providers.opencodeGo) ? providers.opencodeGo : {};
   const worker = isRecord(raw.worker) ? raw.worker : {};
   const butler = isRecord(raw.butler) ? raw.butler : {};
+  const security = isRecord(raw.security) ? raw.security : {};
   const modelTasks = isRecord(raw.modelTasks) ? raw.modelTasks : {};
   const vision = isRecord(raw.vision) ? raw.vision : {};
   const memory = isRecord(raw.memory) ? raw.memory : {};
@@ -420,6 +430,10 @@ export function normalizeManorSettings(value: unknown): ManorSettings {
     butler: {
       defaultModel: nullableText(butler.defaultModel),
       defaultThinkingLevel: thinkingLevel(butler.defaultThinkingLevel)
+    },
+    security: {
+      contentAdmissionMode: contentAdmissionMode(security.contentAdmissionMode),
+      contentAdmissionModel: nullableText(security.contentAdmissionModel)
     },
     vision: {
       enabled: bool(vision.enabled, DEFAULT_MANOR_SETTINGS.vision.enabled),
@@ -580,6 +594,8 @@ export function buildManorSettingsFromEnv(env: NodeJS.ProcessEnv = process.env):
   }
   apply("butler", "MANOR_BUTLER_MODEL", (value) => { settings.butler.defaultModel = nullableText(value); });
   apply("butler", "MANOR_BUTLER_THINKING_LEVEL", (value) => { settings.butler.defaultThinkingLevel = thinkingLevel(value); });
+  apply("security", "MANOR_CONTENT_ADMISSION_MODE", (value) => { settings.security.contentAdmissionMode = contentAdmissionMode(value.trim().toLowerCase()); });
+  apply("security", "MANOR_CONTENT_ADMISSION_MODEL", (value) => { settings.security.contentAdmissionModel = nullableText(value); });
 
   apply("modelTasks", "MANOR_MEMORY_SYNTHESIS_MODEL", (value) => { settings.modelTasks.memorySynthesisModel = nullableText(value); });
   apply("vision", "MANOR_VISION_ENABLED", (value) => { settings.vision.enabled = bool(value, settings.vision.enabled); });
@@ -623,6 +639,7 @@ export function groupValue(settings: ManorSettings, key: SettingsGroupKey): unkn
     case "providers.opencodeGo": return settings.providers.opencodeGo;
     case "worker": return settings.worker;
     case "butler": return settings.butler;
+    case "security": return settings.security;
     case "vision": return settings.vision;
     case "modelTasks": return settings.modelTasks;
     case "memory": return settings.memory;
@@ -643,6 +660,7 @@ export function applyGroupValue(settings: ManorSettings, key: SettingsGroupKey, 
     case "providers.opencodeGo": next.providers.opencodeGo = { ...next.providers.opencodeGo, ...(isRecord(value) ? value : {}) } as never; break;
     case "worker": next.worker = { ...next.worker, ...(isRecord(value) ? value : {}) } as never; break;
     case "butler": next.butler = { ...next.butler, ...(isRecord(value) ? value : {}) } as never; break;
+    case "security": next.security = { ...next.security, ...(isRecord(value) ? value : {}) } as never; break;
     case "vision": next.vision = { ...next.vision, ...(isRecord(value) ? value : {}) } as never; break;
     case "modelTasks": next.modelTasks = { ...next.modelTasks, ...(isRecord(value) ? value : {}) } as never; break;
     case "memory": next.memory = { ...next.memory, ...(isRecord(value) ? value : {}) } as never; break;

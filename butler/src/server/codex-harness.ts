@@ -46,7 +46,7 @@ import { type LoadedServiceTemplate, ServiceTemplateRegistry, toServiceLeaseView
 import { assertProjectStackStorageLineage, formatStackStorageSummary, normalizeStackStorageMode, resolveStackPromotionTarget } from "./stack-storage.js";
 import { applyWorkspacePreviewDefaults, formatWorkspaceBootstrapLines, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type { CodexThreadRecord, CodexWorkerEvidenceView, PreviewLeaseView, PreviewVerificationView, WorkerClaimsReportView } from "./types.js";
-import type { VisionInspectionService } from "./vision-inspection.js";
+import type { VisionInspectionService } from "./vision-inspection.js"; import { formatContentAdmissionForAgent, type ContentAdmissionReviewService, type ContentAdmissionSource } from "./content-admission-review.js";
 import { handleHarnessVisionAction } from "./codex-harness-vision.js";
 function mentionsNativeDesktopTarget(thread: CodexThreadRecord): boolean {
   const contract = thread.executionContract;
@@ -73,9 +73,9 @@ export class HarnessService {
   private readonly memoryReview: CodexExecMemoryReviewService | null;
   private readonly memoryScheduler: MemoryUpdateScheduler | null;
   private readonly visionInspection: VisionInspectionService;
-  private readonly inputActionAccess: HarnessInputActionAccess | null;
+  private readonly inputActionAccess: HarnessInputActionAccess | null; private readonly contentAdmission: ContentAdmissionReviewService | null;
   private readonly capabilities = new Map<string, HarnessCapability>();
-  constructor(options: { harnessRegistryPath?: string | null; harnessAccessPath?: string | null; stateDir: string; artifactsDir: string; store: ButlerStateStore; runtimeBroker: RuntimeBrokerClient; serviceTemplateRegistry: ServiceTemplateRegistry; memoryReview?: CodexExecMemoryReviewService | null; memoryScheduler?: MemoryUpdateScheduler | null; visionInspection: VisionInspectionService; inputActionAccess?: HarnessInputActionAccess }) {
+  constructor(options: { harnessRegistryPath?: string | null; harnessAccessPath?: string | null; stateDir: string; artifactsDir: string; store: ButlerStateStore; runtimeBroker: RuntimeBrokerClient; serviceTemplateRegistry: ServiceTemplateRegistry; memoryReview?: CodexExecMemoryReviewService | null; memoryScheduler?: MemoryUpdateScheduler | null; visionInspection: VisionInspectionService; inputActionAccess?: HarnessInputActionAccess; contentAdmission?: ContentAdmissionReviewService | null }) {
     const storagePaths = resolveHarnessStoragePaths(options);
     this.registryPath = storagePaths.registryPath;
     this.brokerAccessPath = storagePaths.brokerAccessPath;
@@ -87,6 +87,7 @@ export class HarnessService {
     this.memoryScheduler = options.memoryScheduler ?? null;
     this.visionInspection = options.visionInspection;
     this.inputActionAccess = options.inputActionAccess ?? null;
+    this.contentAdmission = options.contentAdmission ?? null;
   }
   private getRuntimeAccess() {
     return {
@@ -423,6 +424,16 @@ export class HarnessService {
     const action = normalizeString(input.action);
     const params = input.params ?? {};
     const thread = this.getThreadContext(capability);
+    if (action === "content.admit") {
+      if (!this.contentAdmission) throw new Error("Content admission review is unavailable.");
+      const source = normalizeString(params.source) as ContentAdmissionSource;
+      if (!(["repository", "web_search", "web_fetch", "browser"] as string[]).includes(source)) throw new Error("Unsupported content admission source.");
+      const content = typeof params.content === "string" ? params.content : "";
+      const metadata = typeof params.metadata === "string" ? params.metadata : "";
+      const admission = await this.contentAdmission.admit(source, content, metadata);
+      this.store.addEvent(capability.threadId, "content.admission", `Content admission ${admission.review?.verdict ?? (admission.unavailable ? "unavailable" : "off")} for ${source}.`);
+      return { text: formatContentAdmissionForAgent(admission), data: { admission } };
+    }
     if (action === "context" || action.startsWith("stack.") || action.startsWith("preview.") || action.startsWith("service.") || action.startsWith("assist.")) {
       await this.maybeAdoptWorkspaceStack(capability);
     }
@@ -574,7 +585,7 @@ export class HarnessService {
         responseLines.push(`Use the existing stack ${activeStack.id} for the preview unless you have a reason to split the runtime.`);
       }
       responseLines.push("Previews now default to normal outbound internet access. Use an explicit egress mode only when you need to block or restrict outbound traffic.");
-      responseLines.push("Use the Worker shell only for source files, repository inspection, editing, and Git. Run all project commands inside a preview.");
+      responseLines.push("The Worker shell supports normal source, install, build, test, script, editing, and Git work. Use a preview when a clean runtime, managed service lifecycle, runtime isolation, or browser proof is useful.");
       if (previewDefaults.bootstrapHint) {
         responseLines.push(`Preview bootstrap hint: ${previewDefaults.bootstrapHint}.`);
       }
@@ -590,7 +601,7 @@ export class HarnessService {
             : "This job explicitly asks for proof. Choose the format that most directly demonstrates the result."
         );
       }
-      responseLines.push("Do not use `corepack enable` in the worker shell for preview-oriented runtime setup. If repo-local instructions explicitly require a root-level install step, follow the repo guidance instead.");
+      responseLines.push("Follow repo-local toolchain guidance when it exists. Use root-level setup only when that guidance genuinely requires it.");
       responseLines.push("Only report the job blocked when you can say what you tried and why the next sensible step still cannot proceed.");
       if (question) {
         responseLines.push(`Requested help: ${question}`);
@@ -946,7 +957,7 @@ export class HarnessService {
         sessionCookie: sessionCookie || undefined
       });
       return {
-        text: `Browser-use session started for preview ${preview.id}. Session=${session.sessionId}. URL=${session.url}`,
+        text: `Browser-use session started for preview ${preview.id}. Session=${session.sessionId}. URL=${session.url}${session.contentAdmissionNotice ? `\n${session.contentAdmissionNotice}` : ""}`,
         data: { session, preview }
       };
     }
@@ -982,7 +993,7 @@ export class HarnessService {
         sessionCookie: sessionCookie || undefined
       });
       return {
-        text: `Browser-use session started. Session=${session.sessionId}. URL=${session.url}`,
+        text: `Browser-use session started. Session=${session.sessionId}. URL=${session.url}${session.contentAdmissionNotice ? `\n${session.contentAdmissionNotice}` : ""}`,
         data: { session }
       };
     }
@@ -993,7 +1004,7 @@ export class HarnessService {
       }
       const result = await this.runtimeBroker.inspectBrowserSession(sessionId);
       return {
-        text: `Session ${result.session.sessionId} is active at ${result.session.url}. Actions=${result.session.actionCount}.`,
+        text: `Session ${result.session.sessionId} is active at ${result.session.url}. Actions=${result.session.actionCount}.${result.session.contentAdmissionNotice ? `\n${result.session.contentAdmissionNotice}` : ""}`,
         data: { session: result.session }
       };
     }
@@ -1025,8 +1036,8 @@ export class HarnessService {
         fileName: normalizeString(params.fileName) || undefined,
         autoCapture: params.autoCapture === false ? false : undefined
       });
-      return {
-        text: `Browser-use action ${result.action.type} completed. URL=${result.state.url}. Actions=${result.state.actionCount}.`,
+      const actionOutput = result.action.output === undefined || result.action.output === null ? "" : (typeof result.action.output === "string" ? result.action.output : JSON.stringify(result.action.output)); return {
+        text: `Browser-use action ${result.action.type} completed. URL=${result.state.url}. Actions=${result.state.actionCount}.${actionOutput ? `\nOutput:\n${actionOutput.slice(0, 12_000)}` : ""}`,
         data: { result }
       };
     }
@@ -1279,7 +1290,6 @@ export class HarnessService {
       if (!template) {
         throw new Error(`Unknown service template: ${templateId}`);
       }
-
       const effectiveTitle = title || `${template.label} ${crypto.randomUUID().slice(0, 8)}`;
       if (template.runtimeKind === "embedded") {
         const filePath = `${cwd}/${template.fileName ?? ".manor/sqlite/app.db"}`.replace(/\/+/g, "/");
@@ -1318,7 +1328,6 @@ export class HarnessService {
           data: { service: lease, policyApplications }
         };
       }
-
       const service = await this.runtimeBroker.createService({
         serviceId: crypto.randomUUID(),
         threadId: capability.threadId,

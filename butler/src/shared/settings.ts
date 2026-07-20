@@ -7,6 +7,7 @@ export type SettingsGroupKey =
   | "providers.opencodeGo"
   | "worker"
   | "butler"
+  | "security"
   | "vision"
   | "modelTasks"
   | "memory"
@@ -21,6 +22,7 @@ export type SettingsSecretSource =
 
 export type SettingsReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type SettingsThinkingLevel = "off" | SettingsReasoningEffort;
+export type ContentAdmissionMode = "off" | "review" | "enforce";
 
 export type SettingsProviderModel =
   | string
@@ -111,6 +113,10 @@ export type ManorSettings = {
   butler: {
     defaultModel: string | null;
     defaultThinkingLevel: SettingsThinkingLevel;
+  };
+  security: {
+    contentAdmissionMode: ContentAdmissionMode;
+    contentAdmissionModel: string | null;
   };
   vision: {
     enabled: boolean;

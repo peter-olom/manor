@@ -139,7 +139,7 @@ const previewStopTool = defineTool({
 const browserStartTool = defineTool({
   name: "manor_browser_start",
   label: "Start Browser Proof",
-  description: "Start a browser proof session against a running Manor preview. Omit mode and resolution for the headless 1080p defaults. A screenshot is a later manor_browser_action with type=screenshot, not a browser mode.",
+  description: "Start a browser proof session against a running Manor preview. Initial page review returns a server-generated manorContentAdmission control object when warning or withholding is needed. Omit mode and resolution for the headless 1080p defaults. A screenshot is a later manor_browser_action with type=screenshot, not a browser mode.",
   parameters: Type.Object({
     lease_id: Type.String({ minLength: 1 }),
     path: Type.Optional(Type.String()),
@@ -175,7 +175,7 @@ const browserStartTool = defineTool({
 const browserActionTool = defineTool({
   name: "manor_browser_action",
   label: "Browser Action",
-  description: "Run one tracked browser action. Use wait_for (not wait) for selector, URL, or elapsed-time waits, and evaluate (not exec) for Playwright scripting. evaluate runs an async Node body with page available; read DOM with `return await page.evaluate(() => ...)`. Set auto_capture=false for nonvisual actions. Captured actions require a descriptive label and unique .png filename.",
+  description: "Run one tracked browser action. Visible page and action output use a structured Content Admission Review envelope and may be warned or withheld. Use wait_for (not wait) for selector, URL, or elapsed-time waits, and evaluate (not exec) for Playwright scripting. evaluate runs an async Node body with page available; read DOM with `return await page.evaluate(() => ...)`. Set auto_capture=false for nonvisual actions. Captured actions require a descriptive label and unique .png filename.",
   parameters: Type.Object({
     session_id: Type.String({ minLength: 1 }),
     type: Type.Union([

@@ -88,10 +88,7 @@ COPY docker/worker/gh-auth-headless.sh /usr/local/bin/gh-auth-headless
 COPY docker/worker/gh-headless-browser.sh /usr/local/bin/gh-headless-browser
 COPY docker/worker/bootstrap-tools.sh /usr/local/bin/worker-bootstrap-tools
 COPY docker/worker/manor-harness.mjs /usr/local/bin/manor-harness
-COPY docker/worker/install-guard.sh /opt/manor/worker/install-guard.sh
-COPY docker/worker/python-guard.sh /opt/manor/worker/python-guard.sh
-COPY docker/worker/runtime-guard.sh /opt/manor/worker/runtime-guard.sh
-COPY docker/worker/manor-shell-env.sh /etc/profile.d/manor-shell-env.sh
+COPY docker/worker/git-admission.sh /usr/local/bin/git
 COPY docker/worker/healthcheck.mjs /opt/manor/worker/healthcheck.mjs
 COPY docker/worker/worker-pi-rpc-bridge.mjs /opt/manor/worker/worker-pi-rpc-bridge.mjs
 COPY --chown=worker:worker docker/worker/zshrc /home/worker/.zshrc
@@ -101,45 +98,12 @@ RUN mkdir -p /home/worker/.local/bin /home/worker/.local/share/mise \
     && chown -R worker:worker /home/worker/.local
 
 ENV MANOR_REAL_PATH="/home/worker/.local/bin:/home/worker/.local/share/mise/shims:/home/worker/.local/share/mise/bin:/opt/manor/npm-global/bin:${PATH}"
-ENV PATH="/opt/manor/worker/install-guard-bin:${MANOR_REAL_PATH}"
+ENV PATH="${MANOR_REAL_PATH}"
 ENV WORKER_PI_CLI_PATH="/opt/manor/worker/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
 ENV WORKER_PI_RPC_SOCKET="/worker-runtime/pi-rpc.sock"
 
-RUN mkdir -p /opt/manor/worker/install-guard-bin \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/npm \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/npx \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/pnpm \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/pnpx \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/yarn \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/yarnpkg \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/bun \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/bunx \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/pip \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/pip3 \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/pipx \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/uv \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/uvx \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/poetry \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/gem \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/bundle \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/composer \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/cargo \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/go \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/corepack \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/playwright \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/apt \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/apt-get \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/apk \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/dnf \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/yum \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/brew \
-    && ln -sf /opt/manor/worker/install-guard.sh /opt/manor/worker/install-guard-bin/mise \
-    && for command in make cmake ctest meson ninja gradle mvn ant pytest rspec tsx ts-node jest vitest; do ln -sf /opt/manor/worker/install-guard.sh "/opt/manor/worker/install-guard-bin/${command}"; done \
-    && ln -sf /opt/manor/worker/python-guard.sh /opt/manor/worker/install-guard-bin/python \
-    && ln -sf /opt/manor/worker/python-guard.sh /opt/manor/worker/install-guard-bin/python3 \
-    && for command in node deno ruby php java javac dotnet swift kotlin kotlinc lua perl R Rscript gcc g++ clang clang++; do ln -sf /opt/manor/worker/runtime-guard.sh "/opt/manor/worker/install-guard-bin/${command}"; done \
-    && sed -i 's/\r$//' /usr/local/bin/start-worker /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/worker-bootstrap-tools /usr/local/bin/manor-harness /opt/manor/worker/worker-pi-rpc-bridge.mjs /opt/manor/worker/install-guard.sh /opt/manor/worker/python-guard.sh /opt/manor/worker/runtime-guard.sh /etc/profile.d/manor-shell-env.sh /home/worker/.zshrc /home/worker/.zprofile \
-    && chmod 755 /usr/local/bin/start-worker /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/worker-bootstrap-tools /usr/local/bin/manor-harness /opt/manor/worker/worker-pi-rpc-bridge.mjs /opt/manor/worker/install-guard.sh /opt/manor/worker/python-guard.sh /opt/manor/worker/runtime-guard.sh /etc/profile.d/manor-shell-env.sh \
+RUN sed -i 's/\r$//' /usr/local/bin/start-worker /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/worker-bootstrap-tools /usr/local/bin/manor-harness /usr/local/bin/git /opt/manor/worker/worker-pi-rpc-bridge.mjs /home/worker/.zshrc /home/worker/.zprofile \
+    && chmod 755 /usr/local/bin/start-worker /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/worker-bootstrap-tools /usr/local/bin/manor-harness /usr/local/bin/git /opt/manor/worker/worker-pi-rpc-bridge.mjs \
     && chown -R worker:worker /home/worker/.oh-my-zsh /home/worker/.zshrc /home/worker/.zprofile \
     && rm -rf /tmp/* /var/tmp/*
 

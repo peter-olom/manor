@@ -52,7 +52,7 @@ Preview defaults:
   heartbeat-kind=http
   heartbeat-target=/
   workspace-mode=snapshot
-  runtime rule: use the Worker shell only for source, repository inspection, editing, and Git; run installs, builds, tests, scripts, servers, conversions, and project code in previews
+  runtime rule: the Worker shell supports normal development commands; use previews for clean runtimes, services, isolation, and browser proof
   uploaded inputs: read-only under /inputs in Worker and previews
   derived outputs: write under /outputs/<jobId>, then run manor-harness input publish <path> --from <referenceId>
   preview commands start in the job worktree; prefer relative paths there or the contract cwd under /repos
@@ -104,7 +104,7 @@ Proof tips:
   File proof is for cases where the durable evidence is an existing generated file, PDF, Office file, archive, report, export, log, or saved artifact.
   Choose the proof format that most directly demonstrates the result. Frontend work usually benefits from screenshots or video plus test output. Simple operational work is often best shown with a Markdown command transcript.
   Do not create a private Xvfb display when the operator asked for a VNC-visible desktop app.
-  Do not use direct curl or fetch from the shared worker shell to judge live-site browser reachability. That shell is behind restricted egress by design.
+  Use browser sessions to judge live-site behavior when rendered UI, JavaScript, authentication, or durable proof matters.
   Example:
     manor-harness browser use start --url https://example.com/dashboard --mode headful --session-cookie buyer-token --json
     manor-harness browser use action <sessionId> --type screenshot --label "Dashboard after login" --file-name dashboard-after-login.png --json

@@ -34,7 +34,7 @@ export const OLLAMA_WEB_FETCH_TOOL_NAME = "web_fetch";
 
 export const OLLAMA_WEB_SEARCH_TOOL: Tool = {
   name: OLLAMA_WEB_SEARCH_TOOL_NAME,
-  description: "Search the web using Ollama Cloud web search. Use this for current facts, recent events, prices, schedules, docs, or external sources.",
+  description: "Search the web using Ollama Cloud. Results use a structured Content Admission Review envelope and may be warned or withheld.",
   parameters: Type.Object({
     query: Type.String({ minLength: 1, description: "The web search query." }),
     max_results: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: "Maximum number of results to return. Defaults to Manor's configured value; max 10." }))
@@ -43,7 +43,7 @@ export const OLLAMA_WEB_SEARCH_TOOL: Tool = {
 
 export const OLLAMA_WEB_FETCH_TOOL: Tool = {
   name: OLLAMA_WEB_FETCH_TOOL_NAME,
-  description: "Fetch a web page through Ollama Cloud web fetch after a search result looks relevant.",
+  description: "Fetch a web page through Ollama Cloud after a search result looks relevant. Results use a structured Content Admission Review envelope and may be warned or withheld.",
   parameters: Type.Object({
     url: Type.String({ minLength: 1, description: "The URL to fetch." })
   }) as never
@@ -131,9 +131,13 @@ async function postOllamaWebEndpoint<T>(
     });
     const text = await response.text();
     if (!response.ok) {
-      throw new Error(`Ollama ${endpoint} failed with HTTP ${response.status}: ${text.slice(0, 1_000)}`);
+      throw new Error(`Ollama ${endpoint} failed with HTTP ${response.status}.`);
     }
-    return (text.trim() ? JSON.parse(text) : {}) as T;
+    try {
+      return (text.trim() ? JSON.parse(text) : {}) as T;
+    } catch {
+      throw new Error(`Ollama ${endpoint} returned malformed JSON.`);
+    }
   } finally {
     clearTimeout(timeout);
   }

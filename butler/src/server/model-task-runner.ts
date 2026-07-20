@@ -11,6 +11,8 @@ export type ModelTaskRunnerInput = {
   timeoutMs: number;
   model?: string | ProviderModelRef | null;
   schema?: unknown;
+  systemPrompt?: string;
+  allowWebTools?: boolean;
 };
 
 export type ModelTaskRunner = {
@@ -156,8 +158,8 @@ export class ManorModelTaskRunner implements ModelTaskRunner {
   private async runPiInline(input: ResolvedModelTaskRunnerInput): Promise<string> {
     const deadline = input.deadline;
     const { model, auth } = await this.resolvePiModel(input.model, deadline, input.purpose);
-    const webToolSource = await selectProviderWebToolSource(model.provider);
-    const baseSystemPrompt = `You are Manor's ${input.purpose} model task runner. Follow the requested output format exactly.`;
+    const webToolSource = input.allowWebTools === false ? null : await selectProviderWebToolSource(model.provider);
+    const baseSystemPrompt = input.systemPrompt ?? `You are Manor's ${input.purpose} model task runner. Follow the requested output format exactly.`;
     const context = {
       systemPrompt: webToolSource ? appendProviderWebToolInstruction(baseSystemPrompt) : baseSystemPrompt,
       messages: [{ role: "user", timestamp: Date.now(), content: input.prompt }] as Message[],

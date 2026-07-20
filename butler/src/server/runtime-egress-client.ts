@@ -5,6 +5,7 @@ export type RuntimeEgressDomain = {
 };
 
 export type RuntimeEgressDomainsResponse = {
+  mode: "internet" | "restricted";
   domains: RuntimeEgressDomain[];
 };
 
@@ -37,6 +38,14 @@ export class RuntimeEgressClient {
 
   async remove(domain: string): Promise<RuntimeEgressDomainsResponse> {
     return await this.request(`/domains/${encodeURIComponent(domain)}`, { method: "DELETE" });
+  }
+
+  async setMode(mode: "internet" | "restricted"): Promise<RuntimeEgressDomainsResponse> {
+    return await this.request("/mode", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode })
+    });
   }
 
   private async request(pathname: string, init: RequestInit): Promise<RuntimeEgressDomainsResponse> {

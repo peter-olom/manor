@@ -19,17 +19,19 @@ test("runtime egress routes list, add, and remove operator domains", async () =>
   const domains = [
     { domain: "github.com", source: "built-in" as const, removable: false }
   ];
+  let mode: "internet" | "restricted" = "internet";
   const client = {
-    list: async () => ({ domains }),
+    list: async () => ({ mode, domains }),
     add: async (domain: string) => {
       domains.push({ domain, source: "operator" as const, removable: true });
-      return { domains };
+      return { mode, domains };
     },
     remove: async (domain: string) => {
       const index = domains.findIndex((entry) => entry.domain === domain);
       if (index >= 0) domains.splice(index, 1);
-      return { domains };
-    }
+      return { mode, domains };
+    },
+    setMode: async (next: "internet" | "restricted") => ({ mode: mode = next, domains })
   };
   const app = express();
   app.use(express.json());
@@ -40,6 +42,13 @@ test("runtime egress routes list, add, and remove operator domains", async () =>
     const initial = await fetch(`${server.url}/api/runtime-egress/domains`, { headers });
     assert.equal(initial.status, 200);
     assert.deepEqual((await initial.json() as { domains: typeof domains }).domains, domains);
+
+    const restricted = await fetch(`${server.url}/api/runtime-egress/mode`, {
+      method: "PUT",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "restricted" })
+    });
+    assert.equal((await restricted.json() as { mode: string }).mode, "restricted");
 
     const added = await fetch(`${server.url}/api/runtime-egress/domains`, {
       method: "POST",

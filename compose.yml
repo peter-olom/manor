@@ -11,6 +11,7 @@ services:
       HOME: /home/butler
       MANOR_HARNESS_HOME: /harness-state
       MANOR_HARNESS_REGISTRY_PATH: /harness-state/harness-capabilities.json
+      MANOR_CONTENT_ADMISSION_POLICY_PATH: /harness-state/content-admission-policy.json
       MANOR_HARNESS_ACCESS_FILE: /state/harness-broker-access.json
       PI_AGENT_DIR: /home/butler/.pi/agent
       WORKER_PI_AGENT_DIR: /worker-pi/agent
@@ -97,6 +98,8 @@ services:
       MANOR_OPENCODE_GO_ENABLED: ${MANOR_OPENCODE_GO_ENABLED:-0}
       MANOR_OPENCODE_GO_BASE_URL: ${MANOR_OPENCODE_GO_BASE_URL:-https://opencode.ai/zen/go/v1}
       OPENCODE_ENABLE_EXA: ${OPENCODE_ENABLE_EXA:-1}
+      MANOR_CONTENT_ADMISSION_MODE: ${MANOR_CONTENT_ADMISSION_MODE:-review}
+      MANOR_CONTENT_ADMISSION_MODEL: ${MANOR_CONTENT_ADMISSION_MODEL:-}
       HTTP_PROXY: http://egress:3128
       HTTPS_PROXY: http://egress:3128
       ALL_PROXY: http://egress:3128
@@ -197,6 +200,7 @@ services:
       MANOR_RUNTIME_BROKER_URL: http://runtime-broker:8090
       MANOR_HARNESS_HOME: /harness-state
       MANOR_HARNESS_REGISTRY_PATH: /harness-state/harness-capabilities.json
+      MANOR_CONTENT_ADMISSION_POLICY_PATH: /harness-state/content-admission-policy.json
       HOME: /home/worker
       ASIRI_HOME: /home/worker/.config/asiri
       PI_AGENT_DIR: /worker-pi/agent

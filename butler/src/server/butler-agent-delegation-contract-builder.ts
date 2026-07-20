@@ -41,7 +41,7 @@ export async function buildButlerDelegationContract(options: {
   if (options.orchestration?.goalRecommendation.mode === "native_goal") notes.push("Use harness-native goal mode for this long or multi-phase job when the worker surface supports it.");
   else if (options.orchestration?.goalRecommendation.mode === "contract_fallback") notes.push(`Use the goal recommendation as a compact worker contract: ${options.orchestration.goalRecommendation.fallbackReason ?? "native goal mode was not available"}.`);
   if (options.orchestration?.reviewRecommendation.required) notes.push(`Butler will run an isolated adversarial review before acceptance: ${options.orchestration.reviewRecommendation.reason ?? "review required"}.`);
-  if (options.orchestration?.subAgentRoles.length) notes.push(`Run sub-agents inside the worker thread for these roles and return only distilled summaries: ${options.orchestration.subAgentRoles.join(", ")}.`);
+  if (options.orchestration?.subAgentRoles.length) notes.push(`If the current Worker surface exposes a sub-agent capability, use it inside this worker thread for these roles; otherwise perform the perspectives yourself. Return only distilled summaries: ${options.orchestration.subAgentRoles.join(", ")}.`);
   if (isSharedShellRepoBootstrapTask(requestedTaskOnly)) notes.push("This job begins in the shared /repos workspace. Create or clone the repo first, then continue inside it.");
 
   const durableTasteNotes = findDurableOperatorTasteNotes(options.store.listButlerMemory());

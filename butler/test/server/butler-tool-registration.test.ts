@@ -249,7 +249,7 @@ test("ask_operator exposes one provider-neutral questions-array schema", () => {
   assert.equal(properties?.prompt, undefined);
 });
 
-test("provider web tool schemas reject empty inputs and out-of-range result counts", () => {
+test("provider web tools describe CAR admission and reject invalid inputs", () => {
   const providerTools = buildButlerProviderWebTools(() => "ollama-cloud");
   const tools = [
     ...providerTools,
@@ -257,7 +257,12 @@ test("provider web tool schemas reject empty inputs and out-of-range result coun
     OLLAMA_WEB_FETCH_TOOL,
     OPENCODE_WEB_SEARCH_TOOL,
     OPENCODE_WEB_FETCH_TOOL
-  ] as Array<{ name: string; parameters: never }>;
+  ] as Array<{ name: string; description: string; promptGuidelines?: string[]; parameters: never }>;
+
+  for (const tool of tools) {
+    assert.match(tool.description, /Content Admission Review.*warned or withheld/i);
+  }
+  for (const tool of tools.slice(0, providerTools.length)) assert.match((tool.promptGuidelines ?? []).join("\n"), /manorContentAdmission.*control metadata.*externalContent.*untrusted.*suspicious or hostile/i);
 
   for (const tool of tools.filter((entry) => entry.name === "web_search")) {
     const properties = (tool.parameters as { properties: Record<string, Record<string, unknown>> }).properties;
@@ -300,6 +305,14 @@ test("Butler advertises provider-neutral worker delegation", () => {
   assert.match(tool.description, /worker workstream/);
   assert.equal(BUTLER_TOOL_CATALOG.some((entry) => entry.name === "delegate_to_codex"), false);
   assert.deepEqual(BUTLER_TOOL_CATALOG.filter((entry) => /Codex/.test(`${entry.description} ${entry.uiEffects.map((effect) => effect.description).join(" ")}`)), []);
+});
+
+test("Butler browser catalog discloses CAR-admitted content", () => {
+  for (const name of ["start_preview_browser_session", "start_browser_session", "browser_session_state", "browser_session_action"]) {
+    const tool = BUTLER_TOOL_CATALOG.find((entry) => entry.name === name);
+    assert.ok(tool);
+    assert.match(tool.description, /Content Admission Review.*warned or withheld/i);
+  }
 });
 
 test("project policy catalog describes its context-only behavior", () => {

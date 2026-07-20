@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const DEFAULT_STATE_PATH = "/state/operator-domains.json";
 const DEFAULT_ACL_PATH = "/state/operator-domains.txt";
+const DEFAULT_MODE_ACL_PATH = "/state/content-access.conf";
 const DEFAULT_BUILT_INS_PATH = "/etc/squid/built-in-domains.txt";
 const DEFAULT_SQUID_CONFIG_PATH = "/etc/squid/squid.conf";
 const MAX_BODY_BYTES = 16 * 1024;
@@ -66,37 +67,45 @@ function atomicWrite(path, contents) {
   fs.renameSync(temporaryPath, path);
 }
 
-function readOperatorState(statePath) {
-  if (!fs.existsSync(statePath)) {
-    return [];
-  }
-  const parsed = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.domains)) {
-    throw new Error("Invalid persisted runtime egress state");
-  }
-  return [...new Set(parsed.domains.map(normalizeDomain))].sort();
+function normalizeMode(value) {
+  return value === "restricted" ? "restricted" : "internet";
 }
 
-function writeOperatorFiles(statePath, aclPath, domains) {
-  atomicWrite(statePath, `${JSON.stringify({ version: 1, domains }, null, 2)}\n`);
+function readOperatorState(statePath) {
+  if (!fs.existsSync(statePath)) {
+    return { mode: "internet", domains: [] };
+  }
+  const parsed = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  if (!parsed || (parsed.version !== 1 && parsed.version !== 2) || !Array.isArray(parsed.domains)) {
+    throw new Error("Invalid persisted runtime egress state");
+  }
+  return { mode: parsed.version === 1 ? "restricted" : normalizeMode(parsed.mode), domains: [...new Set(parsed.domains.map(normalizeDomain))].sort() };
+}
+
+function writeOperatorFiles(statePath, aclPath, modeAclPath, mode, domains) {
+  atomicWrite(statePath, `${JSON.stringify({ version: 2, mode, domains }, null, 2)}\n`);
   atomicWrite(aclPath, domains.length > 0 ? `${domains.join("\n")}\n` : "");
+  atomicWrite(modeAclPath, mode === "internet" ? "http_access allow all\n" : "# Restricted to built-in and operator domains.\n");
 }
 
 export function createEgressPolicy(options = {}) {
   const statePath = options.statePath ?? DEFAULT_STATE_PATH;
   const aclPath = options.aclPath ?? DEFAULT_ACL_PATH;
   const builtInsPath = options.builtInsPath ?? DEFAULT_BUILT_INS_PATH;
+  const modeAclPath = options.modeAclPath ?? (options.aclPath ? path.join(path.dirname(aclPath), "content-access.conf") : DEFAULT_MODE_ACL_PATH);
   const reload = options.reload ?? (async () => {
     await execFileAsync("squid", ["-k", "reconfigure", "-f", DEFAULT_SQUID_CONFIG_PATH]);
     await new Promise((resolve) => setTimeout(resolve, 200));
   });
   const builtIns = readDomainFile(builtInsPath, { validate: false }).sort();
   const builtInSet = new Set(builtIns);
-  let operatorDomains = readOperatorState(statePath);
+  const persisted = readOperatorState(statePath);
+  let mode = persisted.mode;
+  let operatorDomains = persisted.domains;
   let mutation = Promise.resolve();
 
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  writeOperatorFiles(statePath, aclPath, operatorDomains);
+  writeOperatorFiles(statePath, aclPath, modeAclPath, mode, operatorDomains);
 
   function list() {
     return [
@@ -105,20 +114,26 @@ export function createEgressPolicy(options = {}) {
     ];
   }
 
+  function view() {
+    return { mode, domains: list() };
+  }
+
   function enqueue(action) {
     const result = mutation.then(action, action);
     mutation = result.catch(() => {});
     return result;
   }
 
-  async function replaceOperatorDomains(nextDomains) {
+  async function replacePolicy(nextMode, nextDomains) {
+    const previousMode = mode;
     const previousDomains = operatorDomains;
-    writeOperatorFiles(statePath, aclPath, nextDomains);
+    writeOperatorFiles(statePath, aclPath, modeAclPath, nextMode, nextDomains);
     try {
       await reload();
+      mode = nextMode;
       operatorDomains = nextDomains;
     } catch (error) {
-      writeOperatorFiles(statePath, aclPath, previousDomains);
+      writeOperatorFiles(statePath, aclPath, modeAclPath, previousMode, previousDomains);
       try {
         await reload();
       } catch {
@@ -128,17 +143,25 @@ export function createEgressPolicy(options = {}) {
     }
   }
 
+  function setMode(value) {
+    return enqueue(async () => {
+      const nextMode = normalizeMode(value);
+      if (nextMode !== mode) await replacePolicy(nextMode, operatorDomains);
+      return view();
+    });
+  }
+
   function add(value) {
     return enqueue(async () => {
       const domain = normalizeDomain(value);
       if (builtInSet.has(domain)) {
-        return { created: false, domains: list() };
+        return { created: false, ...view() };
       }
       if (operatorDomains.includes(domain)) {
-        return { created: false, domains: list() };
+        return { created: false, ...view() };
       }
-      await replaceOperatorDomains([...operatorDomains, domain].sort());
-      return { created: true, domains: list() };
+      await replacePolicy(mode, [...operatorDomains, domain].sort());
+      return { created: true, ...view() };
     });
   }
 
@@ -155,12 +178,12 @@ export function createEgressPolicy(options = {}) {
         error.code = "NOT_FOUND";
         throw error;
       }
-      await replaceOperatorDomains(operatorDomains.filter((entry) => entry !== domain));
-      return { domains: list() };
+      await replacePolicy(mode, operatorDomains.filter((entry) => entry !== domain));
+      return view();
     });
   }
 
-  return { add, list, remove };
+  return { add, list, remove, setMode, view };
 }
 
 function writeJson(response, statusCode, payload) {
@@ -203,7 +226,12 @@ export function createAdminServer({ policy, token }) {
 
     try {
       if (request.method === "GET" && url.pathname === "/domains") {
-        writeJson(response, 200, { domains: policy.list() });
+        writeJson(response, 200, policy.view());
+        return;
+      }
+      if (request.method === "PUT" && url.pathname === "/mode") {
+        const payload = await readJson(request);
+        writeJson(response, 200, await policy.setMode(payload?.mode));
         return;
       }
       if (request.method === "POST" && url.pathname === "/domains") {

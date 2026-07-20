@@ -39,6 +39,7 @@ import { isBinaryUploadRequest, shouldParseJsonRequest } from "./upload-request.
 import { registerDeviceAuthRoutes } from "./device-auth-routes.js";
 import { ManorSessionTitleGenerator, readSessionTitleConfig } from "./session-title-generator.js";
 import { ManorModelTaskRunner } from "./model-task-runner.js";
+import { ContentAdmissionReviewService, setActiveContentAdmissionReviewService } from "./content-admission-review.js";
 import { VisionInspectionService } from "./vision-inspection.js";
 import { configureSelfImprovementRequestState, SelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { configureSelfImprovementPairCleanup, reconcileInterruptedSelfImprovementRequests } from "./self-improvement-actions.js";
@@ -133,6 +134,9 @@ configureSelfImprovementRequestState(selfImprovementRequests);
 const piAuthPath = path.join(piAgentDir, "auth.json"); const workerPiAuthPath = path.join(workerPiAgentDir, "auth.json");
 const modelUsageStore = createModelUsageStore({ stateDir, butlerSessionRoots: [sessionDir, pairSessionDir], workerPiSessionRoot, piAuthPath });
 const modelTasks = new ManorModelTaskRunner({ stateDir, piAuthPath }); const visionInspection = new VisionInspectionService({ imageStore, piAuthPath });
+const contentAdmission = new ContentAdmissionReviewService(path.join(stateDir, "content-admission-reviews.json"), modelTasks, undefined, path.join(path.dirname(harnessRegistryPath), "content-admission-policy.json"));
+await contentAdmission.load();
+setActiveContentAdmissionReviewService(contentAdmission);
 const sessionTitleGenerator = new ManorSessionTitleGenerator({
   ...readSessionTitleConfig(),
   runner: async (input) => modelTasks.runText({ purpose: "session title", ...input })
@@ -152,7 +156,7 @@ store.setMemoryUpdateObserver(memoryScheduler); const harnessService = new Harne
   serviceTemplateRegistry,
   memoryReview,
   memoryScheduler,
-  visionInspection, inputActionAccess: { fileStore, imageStore, referenceMutations, outputsDir: process.env.MANOR_OUTPUTS_DIR ?? "/outputs" }
+  visionInspection, contentAdmission, inputActionAccess: { fileStore, imageStore, referenceMutations, outputsDir: process.env.MANOR_OUTPUTS_DIR ?? "/outputs" }
 });
 memoryReview.reviewPendingReportsAsync();
 memoryScheduler.start();
@@ -251,7 +255,7 @@ const reconcileSelfImprovementAfterRestart = (canConcludeThreadMissing: (threadI
   });
   return selfImprovementReconciliation;
 };
-const applyManagedSettingsChange = createManorSettingsApplyHandler({ settingsService, applyBackgroundSettings, sessionTitleGenerator, piRpcWorkerClient, butlerAgent, pairSessions, pairStore, store, getSseHub: () => sseHub });
+const applyManagedSettingsChange = createManorSettingsApplyHandler({ settingsService, applyBackgroundSettings, sessionTitleGenerator, piRpcWorkerClient, butlerAgent, pairSessions, pairStore, store, getSseHub: () => sseHub, syncContentAdmissionPolicy: () => contentAdmission.syncPolicy() });
 runtimeAccess = {
   artifactsDir,
   butlerAgent,

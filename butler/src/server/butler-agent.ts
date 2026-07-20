@@ -687,8 +687,8 @@ export class ButlerAgentService extends EventEmitter {
     if (activeTools.has("inspect_images")) base.push({ name: "inspect_images", label: "Inspect images", description: "Inspect attached images through the configured vision companion.", uiEffects: [] });
     if (activeTools.has(PROVIDER_WEB_SEARCH_TOOL_NAME) && activeTools.has(PROVIDER_WEB_FETCH_TOOL_NAME)) {
       base.push(
-        { name: PROVIDER_WEB_SEARCH_TOOL_NAME, label: "Web Search", description: "Search the web using the provider configured for the current Butler model.", uiEffects: [] },
-        { name: PROVIDER_WEB_FETCH_TOOL_NAME, label: "Web Fetch", description: "Fetch a web page using the provider configured for the current Butler model.", uiEffects: [] }
+        { name: PROVIDER_WEB_SEARCH_TOOL_NAME, label: "Web Search", description: "Search the web using the provider configured for the current Butler model. Results pass through Content Admission Review and may be warned or withheld.", uiEffects: [] },
+        { name: PROVIDER_WEB_FETCH_TOOL_NAME, label: "Web Fetch", description: "Fetch a web page using the provider configured for the current Butler model. Results pass through Content Admission Review and may be warned or withheld.", uiEffects: [] }
       );
     }
     return base;

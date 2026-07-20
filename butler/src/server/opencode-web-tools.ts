@@ -34,7 +34,7 @@ export const OPENCODE_WEB_FETCH_TOOL_NAME = "web_fetch";
 
 export const OPENCODE_WEB_SEARCH_TOOL: Tool = {
   name: OPENCODE_WEB_SEARCH_TOOL_NAME,
-  description: "Search the web using Exa's MCP service. Use this for current facts, recent events, prices, schedules, docs, or external sources.",
+  description: "Search the web using Exa's MCP service. Results use a structured Content Admission Review envelope and may be warned or withheld.",
   parameters: Type.Object({
     query: Type.String({ minLength: 1, description: "The web search query." }),
     max_results: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: "Maximum number of results to return. Defaults to Manor's configured value; max 10." }))
@@ -43,7 +43,7 @@ export const OPENCODE_WEB_SEARCH_TOOL: Tool = {
 
 export const OPENCODE_WEB_FETCH_TOOL: Tool = {
   name: OPENCODE_WEB_FETCH_TOOL_NAME,
-  description: "Fetch a specific HTTP or HTTPS page directly after a search result looks relevant.",
+  description: "Fetch a specific HTTP or HTTPS page after a search result looks relevant. Results use a structured Content Admission Review envelope and may be warned or withheld.",
   parameters: Type.Object({
     url: Type.String({ minLength: 1, description: "The URL to fetch." })
   }) as never
@@ -52,7 +52,6 @@ export const OPENCODE_WEB_FETCH_TOOL: Tool = {
 const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
-const ERROR_PREVIEW_CHARS = 1_000;
 const SEARCH_TIMEOUT_MAX_MS = 25_000;
 const FETCH_TIMEOUT_MAX_MS = 120_000;
 const BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
@@ -124,9 +123,7 @@ async function withRequestTimeout<T>(label: string, timeoutMs: number, work: (si
 
 function mcpProviderError(value: unknown): Error | null {
   if (!isRecord(value) || !isRecord(value.error)) return null;
-  const message = typeof value.error.message === "string" ? value.error.message : "unknown provider error";
-  const code = typeof value.error.code === "number" || typeof value.error.code === "string" ? ` (${value.error.code})` : "";
-  return new Error(`Exa web_search failed${code}: ${truncateText(message, ERROR_PREVIEW_CHARS)}`);
+  return new Error("Exa web_search provider returned an error.");
 }
 
 function parseMcpPayload(payload: string): string {
@@ -146,7 +143,7 @@ function parseMcpPayload(payload: string): string {
     .map((item) => typeof item.text === "string" ? item.text : "")
     .find(Boolean) ?? "";
   if (value.result.isError === true) {
-    throw new Error(`Exa web_search failed: ${truncateText(text || "provider returned an error", ERROR_PREVIEW_CHARS)}`);
+    throw new Error("Exa web_search provider returned an error.");
   }
   return text || "No search results found. Please try a different query.";
 }
@@ -259,11 +256,11 @@ async function fetchDirectUrl(url: URL, signal: AbortSignal, fetchImpl: FetchLik
 
   const body = await readResponseTextWithinLimit(response, "web_fetch");
   if (!response.ok) {
-    throw new Error(`web_fetch failed with HTTP ${response.status}: ${truncateText(body, ERROR_PREVIEW_CHARS)}`);
+    throw new Error(`web_fetch failed with HTTP ${response.status}.`);
   }
   const contentType = response.headers.get("content-type") ?? "";
   if (!isTextContentType(contentType)) {
-    throw new Error(`web_fetch returned unsupported content type ${contentType || "unknown"}.`);
+    throw new Error("web_fetch returned an unsupported content type.");
   }
   const finalUrl = response.url || url.toString();
   const isHtml = contentType.toLowerCase().includes("text/html");
@@ -327,7 +324,7 @@ export async function opencodeWebSearch(
     });
     const body = await readResponseTextWithinLimit(response, "web_search");
     if (!response.ok) {
-      throw new Error(`Exa web_search failed with HTTP ${response.status}: ${truncateText(body, ERROR_PREVIEW_CHARS)}`);
+      throw new Error(`Exa web_search failed with HTTP ${response.status}.`);
     }
     const content = truncateText(parseMcpResponse(body), config.maxContentChars);
     return { content, results: structuredSearchResults(content) };

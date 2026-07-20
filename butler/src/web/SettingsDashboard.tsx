@@ -61,6 +61,7 @@ const GROUP_LABELS: Record<SettingsGroupKey, string> = {
   "providers.opencodeGo": "OpenCode Go",
   worker: "Worker",
   butler: "Butler",
+  security: "External content review",
   vision: "Vision assistance",
   modelTasks: "Model tasks",
   memory: "Memory",
@@ -91,19 +92,18 @@ const VALIDATION_LABELS: Record<SettingsValidationKey, string> = {
   memoryEmbeddings: "Embeddings"
 };
 
-export type SettingsSectionId = "runtime" | "network" | "providers" | "usage" | "skills" | "memory" | "diagnostics";
+export type SettingsSectionId = "runtime" | "security" | "providers" | "usage" | "skills" | "memory" | "diagnostics";
 export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; description: string }[] = [
   { id: "runtime", label: "Runtime", description: "Operator, Worker, vision, and titles" },
-  { id: "network", label: "Network", description: "Runtime internet access" },
+  { id: "security", label: "Security", description: "Content admission and runtime egress" },
   { id: "providers", label: "Providers", description: "Model and tool access" },
   { id: "usage", label: "Usage", description: "Model tokens and estimated spend" },
   { id: "skills", label: "Skills", description: "Browse, install, and edit agent skills" },
   { id: "memory", label: "Memory", description: "Models, synthesis, and embeddings" },
   { id: "diagnostics", label: "Diagnostics", description: "Connection tests" }
 ];
-
 const SECTION_HELP: Record<SettingsSectionId, string> = {
-  network: "Allow or remove trusted internet hosts for the shared Butler and Worker runtime.",
+  security: "Configure Manor's inbound content review and optional outbound network restrictions.",
   providers: "Configure the model providers (OpenAI, Ollama Local, Ollama Cloud, OpenCode Go) and web tools Butler can use.",
   usage: "Review recorded model tokens, known costs, and subscription usage across Butler and Workers.",
   skills: "Browse and manage the skills available to Butler and Worker.",
@@ -111,7 +111,6 @@ const SECTION_HELP: Record<SettingsSectionId, string> = {
   memory: "Choose the models and behavior used to synthesize, promote, and connect memory.",
   diagnostics: "Run connection checks for the services Butler depends on."
 };
-
 function cloneSettings(settings: ManorSettings): ManorSettings {
   return JSON.parse(JSON.stringify(settings)) as ManorSettings;
 }
@@ -323,7 +322,6 @@ function taskRouteHint(value: string | null, models: ModelOption[], automaticHin
 function seconds(milliseconds: number): number {
   return Math.max(1, Math.round(milliseconds / 1000));
 }
-
 function formatBytes(value: number): string {
   if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
@@ -609,7 +607,6 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
   const taskModels = useMemo(() => payload?.availableModels.modelTasks ?? [], [payload]);
   const visionModels = useMemo(() => payload?.availableModels.vision ?? [], [payload]);
   const workerModels = useMemo(() => payload?.availableModels.worker.availableModels ?? [], [payload]);
-
   const dirty = Boolean(draft && payload && !settingsEqual(draft, payload.settings));
 
   const load = useCallback(async () => {
@@ -934,8 +931,6 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
 
   if (activeSection === "skills") return <SkillsDashboard active={active} />;
   if (activeSection === "usage") return <UsageDashboard active={active} />;
-  if (activeSection === "network") return <RuntimeEgressDashboard active={active} />;
-
   if (!draft || !payload) {
     return (
       <div className="settings-page">
@@ -949,6 +944,10 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
     [draft.providers.ollamaCloud.providerId]: "ollama",
     [draft.providers.opencodeGo.providerId]: "opencode"
   };
+  const automaticContentAdmissionModel = taskModels.find((model) => {
+    const availability = payload.modelTaskProviderAvailability[(model.provider ?? "openai-codex") as ProviderKey];
+    return Boolean(availability?.enabled && availability.secretAvailable);
+  }) ?? null;
 
   const savedMessage = message === "Saved" || message === "Reset complete" ? message : null;
   const errorMessage = message && !savedMessage ? message : null;
@@ -972,6 +971,47 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
     <div className="settings-page">
       <div className="settings-content">
         {errorMessage ? <div className="settings-error settings-feedback"><WarningIcon />{errorMessage}</div> : null}
+        {activeSection === "security" ? <Section id="security" title="Security" actions={settingsActions()}>
+          <SubGroup
+            title={GROUP_LABELS.security}
+            actions={<button className="button is-small" type="button" onClick={() => void restoreGroup("security")} disabled={saving || testing}>Restore defaults</button>}
+          >
+            <p className="settings-subgroup-copy">CAR checks bounded external content before Manor passes it to Butler or Worker. It runs during interactive work and automations without asking for confirmation.</p>
+            <Field label="CAR behavior" hint="Applies to new content at Manor's standard repository, provider web search/fetch, and browser admission points. Cached content keeps its existing verdict.">
+              <select value={draft.security.contentAdmissionMode} onChange={(event) => update((s) => { s.security.contentAdmissionMode = event.target.value as ManorSettings["security"]["contentAdmissionMode"]; })}>
+                <option value="review">Review — warn and continue</option>
+                <option value="enforce">Enforce — block hostile delivery</option>
+                <option value="off">Off — no admission review</option>
+              </select>
+            </Field>
+            <p className="settings-subgroup-copy">
+              {draft.security.contentAdmissionMode === "review"
+                ? "Flags suspicious or hostile content and keeps unattended work moving."
+                : draft.security.contentAdmissionMode === "enforce"
+                  ? "Withholds hostile web and browser content. Hostile repository imports fail after review and remain visible on disk for inspection or removal."
+                  : "Passes external content through without review."}
+            </p>
+            <ModelSelectField
+              label="CAR reviewer model"
+              hint={draft.security.contentAdmissionModel ? `${taskRouteHint(draft.security.contentAdmissionModel, taskModels, "Manor uses the selected model for every new CAR verdict.")} Web tools are disabled for this task.` : automaticContentAdmissionModel ? `Automatic currently starts with ${automaticContentAdmissionModel.label} (${modelOptionValue(automaticContentAdmissionModel as ModelPickerOption)}). Manor uses the first authenticated background model available. Web tools are disabled for this task.` : "Automatic uses the first authenticated background model when one becomes available. Web tools are disabled for this task."}
+              value={draft.security.contentAdmissionModel}
+              models={taskModels}
+              available={payload.modelTaskProviderAvailability}
+              providerSettingsTabs={providerSettingsTabs}
+              onChange={(value) => update((s) => { s.security.contentAdmissionModel = value; })}
+              automaticLabel="Automatic model"
+            />
+            <div className="settings-scope-grid" aria-label="Content Admission Review scope">
+              <div className="settings-scope-card">
+                <strong>CAR applies to</strong><p>Standard repository clone and update snapshots, provider web search and fetch results, and browser page or action content.</p>
+              </div>
+              <div className="settings-scope-card">
+                <strong>CAR does not apply to</strong><p>Package managers, custom network clients, mounted or manually added files, direct file reads, and content outside the bounded snapshot sent for review.</p>
+              </div>
+            </div>
+          </SubGroup>
+          <RuntimeEgressDashboard active={active} />
+        </Section> : null}
         {activeSection === "providers" ? <Section id="providers" title="Providers" actions={settingsActions()}>
           <div className="settings-provider-tabs">
             <button className={`settings-provider-tab ${providerTab === "openai" ? "is-active" : ""}`} type="button" onClick={() => setProviderTab("openai")}>OpenAI</button>
