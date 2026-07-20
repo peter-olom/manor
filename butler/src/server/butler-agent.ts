@@ -118,9 +118,6 @@ import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { PreviewLeaseView, PreviewProofRecordView, PreviewVerificationArtifactView, PreviewVerificationView, ProjectMemoryView } from "./types.js";
 const CALLBACK_RECOVERY_TIMEOUT_MS = 30_000;
 import { readPersistedTrace, readPersistedTraceMeta } from "./butler-trace-persistence.js";
-function isButlerAuthRecoveryError(message: string | null): boolean {
-  return typeof message === "string" && /\b(auth|authentication|token|signing in)\b/i.test(message);
-}
 import { ButlerTraceBuffer } from "./butler-trace-buffer.js";
 import { ActivityWatchdogService } from "./activity-watchdog.js"; import { ButlerDelegationWatchdogs } from "./butler-delegation-watchdog.js";
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
@@ -641,7 +638,6 @@ export class ButlerAgentService extends EventEmitter {
   private async refreshExternalStatus(): Promise<void> { if (this.quiescing) return;
     const nextAuth = await readButlerAuthStatus(this.piAuthPath);
     const nextCodexAuth = await this.piRpcWorkerClient?.getAuthStatus() ?? { mode: "none" as const, loggedIn: false, validationError: "Pi Worker runtime is not available", lastValidatedAt: Date.now() }; if (this.quiescing) return;
-    const clearedStaleAuthError = nextAuth.loggedIn && isButlerAuthRecoveryError(this.lastError);
     const authChanged =
       nextAuth.mode !== this.auth.mode ||
       nextAuth.loggedIn !== this.auth.loggedIn ||
@@ -661,9 +657,6 @@ export class ButlerAgentService extends EventEmitter {
       await this.createOrRefreshSession(); if (this.quiescing) return;
     }
     if (authChanged) this.resetCallbackReviewFailures();
-    if (clearedStaleAuthError) {
-      this.lastError = null;
-    }
     this.workerAuth = nextCodexAuth;
 
     const nextOnboarding = await buildOnboardingView({
@@ -673,7 +666,7 @@ export class ButlerAgentService extends EventEmitter {
       workerOpenAiRequired: workerOpenAiOnboardingRequired(this.getWorkerDefaults(), getActiveManorSettings())
     }); if (this.quiescing) return;
 
-    if (JSON.stringify(nextOnboarding) !== JSON.stringify(this.onboarding) || authChanged || clearedStaleAuthError) {
+    if (JSON.stringify(nextOnboarding) !== JSON.stringify(this.onboarding) || authChanged) {
       this.onboarding = nextOnboarding;
       this.emit("change");
     }

@@ -7,6 +7,7 @@ import { WarningIcon } from "./icons";
 import { SkillsDashboard } from "./SkillsDashboard";
 import { RuntimeEgressDashboard } from "./RuntimeEgressDashboard";
 import { UsageDashboard } from "./UsageDashboard";
+import { authActionLabel, authUsageHint, formatAuthSummary, type AuthStatusView, type AuthTarget } from "./openai-auth-settings";
 import {
   workerModelForRoute,
   workerModelForSelection,
@@ -34,7 +35,6 @@ type ModelOption = {
     source: "override" | "provider" | "manifest" | "unknown";
   };
 };
-type AuthStatusView = { mode: "chatgpt" | "api" | "none" | "unknown"; loggedIn: boolean; validationError: string | null; lastValidatedAt: number | null };
 type OllamaPullEvent = { status?: string; digest?: string; total?: number; completed?: number; error?: string; warning?: boolean; done?: boolean };
 type SettingsResponse = {
   settings: ManorSettings;
@@ -140,14 +140,6 @@ function groupModelsByProvider(models: ModelOption[]): { provider: string; optio
 
 function StatusPill({ status }: { status: string }) {
   return <span className={`settings-status is-${status}`}>{status.replace(/_/g, " ")}</span>;
-}
-
-function formatAuthSummary(auth?: AuthStatusView): string {
-  if (!auth) return "Unknown";
-  if (!auth.loggedIn) return auth.validationError ? `Not signed in — ${auth.validationError}` : "Not signed in";
-  if (auth.mode === "chatgpt") return "Signed in with ChatGPT";
-  if (auth.mode === "api") return "Signed in with API key";
-  return "Signed in";
 }
 
 function Field({
@@ -726,7 +718,7 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
     }
   }
 
-  async function startAuth(target: "butler" | "worker") {
+  async function startAuth(target: AuthTarget) {
     setAuthPending(true);
     setAuthTarget(target);
     setAuthError(null);
@@ -1030,26 +1022,22 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
                   <button className="button" type="button" onClick={() => void refreshAuth()}>I've signed in — refresh</button>
                 </div>
               ) : null}
-              <Field label="Butler" hint="OpenAI authentication used by Butler chat.">
+              <Field label="Butler" hint={authUsageHint("butler", payload.openaiAuth.butler)}>
                 <input readOnly value={formatAuthSummary(payload.openaiAuth.butler)} />
               </Field>
-              {!payload.openaiAuth.butler.loggedIn ? (
-                <div className="settings-auth-actions">
-                  <button className="button is-primary" type="button" onClick={() => void startAuth("butler")} disabled={authPending}>
-                    {authPending && authTarget === "butler" ? "Starting…" : "Connect Butler"}
-                  </button>
-                </div>
-              ) : null}
-              <Field label="Worker" hint="OpenAI authentication used by Pi Worker sessions.">
+              <div className="settings-auth-actions">
+                <button className={`button ${payload.openaiAuth.butler.loggedIn ? "" : "is-primary"}`} type="button" onClick={() => void startAuth("butler")} disabled={authPending}>
+                  {authPending && authTarget === "butler" ? "Starting…" : authActionLabel("butler", payload.openaiAuth.butler)}
+                </button>
+              </div>
+              <Field label="Worker" hint={authUsageHint("worker", payload.openaiAuth.worker)}>
                 <input readOnly value={formatAuthSummary(payload.openaiAuth.worker)} />
               </Field>
-              {!payload.openaiAuth.worker.loggedIn ? (
-                <div className="settings-auth-actions">
-                  <button className="button is-primary" type="button" onClick={() => void startAuth("worker")} disabled={authPending}>
-                    {authPending && authTarget === "worker" ? "Starting…" : "Connect Worker"}
-                  </button>
-                </div>
-              ) : null}
+              <div className="settings-auth-actions">
+                <button className={`button ${payload.openaiAuth.worker.loggedIn ? "" : "is-primary"}`} type="button" onClick={() => void startAuth("worker")} disabled={authPending}>
+                  {authPending && authTarget === "worker" ? "Starting…" : authActionLabel("worker", payload.openaiAuth.worker)}
+                </button>
+              </div>
               <Field label="Web tools" hint="Web search/fetch is built into ChatGPT — no separate config needed.">
                 <input readOnly value="Built into ChatGPT" />
               </Field>

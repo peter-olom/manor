@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
@@ -25,7 +25,7 @@ async function waitForFile(filePath: string): Promise<void> {
   throw new Error(`Timed out waiting for ${filePath}`);
 }
 
-test("Worker device auth uses only the Worker Pi auth store", async (t) => {
+test("Worker device auth replaces existing credentials in only the Worker Pi auth store", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "manor-device-auth-"));
   const butlerPiAgentDir = path.join(root, "butler");
   const workerPiAgentDir = path.join(root, "worker");
@@ -34,6 +34,10 @@ test("Worker device auth uses only the Worker Pi auth store", async (t) => {
     exp: Math.floor(Date.now() / 1000) + 3600,
     "https://api.openai.com/auth": { chatgpt_account_id: "account-1" }
   });
+  await mkdir(workerPiAgentDir, { recursive: true });
+  await writeFile(path.join(workerPiAgentDir, "auth.json"), JSON.stringify({
+    "openai-codex": { type: "oauth", access: "old-access", refresh: "old-refresh" }
+  }), "utf8");
   await writeFile(loginScript, `
     import { mkdir, writeFile } from "node:fs/promises";
     import path from "node:path";
@@ -75,6 +79,7 @@ test("Worker device auth uses only the Worker Pi auth store", async (t) => {
   const workerAuthPath = path.join(workerPiAgentDir, "auth.json");
   await waitForFile(workerAuthPath);
   assert.match(await readFile(workerAuthPath, "utf8"), /worker-refresh-token/);
+  assert.doesNotMatch(await readFile(workerAuthPath, "utf8"), /old-refresh/);
   await assert.rejects(readFile(path.join(butlerPiAgentDir, "auth.json"), "utf8"), { code: "ENOENT" });
 
   const statusResponse = await fetch(`http://127.0.0.1:${port}/api/auth/worker/status`);

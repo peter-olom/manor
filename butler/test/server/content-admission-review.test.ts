@@ -59,6 +59,26 @@ test("Content Admission Review caches exact content without persisting raw conte
   assert.doesNotMatch(await readFile(file, "utf8"), /private raw payload/);
 });
 
+test("trusted CAR control metadata includes review confidence and cache state", async () => {
+  const service = new ContentAdmissionReviewService(await statePath(), runner(clearReview), () => "review");
+  await service.load();
+  const first = JSON.parse(formatContentAdmissionNotice(await service.admit("repository", "normal repository"))) as {
+    manorContentAdmission: { confidence: number; cached: boolean };
+  };
+  const second = JSON.parse(formatContentAdmissionNotice(await service.admit("repository", "normal repository"))) as {
+    manorContentAdmission: { confidence: number; cached: boolean };
+  };
+  assert.deepEqual(first.manorContentAdmission, {
+    schema: "manor.content_admission.v1",
+    disposition: "admitted",
+    verdict: "clear",
+    confidence: 0.98,
+    cached: false,
+    message: null
+  });
+  assert.equal(second.manorContentAdmission.cached, true);
+});
+
 test("Content Admission Review warns once per content identity in a running appliance", async () => {
   const suspicious = { verdict: "suspicious", confidence: 0.9, evidence: [{ excerpt: "do this", explanation: "Instruction-like." }], explanation: "Instruction-like content.", safeSummary: "A page." };
   const service = new ContentAdmissionReviewService(await statePath(), runner(suspicious), () => "review");

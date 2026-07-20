@@ -41,11 +41,12 @@ fi
 review_paths=()
 case "${command_name}" in
   clone)
-    destination="${args[-1]}"
+    destination="${args[$((${#args[@]} - 1))]}"
     if [[ "${destination}" == *"://"* || "${destination}" == *"@"*:* || "${destination}" == *.git ]]; then
       destination="$(basename "${destination}" .git)"
     fi
-    review_path="$(cd "${git_cwd}/${destination}" 2>/dev/null && pwd || true)"
+    if [[ "${destination}" == /* ]]; then review_target="${destination}"; else review_target="${git_cwd}/${destination}"; fi
+    review_path="$(cd "${review_target}" 2>/dev/null && pwd || true)"
     [[ -n "${review_path}" ]] && review_paths+=("${review_path}")
     ;;
   fetch|pull|checkout|switch|merge|rebase|reset|restore|cherry-pick)
@@ -74,6 +75,29 @@ case "${command_name}" in
     ;;
 esac
 
+if (( ${#review_paths[@]} == 0 )); then exit 0; fi
+
+admission_batch="$(mktemp -t manor-git-admission-batch.XXXXXX)"
+admission_status=0
 for review_path in "${review_paths[@]}"; do
-  /usr/local/bin/node "${hook}" "${review_path}" "${before_refs}" "git ${command_name}${subcommand:+ ${subcommand}}"
+  admission_output="$(mktemp -t manor-git-admission.XXXXXX)"
+  set +e
+  /usr/local/bin/node "${hook}" "${review_path}" "${before_refs}" "git ${command_name}${subcommand:+ ${subcommand}}" >"${admission_output}" 2>&1
+  current_status=$?
+  set -e
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    printf '%s\n' "${line}" >>"${admission_batch}"
+  done <"${admission_output}"
+  rm -f "${admission_output}"
+  if (( current_status != 0 && admission_status == 0 )); then admission_status="${current_status}"; fi
 done
+
+frame_nonce="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+printf '\nMANOR_GIT_CONTROL_BEGIN %s\n' "${frame_nonce}" >&2
+while IFS= read -r line || [[ -n "${line}" ]]; do
+  printf '%s\n' "${line}" >&2
+done <"${admission_batch}"
+printf 'MANOR_GIT_CONTROL_END %s\n' "${frame_nonce}" >&2
+rm -f "${admission_batch}"
+
+if (( admission_status != 0 )); then exit "${admission_status}"; fi

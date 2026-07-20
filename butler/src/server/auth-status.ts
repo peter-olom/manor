@@ -41,30 +41,17 @@ function getAccountId(accessToken: string): string | null {
   return typeof accountId === "string" && accountId.length > 0 ? accountId : null;
 }
 
-function getExpiry(accessToken: string): number | null {
-  const payload = decodeJwt(accessToken);
-  const exp = payload?.exp;
-  return typeof exp === "number" ? exp * 1000 : null;
-}
-
 function validateChatGptAuth(accessToken: string | undefined, refreshToken: string | undefined): ButlerAuthStatus {
   if (!accessToken || !refreshToken) {
     return buildAuthStatus("chatgpt", false, "Stored ChatGPT credentials are incomplete.");
-  }
-
-  const expiresAt = getExpiry(accessToken);
-  if (!expiresAt) {
-    return buildAuthStatus("chatgpt", false, "Stored ChatGPT access token could not be decoded.");
-  }
-
-  if (expiresAt <= Date.now() + 60_000) {
-    return buildAuthStatus("chatgpt", false, "Stored ChatGPT access token is expired or about to expire.");
   }
 
   if (!getAccountId(accessToken)) {
     return buildAuthStatus("chatgpt", false, "Stored ChatGPT access token is missing the expected account binding.");
   }
 
+  // Pi owns token expiry checks, locked refresh, and credential rotation when a
+  // model request needs authentication. This local status must stay read-only.
   return buildAuthStatus("chatgpt", true);
 }
 

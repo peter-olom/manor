@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { admitContentThroughButler } from "./content-admission-client.js";
-import { formatContentAdmissionNotice } from "./content-admission-review.js";
+import { formatContentAdmissionNotice, type ContentAdmissionResult } from "./content-admission-review.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_SNAPSHOT_CHARS = 48_000;
@@ -98,13 +98,17 @@ export async function enforcementEnabled(policyPath = process.env.MANOR_CONTENT_
   return policy.mode === "enforce";
 }
 
+export function repositoryAdmissionOutput(result: ContentAdmissionResult): string {
+  return `${formatContentAdmissionNotice(result)}\n`;
+}
+
 async function main(): Promise<void> {
   const cwd = process.argv[2] || process.cwd();
   const beforeRefsPath = process.argv[3] || undefined;
   const operation = process.argv[4] || "git content update";
   const snapshot = await repositorySnapshot(cwd, beforeRefsPath, operation);
   const result = await admitContentThroughButler("repository", snapshot, `${cwd} ${operation}`);
-  if (result.notified) process.stdout.write(`${formatContentAdmissionNotice(result)}\n`);
+  process.stdout.write(repositoryAdmissionOutput(result));
   if (!result.admitted) process.exitCode = 78;
 }
 

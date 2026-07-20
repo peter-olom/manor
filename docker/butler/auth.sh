@@ -37,8 +37,6 @@ const fs = require("fs");
 const path = require("path");
 
 const authPath = path.join(process.env.PI_AGENT_DIR || "", "auth.json");
-const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-const TOKEN_URL = "https://auth.openai.com/oauth/token";
 const JWT_CLAIM_PATH = "https://api.openai.com/auth";
 
 function decodeJwt(token) {
@@ -61,49 +59,17 @@ function getAccountId(accessToken) {
   return typeof accountId === "string" && accountId.length > 0 ? accountId : null;
 }
 
-async function main() {
+function main() {
   const data = JSON.parse(fs.readFileSync(authPath, "utf8"));
   const codexAuth = data["openai-codex"];
 
-  if (codexAuth?.type === "oauth" && codexAuth.refresh) {
-    try {
-      const response = await fetch(TOKEN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: codexAuth.refresh,
-          client_id: CLIENT_ID
-        })
-      });
-
-      if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        console.log(`Butler ChatGPT credentials are stale. ${text.includes("refresh_token_reused") ? "Sign in again." : "Refresh failed."}`);
-        process.exit(1);
-      }
-
-      const refreshed = await response.json();
-      const accountId = getAccountId(refreshed.access_token);
-      if (!refreshed.access_token || !refreshed.refresh_token || typeof refreshed.expires_in !== "number" || !accountId) {
-        console.log("Butler ChatGPT credentials are incomplete. Sign in again.");
-        process.exit(1);
-      }
-
-      data["openai-codex"] = {
-        type: "oauth",
-        access: refreshed.access_token,
-        refresh: refreshed.refresh_token,
-        expires: Date.now() + refreshed.expires_in * 1000,
-        accountId
-      };
-      fs.writeFileSync(authPath, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
+  if (codexAuth?.type === "oauth") {
+    if (codexAuth.access && codexAuth.refresh && getAccountId(codexAuth.access)) {
       console.log("Logged in to Butler using ChatGPT.");
       process.exit(0);
-    } catch {
-      console.log("Butler ChatGPT credentials could not be verified.");
-      process.exit(1);
     }
+    console.log("Butler ChatGPT credentials are incomplete. Sign in again.");
+    process.exit(1);
   }
 
   if (data.openai?.type === "api_key" && data.openai?.key) {
@@ -114,9 +80,11 @@ async function main() {
   console.log("Not logged in.");
 }
 
-main().catch(() => {
+try {
+  main();
+} catch {
   console.log("Not logged in.");
-});
+}
 EOF
 }
 
@@ -196,7 +164,7 @@ case "${command_name}" in
     write_api_key_auth
     ;;
   device)
-    exec env NODE_NO_WARNINGS=1 node /usr/local/bin/butler-chatgpt-login.mjs
+    exec env NODE_NO_WARNINGS=1 BUTLER_APP_DIR="${BUTLER_APP_DIR:-/opt/manor/butler}" node /usr/local/bin/butler-chatgpt-login.mjs
     ;;
   *)
     usage

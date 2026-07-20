@@ -141,6 +141,8 @@ function controlFor(result: ContentAdmissionResult): Record<string, unknown> {
     schema: "manor.content_admission.v1",
     disposition,
     verdict: result.review?.verdict ?? null,
+    confidence: result.review?.confidence ?? null,
+    cached: result.cached,
     message
   };
 }

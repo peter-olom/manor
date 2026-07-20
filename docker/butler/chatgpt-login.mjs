@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 import { createHash, randomBytes } from "node:crypto";
-import { promises as fs } from "node:fs";
 import { createServer } from "node:http";
 import { createInterface } from "node:readline/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import process from "node:process";
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -222,20 +222,10 @@ function createManualInputPrompt() {
   return { promise, close };
 }
 
-async function loadAuth(authPath) {
-  try {
-    return JSON.parse(await fs.readFile(authPath, "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-async function saveAuth(authPath, entry) {
-  const current = await loadAuth(authPath);
-  current["openai-codex"] = entry;
-
-  await fs.mkdir(path.dirname(authPath), { recursive: true, mode: 0o700 });
-  await fs.writeFile(authPath, `${JSON.stringify(current, null, 2)}\n`, { mode: 0o600 });
+export async function saveChatGptAuth(authPath, entry, appDir = process.env.BUTLER_APP_DIR || "/opt/manor/butler") {
+  const piEntry = path.join(appDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js");
+  const { AuthStorage } = await import(pathToFileURL(piEntry).href);
+  AuthStorage.create(authPath).set("openai-codex", entry);
 }
 
 async function main() {
@@ -285,7 +275,7 @@ async function main() {
       throw new Error("Failed to extract the ChatGPT account id from the token.");
     }
 
-    await saveAuth(authPath, {
+    await saveChatGptAuth(authPath, {
       type: "oauth",
       access: tokens.access,
       refresh: tokens.refresh,
@@ -300,7 +290,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}
