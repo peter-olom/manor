@@ -1,7 +1,7 @@
 import { Type } from "@sinclair/typebox";
 
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
-import type { ManorRestartRun } from "./host-controller-client.js";
+import type { ManorRestartRun, ManorSourceState } from "./host-controller-client.js";
 import { formatElapsedTaskTime } from "./task-timing.js";
 
 function formatRestartRequestTarget(request: {
@@ -34,6 +34,19 @@ function formatRestartRun(run: ManorRestartRun): string {
   ]
     .filter((line): line is string => Boolean(line))
     .join("\n");
+}
+
+function formatSourceState(state: ManorSourceState): string {
+  const changed = state.checkout.changedFileCount === 0
+    ? "clean"
+    : `${state.checkout.changedFileCount} pending local change${state.checkout.changedFileCount === 1 ? "" : "s"}`;
+  const runtimeServices = state.runtime.services.map((service) => service.service).join(", ") || "none";
+  return [
+    state.runtime.summary,
+    `Active checkout: ${state.checkout.head.slice(0, 12)} (${changed}).`,
+    `Running source-built services checked: ${runtimeServices}.`,
+    "This source comparison is authoritative. Restart history is separate and does not determine what source is currently running."
+  ].join("\n");
 }
 
 export function buildButlerManorTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
@@ -100,6 +113,22 @@ export function buildButlerManorTools(access: ButlerAgentToolAccess): ButlerCust
         return {
           content: [{ type: "text", text }],
           details: { status }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "read_manor_source_state",
+      label: "Runtime source state",
+      description: "Compare the active Manor checkout, including pending local changes, with the source provenance embedded in the running Manor services.",
+      promptSnippet:
+        "read_manor_source_state: use whenever the operator asks what source or pending local changes Manor is currently running. Treat this result as authoritative. Do not infer runtime source from read_manor_restart_status or from an earlier failed restart.",
+      parameters: Type.Object({}),
+      uiEffects: access.getToolUiEffects("read_manor_source_state"),
+      execute: async () => {
+        const state = await access.hostController.getSourceState();
+        return {
+          content: [{ type: "text", text: formatSourceState(state) }],
+          details: { state }
         };
       }
     })

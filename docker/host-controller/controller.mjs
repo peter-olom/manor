@@ -11,7 +11,7 @@ import {
   shouldBuildSourceImages,
   validateRestartPayload
 } from "./controller-policy.mjs";
-
+import { readManorSourceState, readSourceProvenance, sourceProvenanceEnv } from "./source-state.mjs";
 const port = Number(process.env.MANOR_HOST_CONTROLLER_PORT ?? "8092");
 const manorDir = path.resolve(process.env.MANOR_HOST_PROJECT_DIR ?? process.cwd());
 const stateDir = path.resolve(process.env.MANOR_HOST_CONTROLLER_STATE_DIR ?? "/state");
@@ -145,7 +145,8 @@ function commandEnv(run) {
   return {
     ...process.env,
     COMPOSE_PROJECT_NAME: composeProjectName,
-    MANOR_PI_AUTO_UPDATE: "0"
+    MANOR_PI_AUTO_UPDATE: "0",
+    ...sourceProvenanceEnv(run?.sourceProvenance)
   };
 }
 
@@ -521,13 +522,19 @@ async function buildSourceImages(run) {
   if (run.build === false) {
     return;
   }
+  run.sourceProvenance = {
+    ...await readSourceProvenance(commandOutput, manorDir),
+    builtAt: new Date().toISOString()
+  };
   const args = [
     ...composeArgs(run.includeDesktop),
     "build",
     ...sourceBuildServices,
     ...(run.includeDesktop ? ["desktop-proof"] : [])
   ];
-  await runSourceImageBuildWithRetry(run, "Build source images", args);
+  await runSourceImageBuildWithRetry(run, "Build source images", args, {
+    env: sourceProvenanceEnv(run.sourceProvenance)
+  });
 }
 
 function failedStepOutput(error) {
@@ -610,6 +617,7 @@ async function prepareCleanHeadSource(run) {
   const cleanDir = await fs.mkdtemp(path.join(fallbackParent, "head-"));
   const archivePath = `${cleanDir}.tar`;
   try {
+    const head = (await commandOutput("git", ["rev-parse", "HEAD"])).trim();
     await runStep(run, "Export clean HEAD source", "git", ["archive", "--format=tar", `--output=${archivePath}`, "HEAD"]);
     await runStep(run, "Extract clean HEAD source", "tar", ["-xf", archivePath, "-C", cleanDir]);
     const compose = [
@@ -626,7 +634,7 @@ async function prepareCleanHeadSource(run) {
       compose.push("--profile", "desktop");
     }
     await fs.rm(archivePath, { force: true });
-    return { cleanDir, compose };
+    return { cleanDir, compose, head };
   } catch (error) {
     await fs.rm(archivePath, { force: true });
     await fs.rm(cleanDir, { recursive: true, force: true });
@@ -779,11 +787,18 @@ async function cleanupOtherCleanHeadSources(protectedCleanDirs = []) {
 }
 
 async function buildCleanHeadSourceImages(run, cleanHead) {
+  const provenance = {
+    ...await readSourceProvenance(commandOutput, cleanHead.cleanDir, cleanHead.head),
+    builtAt: new Date().toISOString()
+  };
   await runSourceImageBuildWithRetry(
     run,
     "Build clean HEAD source images",
     [...cleanHead.compose, "build", ...sourceBuildServices, ...(run.includeDesktop ? ["desktop-proof"] : [])],
-    { cwd: cleanHead.cleanDir }
+    {
+      cwd: cleanHead.cleanDir,
+      env: sourceProvenanceEnv(provenance)
+    }
   );
 }
 
@@ -1360,6 +1375,16 @@ app.get("/status", authorize, async (_request, response) => {
     active: publicRun(activeRun ?? (latestRun?.status === "running" ? latestRun : null)),
     latestRun: publicRun(latestRun),
   });
+});
+
+app.get("/source-state", authorize, async (_request, response) => {
+  try {
+    response.json(await readManorSourceState({ commandOutput, manorDir, composeProjectName }));
+  } catch (error) {
+    response.status(500).json({
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
 });
 
 app.post("/restart", authorize, async (request, response) => {

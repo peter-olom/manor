@@ -1,8 +1,15 @@
+x-manor-source-build-labels: &manor-source-build-labels
+  com.manor.source.fingerprint: ${MANOR_SOURCE_FINGERPRINT:-unknown}
+  com.manor.source.head: ${MANOR_SOURCE_HEAD:-unknown}
+  com.manor.source.dirty: ${MANOR_SOURCE_DIRTY:-unknown}
+  com.manor.source.built-at: ${MANOR_SOURCE_BUILT_AT:-unknown}
+
 services:
   butler:
     build:
       context: .
       dockerfile: docker/butler/Dockerfile
+      labels: *manor-source-build-labels
       args:
         PI_VERSION: ${PI_VERSION:-0.80.6}
     image: manor-butler:local
@@ -14,6 +21,7 @@ services:
     build:
       context: .
       dockerfile: docker/worker/Dockerfile
+      labels: *manor-source-build-labels
     image: manor-worker:local
     volumes:
       - ${MANOR_HOST_PROJECT_SOURCE_DIR:-${PWD:-.}}:/repos/manor
@@ -22,34 +30,40 @@ services:
     build:
       context: .
       dockerfile: docker/egress/Dockerfile
+      labels: *manor-source-build-labels
     image: manor-egress:local
 
   preview-egress:
     build:
       context: .
       dockerfile: docker/preview-egress/Dockerfile
+      labels: *manor-source-build-labels
     image: manor-preview-egress:local
 
   runtime-broker:
     build:
       context: .
       dockerfile: docker/runtime-broker/Dockerfile
+      labels: *manor-source-build-labels
     image: manor-runtime-broker:local
 
   host-controller:
     build:
       context: .
       dockerfile: docker/host-controller/Dockerfile
+      labels: *manor-source-build-labels
     image: manor-host-controller:local
 
   playwright:
     build:
       context: .
       dockerfile: docker/playwright/Dockerfile
+      labels: *manor-source-build-labels
     image: manor-playwright:local
 
   desktop-proof:
     build:
       context: .
       dockerfile: docker/desktop-proof/Dockerfile
+      labels: *manor-source-build-labels
     image: manor-desktop-proof:local

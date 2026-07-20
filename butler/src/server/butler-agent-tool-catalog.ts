@@ -467,6 +467,12 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while reading restart outcome." }]
   },
   {
+    name: "read_manor_source_state",
+    label: "Runtime source state",
+    description: "Compare the active checkout with the source embedded in running Manor services.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while checking the live source state." }]
+  },
+  {
     name: "run_supervision_smoke_test",
     label: "Run supervision smoke test",
     description: "Start a synthetic worker job to verify Butler can privately steer worker callbacks.",

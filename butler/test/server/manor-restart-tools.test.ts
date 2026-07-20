@@ -28,7 +28,7 @@ test("Host controller client uses only the scoped restart token header", async (
   }
 });
 
-test("Butler manor tools expose request and status restart surfaces only", async () => {
+test("Butler manor tools expose restart and authoritative source state surfaces", async () => {
   const definitions: Array<{
     name: string;
     execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; details?: Record<string, unknown> }>;
@@ -62,7 +62,62 @@ test("Butler manor tools expose request and status restart surfaces only", async
   } as unknown as ButlerAgentToolAccess;
 
   buildButlerManorTools(access);
-  assert.deepEqual(definitions.map((definition) => definition.name), ["request_manor_restart", "read_manor_restart_status"]);
+  assert.deepEqual(definitions.map((definition) => definition.name), [
+    "request_manor_restart",
+    "read_manor_restart_status",
+    "read_manor_source_state"
+  ]);
+});
+
+test("Butler source state tool reports pending changes as live without consulting restart history", async () => {
+  const definitions: Array<{
+    name: string;
+    execute: (toolCallId: string, params: Record<string, unknown>) => Promise<{ content: Array<{ text: string }>; details?: Record<string, unknown> }>;
+  }> = [];
+  const access = {
+    defineButlerTool: (definition: (typeof definitions)[number]) => {
+      definitions.push(definition);
+      return definition;
+    },
+    getToolUiEffects: () => [],
+    hostController: {
+      getSourceState: async () => ({
+        ok: true,
+        checkout: {
+          head: "1234567890abcdef",
+          dirty: true,
+          fingerprint: "source-1",
+          builtAt: null,
+          changedFileCount: 2,
+          changedFiles: [" M tracked.ts", "?? new.ts"],
+          changedFilesTruncated: false
+        },
+        runtime: {
+          relation: "matches_checkout",
+          summary: "The running Manor services match the active checkout, including its pending local changes.",
+          services: [{
+            service: "butler",
+            containerId: "container-1",
+            imageId: "image-1",
+            startedAt: "2026-07-20T08:00:00Z",
+            head: "1234567890abcdef",
+            dirty: true,
+            fingerprint: "source-1",
+            builtAt: "2026-07-20T07:59:00Z"
+          }]
+        }
+      })
+    }
+  } as unknown as ButlerAgentToolAccess;
+
+  buildButlerManorTools(access);
+  const sourceTool = definitions.find((definition) => definition.name === "read_manor_source_state");
+  assert.ok(sourceTool);
+  const result = await sourceTool.execute("tool-call-source", {});
+
+  assert.match(result.content[0]?.text ?? "", /including its pending local changes/);
+  assert.match(result.content[0]?.text ?? "", /2 pending local changes/);
+  assert.match(result.content[0]?.text ?? "", /Restart history is separate/);
 });
 
 test("Butler restart status tool reports active host-controller runs", async () => {

@@ -35,6 +35,47 @@ export interface ManorRestartStartResult {
   run: ManorRestartRun;
 }
 
+export type ManorSourceRelation =
+  | "matches_checkout"
+  | "clean_head_fallback"
+  | "differs_from_checkout"
+  | "inconsistent"
+  | "unknown";
+
+export interface ManorSourceProvenance {
+  head: string;
+  dirty: boolean;
+  fingerprint: string;
+  builtAt: string | null;
+}
+
+export interface ManorCheckoutSourceState extends ManorSourceProvenance {
+  changedFileCount: number;
+  changedFiles: string[];
+  changedFilesTruncated: boolean;
+}
+
+export interface ManorRuntimeSourceService {
+  service: string;
+  containerId: string | null;
+  imageId: string | null;
+  startedAt: string | null;
+  head: string | null;
+  dirty: boolean | null;
+  fingerprint: string | null;
+  builtAt: string | null;
+}
+
+export interface ManorSourceState {
+  ok: true;
+  checkout: ManorCheckoutSourceState;
+  runtime: {
+    relation: ManorSourceRelation;
+    summary: string;
+    services: ManorRuntimeSourceService[];
+  };
+}
+
 export class HostControllerClient {
   constructor(
     private readonly baseUrl: string | null,
@@ -67,6 +108,10 @@ export class HostControllerClient {
 
   getStatus(): Promise<ManorRestartStatus> {
     return this.request<ManorRestartStatus>("/status");
+  }
+
+  getSourceState(): Promise<ManorSourceState> {
+    return this.request<ManorSourceState>("/source-state");
   }
 
   restart(input: {

@@ -574,6 +574,31 @@ cleanup_obsolete_clean_head_sources() {
   rmdir "${recovery_root}" 2>/dev/null || true
 }
 
+configure_source_provenance() {
+  local source_dir="$1"
+  local clean_head="${2:-}"
+  local provenance=""
+
+  local provenance_script="${repo_dir}/docker/host-controller/source-provenance.sh"
+  if [[ -x "${provenance_script}" ]]; then
+    if [[ -n "${clean_head}" ]]; then
+      provenance="$("${provenance_script}" "${source_dir}" "${clean_head}" 2>/dev/null || true)"
+    else
+      provenance="$("${provenance_script}" "${source_dir}" 2>/dev/null || true)"
+    fi
+  fi
+
+  IFS=$'\t' read -r MANOR_SOURCE_HEAD MANOR_SOURCE_DIRTY MANOR_SOURCE_FINGERPRINT <<<"${provenance}"
+  if [[ -z "${MANOR_SOURCE_HEAD}" || -z "${MANOR_SOURCE_DIRTY}" || -z "${MANOR_SOURCE_FINGERPRINT}" ]]; then
+    MANOR_SOURCE_HEAD="unknown"
+    MANOR_SOURCE_DIRTY="unknown"
+    MANOR_SOURCE_FINGERPRINT="unknown"
+    echo "Source provenance is unavailable; Manor will report its runtime source state as unknown." >&2
+  fi
+  MANOR_SOURCE_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  export MANOR_SOURCE_HEAD MANOR_SOURCE_DIRTY MANOR_SOURCE_FINGERPRINT MANOR_SOURCE_BUILT_AT
+}
+
 recover_from_clean_head() {
   local wait_timeout="$1"
   shift
@@ -617,6 +642,7 @@ recover_from_clean_head() {
   if [[ "$#" -gt 0 ]]; then
     recovery_args+=("$@")
   fi
+  configure_source_provenance "${clean_dir}" "${head_sha}"
   if ! MANOR_HOST_PROJECT_SOURCE_DIR="${MANOR_HOST_PROJECT_SOURCE_DIR:-${repo_dir}}" \
     BUTLER_HOT_RELOAD=0 \
     MANOR_PI_AUTO_UPDATE=0 \
@@ -638,6 +664,7 @@ run_up() {
   fi
 
   cleanup_retired_worker_resources
+  configure_source_provenance "${repo_dir}"
 
   local up_args=(up -d --build --remove-orphans --wait --wait-timeout "${wait_timeout}")
   if [[ "$#" -gt 0 ]]; then
