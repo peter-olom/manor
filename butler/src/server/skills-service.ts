@@ -2,11 +2,11 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Writable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 
 import { loadSkillsFromDir, type Skill } from "@earendil-works/pi-coding-agent";
-import JSZip from "jszip";
+import { archiveButlerSkillCandidate, archiveSkillContentEvidence, archiveSkillDirectory, extractSkillArchive, inspectAgentSkillArchive, MAX_SKILL_ARCHIVE_BYTES } from "./skill-archive.js";
+import { assertSealedButlerSkillCandidateUnchanged as assertSealedCandidateUnchanged, replaceExistingSkillArchive, sealButlerSkillCandidate as sealCandidate, snapshotExistingSkill } from "./skill-install-lifecycle.js";
+import { migrateLegacySkillRegistry } from "./skill-registry-migration.js";
 
 export type SkillEnvironmentId = "butler-pi" | "worker-pi";
 export type SkillScope = "user" | "project";
@@ -61,6 +61,8 @@ export type AgentSkillChangeInput =
       environment: SkillEnvironmentId;
       name?: string;
       content?: string;
+      candidateArchiveBase64?: string;
+      candidateEvidence?: string;
       source: string;
       scope?: SkillScope;
       cwd?: string | null;
@@ -86,7 +88,7 @@ export type AgentSkillChangeProposal = {
   skillName: string;
   scope: SkillScope;
   source: string | null;
-  sourceVerification: "agent-reported" | "fetched";
+  sourceVerification: "agent-reported" | "butler-prepared";
   description: string;
   target: string;
   footprint: string;
@@ -111,6 +113,8 @@ export type AgentSkillChangeResult = {
     catalogVisible: boolean;
     invocation: string;
     resourceReload: "scheduled" | "next-session";
+    operability: "ready" | "verification-pending";
+    verificationThreadId: string | null;
   };
   undo: {
     available: boolean;
@@ -129,13 +133,9 @@ type SkillRecord = SkillCatalogItem & {
 type SkillsServiceOptions = {
   butlerPiAgentDir: string;
   workerPiAgentDir: string;
+  sharedSkillsDir?: string;
+  butlerScratchRoot?: string;
   workspaceRoot: string;
-  fetchImpl?: typeof fetch;
-};
-
-type ExtractedSkillArchive = {
-  entries: Array<{ archiveRoot: string; name: string; description: string }>;
-  files: string[];
 };
 
 type NormalizedAgentSkillChangeInput =
@@ -147,6 +147,8 @@ type NormalizedAgentSkillChangeInput =
       content?: string;
       archiveBase64?: string;
       archiveManifest?: Array<{ path: string; sha256: string }>;
+      replacement?: { archiveBase64: string; archiveSha256: string };
+      candidateEvidence?: string;
       source: string;
       scope: SkillScope;
       cwd: string | null;
@@ -170,6 +172,8 @@ type AgentSkillResultRecord = AgentSkillChangeResult & {
   appliedContentHash: string | null;
   appliedContent: string | null;
   appliedArchiveManifest: Array<{ path: string; sha256: string }> | null;
+  previousArchiveBase64: string | null;
+  installedArchiveSha256: string | null;
   undoneAt: number | null;
 };
 
@@ -179,14 +183,11 @@ const ENVIRONMENTS: SkillEnvironmentView[] = [
 ];
 const MAX_SKILL_BYTES = 2 * 1024 * 1024;
 const MAX_AGENT_SKILL_BYTES = 32 * 1024;
-const MAX_ARCHIVE_BYTES = 10 * 1024 * 1024;
-const MAX_ARCHIVE_EXPANDED_BYTES = 25 * 1024 * 1024;
-const MAX_ARCHIVE_FILES = 200;
 const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const AGENT_PROPOSAL_TTL_MS = 30 * 60 * 1000;
-const MAX_PENDING_AGENT_ARCHIVES_PER_OWNER = 2;
-const MAX_PENDING_AGENT_ARCHIVES_GLOBAL = 8;
 const MAX_AGENT_ARCHIVE_MANIFEST_EVIDENCE_BYTES = 12 * 1024;
+const MAX_PENDING_BUTLER_CANDIDATES_PER_OWNER = 2;
+const MAX_PENDING_BUTLER_CANDIDATES_GLOBAL = 8;
 const AGENT_APPROVAL_PREFIX = "skill-change";
 export const AGENT_SKILL_CONTENT_MARKER = "MANOR_FULL_SKILL_CONTENT_V1_JSON";
 
@@ -239,32 +240,79 @@ function skillMarkdown(name: string, description: string, instructions: string):
   return `---\nname: ${name}\ndescription: "${escaped}"\n---\n\n${instructions.trim()}\n`;
 }
 
-function validateArchivePath(rawName: string): string {
-  if (!rawName || rawName.length > 1024 || rawName.includes("\\") || rawName.includes("\0") || path.posix.isAbsolute(rawName)) {
-    throw new Error("Archive contains an unsafe path.");
-  }
-  const normalized = path.posix.normalize(rawName).replace(/\/$/, "");
-  if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith("../")) {
-    throw new Error("Archive contains an unsafe path.");
-  }
-  const segments = normalized.split("/");
-  if (segments.some((segment) => !segment || segment.length > 255 || segment === "." || segment === ".." || segment === ".git" || segment === "node_modules")) {
-    throw new Error("Archive contains a forbidden path.");
-  }
-  return normalized;
-}
-
 export class SkillsService {
   private readonly agentProposals = new Map<string, AgentSkillProposalRecord>();
   private readonly agentResults = new Map<string, AgentSkillResultRecord>();
-  private agentArchiveProposalTail: Promise<void> = Promise.resolve();
+  private agentCandidateProposalTail: Promise<void> = Promise.resolve();
   private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: SkillsServiceOptions) {}
 
+  async repairSharedSkillRegistryPermissions(): Promise<void> {
+    const root = this.sharedSkillsRoot("worker-pi");
+    await this.ensureMutableRoot(root, "butler-pi", "user");
+    await this.setInstalledPermissions(root, "butler-pi", "user");
+  }
+
+  async migrateLegacyUserSkills(legacyRoots: string[]): Promise<{ migrated: number; skipped: number; failed: number }> {
+    if (!this.options.sharedSkillsDir) return { migrated: 0, skipped: 0, failed: 0 };
+    return this.runMutation(async () => {
+      const sharedRoot = this.sharedSkillsRoot("butler-pi");
+      await this.ensureMutableRoot(sharedRoot, "butler-pi", "user");
+      return migrateLegacySkillRegistry({
+        sharedRoot,
+        legacyRoots,
+        validateName: safeName,
+        importArchive: async (archiveBase64) => { await this.importArchiveUnlocked({ environment: "butler-pi", archiveBase64, scope: "user" }); },
+        ownMarker: (markerPath) => this.setManagedOwnership(markerPath, "butler-pi", "user")
+      });
+    });
+  }
+
+  async repairWorkerUserSkillPermissions(): Promise<void> {
+    const root = this.sharedSkillsRoot("worker-pi");
+    await this.ensureMutableRoot(root, "worker-pi", "user");
+    await this.setInstalledPermissions(root, "worker-pi", "user");
+  }
+
+  async proposeButlerPreparedInstall(owner: string, input: {
+    name: string;
+    source: string;
+    candidatePath: string;
+    candidateArchiveBase64?: string;
+    evidence: string;
+  }): Promise<AgentSkillChangeProposal> {
+    const name = safeName(input.name);
+    const archive = input.candidateArchiveBase64
+      ? Buffer.from(input.candidateArchiveBase64, "base64")
+      : await archiveButlerSkillCandidate(name, input.candidatePath, this.options.butlerScratchRoot ?? "/scratch");
+    return this.proposeAgentChange(owner, {
+      operation: "install",
+      environment: "butler-pi",
+      name,
+      source: input.source,
+      scope: "user",
+      candidateArchiveBase64: archive.toString("base64"),
+      candidateEvidence: input.evidence
+    });
+  }
+
+  async sealButlerSkillCandidate(nameInput: string, candidatePath: string): Promise<{ archiveBase64: string; verificationPath: string; cleanup: () => Promise<void> }> {
+    return sealCandidate({
+      name: safeName(nameInput),
+      candidatePath,
+      scratchRoot: this.options.butlerScratchRoot ?? "/scratch",
+      normalizePermissions: (skillPath) => this.setInstalledPermissions(skillPath, "butler-pi", "user")
+    });
+  }
+
+  async assertSealedButlerSkillCandidateUnchanged(nameInput: string, verificationPath: string, archiveBase64: string): Promise<void> {
+    return assertSealedCandidateUnchanged({ name: safeName(nameInput), verificationPath, archiveBase64, scratchRoot: this.options.butlerScratchRoot ?? "/scratch" });
+  }
+
   async proposeAgentChange(owner: string, rawInput: AgentSkillChangeInput): Promise<AgentSkillChangeProposal> {
-    if (rawInput.operation === "install" && !rawInput.content?.trim()) {
-      return this.runAgentArchiveProposal(() => this.proposeAgentChangeUnlocked(owner, rawInput));
+    if (rawInput.operation === "install" && rawInput.candidateArchiveBase64) {
+      return this.runAgentCandidateProposal(() => this.proposeAgentChangeUnlocked(owner, rawInput));
     }
     return this.proposeAgentChangeUnlocked(owner, rawInput);
   }
@@ -273,9 +321,9 @@ export class SkillsService {
     const normalizedOwner = this.agentOwner(owner);
     const now = Date.now();
     this.pruneAgentProposals(now);
-    if (rawInput.operation === "install" && !rawInput.content?.trim()) this.assertAgentArchiveProposalCapacity(normalizedOwner, now);
+    if (rawInput.operation === "install" && rawInput.candidateArchiveBase64) this.assertAgentCandidateProposalCapacity(normalizedOwner, now);
     const input = await this.normalizeAgentChange(rawInput, normalizedOwner);
-    if (input.operation === "install" && input.archiveBase64) this.assertAgentArchiveProposalCapacity(normalizedOwner, Date.now());
+    if (input.operation === "install" && input.archiveBase64) this.assertAgentCandidateProposalCapacity(normalizedOwner, Date.now());
     let environment: SkillEnvironmentId;
     let skillName: string;
     let skillScope: SkillScope;
@@ -298,16 +346,24 @@ export class SkillsService {
       skillScope = result.skill.scope;
       source = `change ${result.id}`;
       description = `Restore the state before the approved ${result.operation} change.`;
-      approvedContent = result.operation === "update" ? result.previousContent ?? "" : result.appliedContent ?? "";
-      contentEvidence = result.operation === "update"
-        ? this.fullContentEvidence(approvedContent, this.boundedContentDiff(result.appliedContent ?? "", approvedContent))
-        : this.fullContentEvidence(approvedContent, "The complete SKILL.md below is approved for removal.");
-      footprint = result.operation === "update"
-        ? "Restores one managed SKILL.md. No hooks, scripts, or skill instructions are executed."
-        : result.appliedArchiveManifest
-          ? "Removes the complete approved archive when every installed file is unchanged. If files were changed, removed, or added later, Manor removes SKILL.md and moves the residual directory to a unique hidden preserved location under the same skills root."
-          : "Removes only the approved SKILL.md. If later files exist, Manor moves the residual directory to a unique hidden preserved location under the same skills root so the original name is reusable.";
-      summary = `Undo ${result.operation} of ${skillName} in ${this.environmentLabel(environment)}.`;
+      if (result.previousArchiveBase64) {
+        const previousArchive = Buffer.from(result.previousArchiveBase64, "base64");
+        const inspected = await inspectAgentSkillArchive(skillName, previousArchive, MAX_SKILL_BYTES);
+        approvedContent = previousArchive;
+        contentEvidence = `${archiveSkillContentEvidence(inspected.files, MAX_AGENT_ARCHIVE_MANIFEST_EVIDENCE_BYTES)}\n${AGENT_SKILL_CONTENT_MARKER}\n${JSON.stringify(inspected.skillContent)}`;
+        footprint = "Atomically restores the complete previous installation if the current replacement is unchanged.";
+      } else {
+        approvedContent = result.operation === "update" ? result.previousContent ?? "" : result.appliedContent ?? "";
+        contentEvidence = result.operation === "update"
+          ? this.fullContentEvidence(approvedContent, this.boundedContentDiff(result.appliedContent ?? "", approvedContent))
+          : this.fullContentEvidence(approvedContent, "The complete SKILL.md below is approved for removal.");
+        footprint = result.operation === "update"
+          ? "Restores one managed SKILL.md. No hooks, scripts, or skill instructions are executed."
+          : result.appliedArchiveManifest
+            ? "Removes the complete approved Butler candidate when every installed file is unchanged. If files changed later, Manor removes SKILL.md and preserves the residual directory."
+            : "Removes only the approved SKILL.md. If later files exist, Manor moves the residual directory to a unique hidden preserved location under the same skills root so the original name is reusable.";
+      }
+      summary = `Undo ${result.operation} of ${skillName} in ${this.agentTarget(environment, skillScope)}.`;
     } else {
       environment = input.environment;
       skillScope = input.operation === "update" ? "user" : input.scope ?? "user";
@@ -324,18 +380,26 @@ export class SkillsService {
         contentEvidence = this.fullContentEvidence(input.content, this.boundedContentDiff(current.content, input.content));
         footprint = "Replaces one managed SKILL.md. Agent-managed changes do not add companion files and execute no hooks, scripts, or skill instructions.";
         source = input.reason;
-        summary = `Update ${skillName} in ${this.environmentLabel(environment)} (${skillScope} scope). Reason: ${input.reason}`;
+        summary = `Update ${skillName} in ${this.agentTarget(environment, skillScope)}. Reason: ${input.reason}`;
       } else if (input.operation === "install") {
         skillName = input.name;
         if (input.archiveBase64) {
           const archive = Buffer.from(input.archiveBase64, "base64");
-          const inspected = await this.inspectAgentArchive(skillName, archive);
+          const inspected = await inspectAgentSkillArchive(skillName, archive, MAX_AGENT_SKILL_BYTES);
           input.archiveManifest = inspected.manifest;
           description = this.agentLine(inspected.description, "Skill description", 1024);
           approvedContent = archive;
-          contentEvidence = this.archiveContentEvidence(inspected.files, inspected.skillContent);
-          footprint = `Writes one validated skill archive containing ${inspected.files.length} files. Archive contents are staged without executing hooks, scripts, or skill instructions.`;
-          sourceVerification = "fetched";
+          contentEvidence = `${archiveSkillContentEvidence(inspected.files, MAX_AGENT_ARCHIVE_MANIFEST_EVIDENCE_BYTES)}\n${AGENT_SKILL_CONTENT_MARKER}\n${JSON.stringify(inspected.skillContent)}${input.candidateEvidence ? `\n\nButler preparation evidence:\n${input.candidateEvidence}` : ""}`;
+          footprint = `Publishes one Butler-prepared candidate containing ${inspected.files.length} files into the shared skill registry.`;
+          sourceVerification = "butler-prepared";
+          const replacement = await snapshotExistingSkill(await this.mutableRoot(environment, skillScope, input.cwd), skillName);
+          if (replacement) {
+            input.replacement = replacement;
+            conflict = `An existing ${skillName} installation will be atomically replaced after a stale-state check.`;
+            footprint = `Atomically replaces the existing skill with one Butler-prepared candidate containing ${inspected.files.length} files. The previous installation is retained for approved undo.`;
+          } else {
+            conflict = await this.assertAgentDestinationAvailable(environment, skillName, skillScope, input.cwd);
+          }
         } else {
           const content = input.content ?? "";
           const validated = await this.validateSkillDocument(skillName, content);
@@ -343,10 +407,10 @@ export class SkillsService {
           approvedContent = content;
           contentEvidence = this.fullContentEvidence(content, "Complete proposed single-document SKILL.md.");
           footprint = "Writes one managed SKILL.md. Agent-managed installs do not add companion files and execute no hooks, scripts, or skill instructions.";
+          conflict = await this.assertAgentDestinationAvailable(environment, skillName, skillScope, input.cwd);
         }
-        conflict = await this.assertAgentDestinationAvailable(environment, skillName, skillScope, input.cwd);
         source = input.source;
-        summary = `Install ${skillName} in ${this.environmentLabel(environment)} (${skillScope} scope) from ${input.source}.`;
+        summary = `${input.replacement ? "Replace" : "Install"} ${skillName} in ${this.agentTarget(environment, skillScope)} from ${input.source}.`;
       } else {
         skillName = input.name;
         await this.validateSkillDocument(skillName, skillMarkdown(skillName, input.description, input.instructions));
@@ -355,7 +419,7 @@ export class SkillsService {
         contentEvidence = this.fullContentEvidence(approvedContent, "Complete proposed single-document SKILL.md.");
         footprint = "Writes one managed SKILL.md. Agent-managed creation does not add companion files and executes no hooks, scripts, or skill instructions.";
         conflict = await this.assertAgentDestinationAvailable(environment, skillName, skillScope, input.cwd);
-        summary = `Create ${skillName} in ${this.environmentLabel(environment)} (${skillScope} scope).`;
+        summary = `Create ${skillName} in ${this.agentTarget(environment, skillScope)}.`;
       }
     }
 
@@ -372,12 +436,16 @@ export class SkillsService {
       source,
       sourceVerification,
       description,
-      target: `${this.environmentLabel(environment)} / ${skillScope} scope`,
+      target: this.agentTarget(environment, skillScope),
       footprint,
       conflict,
-      verificationPlan: environment === "butler-pi"
-        ? "Reload the active Butler resources and confirm the resulting catalog entry and invocation."
-        : "Confirm the resulting catalog entry and invocation. New Worker sessions load the change; an existing Worker session may need replacement.",
+      verificationPlan: sourceVerification === "butler-prepared"
+        ? "Publish the exact validated candidate to the shared registry, reload Butler, then start a fresh Worker session and invoke the capability before declaring it ready."
+        : this.options.sharedSkillsDir && input.operation === "install"
+          ? "Publish the approved skill document to the shared registry, reload Butler, then start a fresh Worker session and invoke it before declaring it ready."
+        : environment === "butler-pi"
+          ? "Reload the active Butler resources and confirm the resulting catalog entry and invocation."
+          : "Confirm the resulting catalog entry and invocation. New Worker sessions load the change; an existing Worker session may need replacement.",
       contentSha256: this.contentHash(approvedContent),
       contentEvidence,
       createdAt: now,
@@ -445,8 +513,30 @@ export class SkillsService {
     return this.publicAgentProposal(this.requireAgentProposal(this.agentOwner(owner), proposalId));
   }
 
+  getAgentResult(owner: string, resultId: string): AgentSkillChangeResult {
+    return this.publicAgentResult(this.requireAgentResult(this.agentOwner(owner), resultId));
+  }
+
   async applyApprovedAgentChange(owner: string, proposalId: string): Promise<AgentSkillChangeResult> {
     return this.runMutation(() => this.applyApprovedAgentChangeUnlocked(owner, proposalId));
+  }
+
+  bindAgentResultVerification(owner: string, resultId: string, verificationThreadId: string): AgentSkillChangeResult {
+    const result = this.requireAgentResult(this.agentOwner(owner), resultId);
+    if (result.verification.operability !== "verification-pending") throw new Error("This skill change does not require Worker operability verification.");
+    if (result.verification.verificationThreadId && result.verification.verificationThreadId !== verificationThreadId) {
+      throw new Error("This skill change is already bound to another verification Worker.");
+    }
+    result.verification.verificationThreadId = verificationThreadId;
+    return this.publicAgentResult(result);
+  }
+
+  confirmAgentResultVerification(owner: string, resultId: string, verificationThreadId: string): AgentSkillChangeResult {
+    const result = this.requireAgentResult(this.agentOwner(owner), resultId);
+    if (result.verification.operability !== "verification-pending") throw new Error("This skill change is not awaiting Worker operability verification.");
+    if (result.verification.verificationThreadId !== verificationThreadId) throw new Error("The operability report came from the wrong Worker.");
+    result.verification.operability = "ready";
+    return this.publicAgentResult(result);
   }
 
   private async applyApprovedAgentChangeUnlocked(owner: string, proposalId: string): Promise<AgentSkillChangeResult> {
@@ -519,10 +609,11 @@ export class SkillsService {
     cwd?: string | null;
   }): Promise<SkillCatalogItem> {
     const name = safeName(input.name);
-    const root = await this.mutableRoot(input.environment, input.scope ?? "user", input.cwd);
+    const scope = input.scope ?? "user";
+    const root = await this.mutableRoot(input.environment, scope, input.cwd);
     const targetDir = path.join(root, name);
     if (!isWithin(root, targetDir)) throw new Error("Invalid skill destination.");
-    await fs.mkdir(root, { recursive: true, mode: 0o700 });
+    await this.ensureMutableRoot(root, input.environment, scope);
     if (await exists(targetDir)) throw new Error(`A skill named ${name} already exists.`);
     const staged = await fs.mkdtemp(path.join(root, ".manor-create-"));
     try {
@@ -530,6 +621,7 @@ export class SkillsService {
       if (Buffer.byteLength(content, "utf8") > MAX_SKILL_BYTES) throw new Error("Skill content is too large.");
       await fs.writeFile(path.join(staged, "SKILL.md"), content, { encoding: "utf8", mode: 0o600 });
       this.assertValidSkillDir(staged, name);
+      await this.setInstalledPermissions(staged, input.environment, scope);
       await fs.rename(staged, targetDir);
     } catch (error) {
       await fs.rm(staged, { recursive: true, force: true });
@@ -561,7 +653,8 @@ export class SkillsService {
       this.assertValidSkillDir(staged, record.name);
       const tempFile = path.join(record.baseDir, `.SKILL.md.${crypto.randomUUID()}.tmp`);
       await fs.copyFile(path.join(staged, "SKILL.md"), tempFile);
-      await fs.chmod(tempFile, 0o600);
+      await fs.chmod(tempFile, this.fileMode(input.environment, false, record.scope));
+      await this.setManagedOwnership(tempFile, input.environment, record.scope);
       await fs.rename(tempFile, record.filePath);
     } finally {
       await fs.rm(staged, { recursive: true, force: true });
@@ -597,19 +690,22 @@ export class SkillsService {
     cwd?: string | null;
   }): Promise<SkillCatalogItem[]> {
     const archive = Buffer.from(input.archiveBase64, "base64");
-    if (archive.length === 0 || archive.length > MAX_ARCHIVE_BYTES) throw new Error("Skill archive is empty or too large.");
-    const root = await this.mutableRoot(input.environment, input.scope ?? "user", input.cwd);
-    await fs.mkdir(root, { recursive: true, mode: 0o700 });
+    if (archive.length === 0 || archive.length > MAX_SKILL_ARCHIVE_BYTES) throw new Error("Skill archive is empty or too large.");
+    const scope = input.scope ?? "user";
+    const root = await this.mutableRoot(input.environment, scope, input.cwd);
+    await this.ensureMutableRoot(root, input.environment, scope);
     const staged = await fs.mkdtemp(path.join(root, ".manor-import-"));
     const installedPaths: string[] = [];
     try {
-      const extracted = await this.extractArchive(archive, staged);
+      const extracted = await extractSkillArchive(archive, staged);
       for (const entry of extracted.entries) {
         if (await exists(path.join(root, entry.name))) throw new Error(`A skill named ${entry.name} already exists.`);
       }
       for (const entry of extracted.entries) {
         const destination = path.join(root, entry.name);
-        await fs.rename(path.join(staged, entry.archiveRoot), destination);
+        const stagedSkill = path.join(staged, entry.archiveRoot);
+        await this.setInstalledPermissions(stagedSkill, input.environment, scope);
+        await fs.rename(stagedSkill, destination);
         installedPaths.push(path.join(destination, "SKILL.md"));
       }
     } catch (error) {
@@ -619,7 +715,7 @@ export class SkillsService {
       await fs.rm(staged, { recursive: true, force: true });
     }
     const records = await this.records(input.environment, input.cwd);
-    return installedPaths.map((filePath) => this.publicItem(this.findByPath(records, filePath)));
+    return Promise.all(installedPaths.map(async (filePath) => this.publicItem(await this.findByPath(records, filePath))));
   }
 
   private async installAgentDocument(input: {
@@ -635,12 +731,13 @@ export class SkillsService {
     const root = await this.mutableRoot(input.environment, input.scope, input.cwd);
     const targetDir = path.join(root, name);
     if (!isWithin(root, targetDir)) throw new Error("Invalid skill destination.");
-    await fs.mkdir(root, { recursive: true, mode: 0o700 });
+    await this.ensureMutableRoot(root, input.environment, input.scope);
     if (await exists(targetDir)) throw new Error(`A skill named ${name} already exists.`);
     const staged = await fs.mkdtemp(path.join(root, ".manor-install-"));
     try {
       await fs.writeFile(path.join(staged, "SKILL.md"), input.content, { encoding: "utf8", mode: 0o600 });
       this.assertValidSkillDir(staged, name);
+      await this.setInstalledPermissions(staged, input.environment, input.scope);
       await fs.rename(staged, targetDir);
     } catch (error) {
       await fs.rm(staged, { recursive: true, force: true });
@@ -657,6 +754,8 @@ export class SkillsService {
     let createdSkillId: string | null = null;
     let previousContent: string | null = null;
     let appliedArchiveManifest: Array<{ path: string; sha256: string }> | null = null;
+    let previousArchiveBase64: string | null = null;
+    let installedArchiveSha256: string | null = null;
     const cwd = input.cwd?.trim() || null;
     if (input.operation === "update") {
       const current = await this.read(input.environment, input.id, input.cwd);
@@ -670,18 +769,31 @@ export class SkillsService {
       if (input.archiveBase64) {
         const archive = Buffer.from(input.archiveBase64, "base64");
         if (this.contentHash(archive) !== proposal.contentSha256) {
-          throw new Error("The fetched skill archive changed after approval was requested. Review and approve a fresh proposal.");
+          throw new Error("The Butler-prepared skill candidate changed after approval was requested. Prepare a fresh candidate.");
         }
-        const imported = await this.importArchiveUnlocked({
-          environment: input.environment,
-          archiveBase64: input.archiveBase64,
-          scope: input.scope ?? "user",
-          cwd: input.cwd
-        });
-        if (imported.length !== 1 || imported[0]?.name !== input.name) throw new Error("The approved skill archive did not install the expected skill.");
+        const imported = input.replacement
+          ? [await this.replaceAgentArchiveUnlocked({
+              environment: input.environment,
+              name: input.name,
+              archiveBase64: input.archiveBase64,
+              expectedCurrentSha256: input.replacement.archiveSha256,
+              scope: input.scope ?? "user",
+              cwd: input.cwd
+            })]
+          : await this.importArchiveUnlocked({
+              environment: input.environment,
+              archiveBase64: input.archiveBase64,
+              scope: input.scope ?? "user",
+              cwd: input.cwd
+            });
+        if (imported.length !== 1 || imported[0]?.name !== input.name) throw new Error("The approved Butler candidate did not install the expected skill.");
         skill = imported[0];
         appliedContent = (await this.read(skill.environment, skill.id, input.cwd)).content;
         appliedArchiveManifest = input.archiveManifest?.map((entry) => ({ ...entry })) ?? null;
+        previousArchiveBase64 = input.replacement?.archiveBase64 ?? null;
+        const installedRecord = await this.findRecord(skill.environment, skill.id, input.cwd);
+        const installedArchive = await archiveSkillDirectory(input.name, await fs.realpath(installedRecord.baseDir));
+        installedArchiveSha256 = this.contentHash(installedArchive);
       } else {
         const content = input.content ?? "";
         skill = await this.installAgentDocument({
@@ -693,7 +805,7 @@ export class SkillsService {
         });
         appliedContent = content;
       }
-      createdSkillId = skill.id;
+      createdSkillId = input.operation === "install" && input.archiveBase64 && input.replacement ? null : skill.id;
     } else {
       skill = await this.createUnlocked(input);
       createdSkillId = skill.id;
@@ -713,12 +825,16 @@ export class SkillsService {
       appliedContentHash: this.contentHash(appliedContent),
       appliedContent,
       appliedArchiveManifest,
+      previousArchiveBase64,
+      installedArchiveSha256,
       appliedAt: Date.now(),
       undoneAt: null,
       verification: {
         catalogVisible: true,
         invocation: skill.invocation,
-        resourceReload: skill.environment === "butler-pi" ? "scheduled" : "next-session"
+        resourceReload: this.options.sharedSkillsDir || skill.environment === "butler-pi" ? "scheduled" : "next-session",
+        operability: input.operation === "install" && (Boolean(input.archiveBase64) || Boolean(this.options.sharedSkillsDir)) ? "verification-pending" : "ready",
+        verificationThreadId: null
       },
       undo: {
         available: true,
@@ -744,6 +860,16 @@ export class SkillsService {
         environment: original.environment,
         id: original.skill.id,
         content: original.previousContent,
+        cwd: original.cwd
+      });
+    } else if (original.previousArchiveBase64) {
+      if (!original.installedArchiveSha256) throw new Error("The installed skill archive state is unavailable.");
+      skill = await this.replaceAgentArchiveUnlocked({
+        environment: original.environment,
+        name: original.skill.name,
+        archiveBase64: original.previousArchiveBase64,
+        expectedCurrentSha256: original.installedArchiveSha256,
+        scope: original.skill.scope,
         cwd: original.cwd
       });
     } else {
@@ -773,12 +899,16 @@ export class SkillsService {
       appliedContentHash: original.operation === "update" && original.previousContent ? this.contentHash(original.previousContent) : null,
       appliedContent: original.operation === "update" ? original.previousContent : null,
       appliedArchiveManifest: null,
+      previousArchiveBase64: null,
+      installedArchiveSha256: null,
       appliedAt: Date.now(),
       undoneAt: null,
       verification: {
         catalogVisible: original.operation === "update",
         invocation: skill.invocation,
-        resourceReload: original.environment === "butler-pi" ? "scheduled" : "next-session"
+        resourceReload: this.options.sharedSkillsDir || original.environment === "butler-pi" ? "scheduled" : "next-session",
+        operability: "ready",
+        verificationThreadId: null
       },
       undo: {
         available: false,
@@ -812,13 +942,28 @@ export class SkillsService {
       const source = this.agentLine(input.source, "Skill source", 2048);
       const content = input.content ?? "";
       const requestedName = typeof input.name === "string" ? input.name.trim() : "";
-      const name = requestedName ? safeName(requestedName) : safeName(this.githubRepository(source).repository);
+      const name = safeName(requestedName);
+      if (input.candidateArchiveBase64) {
+        if (input.environment !== "butler-pi" || changeScope !== "user") throw new Error("Butler-prepared repository skills publish only to the shared skill registry.");
+        const evidence = this.agentText(input.candidateEvidence, "Butler preparation evidence", 12_000);
+        const archive = Buffer.from(input.candidateArchiveBase64, "base64");
+        if (archive.length === 0 || archive.length > MAX_SKILL_ARCHIVE_BYTES) throw new Error("Butler skill candidate is empty or too large.");
+        return {
+          operation: "install",
+          environment: input.environment,
+          name,
+          archiveBase64: archive.toString("base64"),
+          candidateEvidence: evidence,
+          source,
+          scope: changeScope,
+          cwd
+        };
+      }
       if (content.trim()) {
         this.assertAgentSingleDocument(content);
         return { operation: "install", environment: input.environment, name, content, source, scope: changeScope, cwd };
       }
-      const archive = await this.fetchGithubSkillArchive(source);
-      return { operation: "install", environment: input.environment, name, archiveBase64: archive.toString("base64"), source, scope: changeScope, cwd };
+      throw new Error("Repository-backed skill installation is Butler-led. Prepare it in Butler scratch, verify it, then propose the prepared candidate.");
     }
     const name = safeName(input.name);
     const created: AgentSkillChangeInput = {
@@ -889,23 +1034,23 @@ export class SkillsService {
     }
   }
 
-  private assertAgentArchiveProposalCapacity(owner: string, now: number): void {
-    this.pruneAgentProposals(now);
-    const active = [...this.agentProposals.values()].filter((proposal) =>
-      proposal.expiresAt > now && proposal.input.operation === "install" && Boolean(proposal.input.archiveBase64)
-    );
-    if (active.filter((proposal) => proposal.owner === owner).length >= MAX_PENDING_AGENT_ARCHIVES_PER_OWNER) {
-      throw new Error("Too many pending archive skill approvals for this Butler session. Approve, reject, or wait for an existing proposal to expire.");
-    }
-    if (active.length >= MAX_PENDING_AGENT_ARCHIVES_GLOBAL) {
-      throw new Error("Too many pending archive skill approvals. Approve, reject, or wait for an existing proposal to expire.");
-    }
-  }
-
   private clearAgentArchivePayload(proposal: AgentSkillProposalRecord): void {
     if (proposal.input.operation !== "install") return;
     proposal.input.archiveBase64 = undefined;
     proposal.input.archiveManifest = undefined;
+  }
+
+  private assertAgentCandidateProposalCapacity(owner: string, now: number): void {
+    this.pruneAgentProposals(now);
+    const active = [...this.agentProposals.values()].filter((proposal) =>
+      proposal.expiresAt > now && proposal.input.operation === "install" && Boolean(proposal.input.archiveBase64)
+    );
+    if (active.filter((proposal) => proposal.owner === owner).length >= MAX_PENDING_BUTLER_CANDIDATES_PER_OWNER) {
+      throw new Error("Too many pending Butler skill candidates for this session. Approve, reject, or wait for an existing proposal to expire.");
+    }
+    if (active.length >= MAX_PENDING_BUTLER_CANDIDATES_GLOBAL) {
+      throw new Error("Too many pending Butler skill candidates. Approve, reject, or wait for an existing proposal to expire.");
+    }
   }
 
   private requireAgentResult(owner: string, id: string): AgentSkillResultRecord {
@@ -996,9 +1141,9 @@ export class SkillsService {
     return run;
   }
 
-  private runAgentArchiveProposal<T>(work: () => Promise<T>): Promise<T> {
-    const run = this.agentArchiveProposalTail.then(work, work);
-    this.agentArchiveProposalTail = run.then(() => undefined, () => undefined);
+  private runAgentCandidateProposal<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.agentCandidateProposalTail.then(work, work);
+    this.agentCandidateProposalTail = run.then(() => undefined, () => undefined);
     return run;
   }
 
@@ -1019,7 +1164,7 @@ export class SkillsService {
   }
 
   private publicAgentResult(result: AgentSkillResultRecord): AgentSkillChangeResult {
-    const { owner: _owner, environment: _environment, cwd: _cwd, createdSkillId: _createdSkillId, previousContent: _previousContent, appliedContentHash: _appliedContentHash, appliedContent: _appliedContent, appliedArchiveManifest: _appliedArchiveManifest, undoneAt: _undoneAt, ...view } = result;
+    const { owner: _owner, environment: _environment, cwd: _cwd, createdSkillId: _createdSkillId, previousContent: _previousContent, appliedContentHash: _appliedContentHash, appliedContent: _appliedContent, appliedArchiveManifest: _appliedArchiveManifest, previousArchiveBase64: _previousArchiveBase64, installedArchiveSha256: _installedArchiveSha256, undoneAt: _undoneAt, ...view } = result;
     return { ...view, verification: { ...view.verification }, undo: { ...view.undo }, skill: { ...view.skill, capabilities: { ...view.skill.capabilities } } };
   }
 
@@ -1030,6 +1175,12 @@ export class SkillsService {
   private environmentLabel(environmentId: SkillEnvironmentId): string {
     if (environmentId === "butler-pi") return "Butler Pi (butler-pi)";
     return "Worker Pi (worker-pi)";
+  }
+
+  private agentTarget(environmentId: SkillEnvironmentId, scope: SkillScope): string {
+    return this.options.sharedSkillsDir && scope === "user"
+      ? "shared Butler and Worker registry / user scope"
+      : `${this.environmentLabel(environmentId)} / ${scope} scope`;
   }
 
   private fullContentEvidence(content: string, heading: string): string {
@@ -1056,6 +1207,39 @@ export class SkillsService {
     return `bounded JSON-escaped line diff: ${changes.join("\n") || "no content changes"}`;
   }
 
+  private async replaceAgentArchiveUnlocked(input: {
+    environment: SkillEnvironmentId;
+    name: string;
+    archiveBase64: string;
+    expectedCurrentSha256: string;
+    scope: SkillScope;
+    cwd?: string | null;
+  }): Promise<SkillCatalogItem> {
+    const name = safeName(input.name);
+    const root = await this.mutableRoot(input.environment, input.scope, input.cwd);
+    await this.ensureMutableRoot(root, input.environment, input.scope);
+    return replaceExistingSkillArchive({
+      root,
+      name,
+      archiveBase64: input.archiveBase64,
+      expectedCurrentSha256: input.expectedCurrentSha256,
+      validateArchive: async (archive) => {
+        const inspected = await inspectAgentSkillArchive(name, archive, MAX_SKILL_BYTES);
+        if (inspected.files.length === 0) throw new Error("Replacement skill archive is empty.");
+      },
+      importArchive: async () => {
+        const imported = await this.importArchiveUnlocked({
+          environment: input.environment,
+          archiveBase64: input.archiveBase64,
+          scope: input.scope,
+          cwd: input.cwd
+        });
+        if (imported.length !== 1 || imported[0]?.name !== name) throw new Error("Replacement did not install the expected skill.");
+        return imported[0];
+      }
+    });
+  }
+
   private async assertAgentDestinationAvailable(environmentId: SkillEnvironmentId, name: string, skillScope: SkillScope, cwd?: string | null): Promise<string> {
     const resolvedCwd = await this.resolveCwd(cwd);
     const roots = this.roots(environmentId, resolvedCwd);
@@ -1067,97 +1251,10 @@ export class SkillsService {
       : `Destination is clear; ${sameNamed.length} same-named skill${sameNamed.length === 1 ? " exists" : "s exist"} elsewhere in the catalog and may be shadowed.`;
   }
 
-  private async fetchGithubSkillArchive(source: string): Promise<Buffer> {
-    const archiveUrl = this.githubArchiveUrl(source);
-    const fetchImpl = this.options.fetchImpl ?? globalThis.fetch;
-    const response = await fetchImpl(archiveUrl, {
-      headers: { accept: "application/zip", "user-agent": "manor-skill-installer" },
-      redirect: "follow",
-      signal: AbortSignal.timeout(30_000)
-    });
-    if (!response.ok) throw new Error(`GitHub skill archive download failed with status ${response.status}.`);
-    const reportedLength = Number(response.headers.get("content-length"));
-    if (Number.isFinite(reportedLength) && reportedLength > MAX_ARCHIVE_BYTES) throw new Error("Skill archive is too large.");
-    if (!response.body) throw new Error("GitHub skill archive download returned no content.");
-    const reader = response.body.getReader();
-    const chunks: Buffer[] = [];
-    let total = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_ARCHIVE_BYTES) {
-        await reader.cancel();
-        throw new Error("Skill archive is too large.");
-      }
-      chunks.push(Buffer.from(value));
-    }
-    if (total === 0) throw new Error("GitHub skill archive download returned no content.");
-    return Buffer.concat(chunks, total);
-  }
-
-  private githubArchiveUrl(source: string): string {
-    const { owner, repository } = this.githubRepository(source);
-    return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/archive/HEAD.zip`;
-  }
-
-  private githubRepository(source: string): { owner: string; repository: string } {
-    let url: URL;
-    try {
-      url = new URL(source);
-    } catch {
-      throw new Error("Multi-file agent installs require a public GitHub repository URL.");
-    }
-    const parts = url.pathname.split("/").filter(Boolean);
-    const owner = parts[0] ?? "";
-    const repository = (parts[1] ?? "").replace(/\.git$/, "");
-    const validSegment = /^[A-Za-z0-9_.-]+$/;
-    if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password || url.search || url.hash || parts.length !== 2 || !validSegment.test(owner) || !validSegment.test(repository)) {
-      throw new Error("Multi-file agent installs require a public GitHub repository URL.");
-    }
-    return { owner, repository };
-  }
-
-  private async inspectAgentArchive(expectedName: string, archive: Buffer): Promise<{
-    description: string;
-    files: string[];
-    skillContent: string;
-    manifest: Array<{ path: string; sha256: string }>;
-  }> {
-    if (archive.length === 0 || archive.length > MAX_ARCHIVE_BYTES) throw new Error("Skill archive is empty or too large.");
-    const staged = await fs.mkdtemp(path.join(tmpdir(), "manor-skill-archive-"));
-    try {
-      const extracted = await this.extractArchive(archive, staged);
-      if (extracted.entries.length !== 1) throw new Error("Agent-managed archive installs must contain exactly one skill.");
-      const entry = extracted.entries[0]!;
-      if (entry.name !== expectedName) throw new Error(`The GitHub archive declares ${entry.name}, not ${expectedName}.`);
-      const skillContent = await fs.readFile(path.join(staged, entry.archiveRoot, "SKILL.md"), "utf8");
-      if (Buffer.byteLength(skillContent, "utf8") > MAX_AGENT_SKILL_BYTES) {
-        throw new Error(`Agent-managed archive SKILL.md content must be ${MAX_AGENT_SKILL_BYTES} bytes or fewer.`);
-      }
-      const files = extracted.files.map((file) => path.posix.relative(entry.archiveRoot, file));
-      const manifest = await Promise.all(files.map(async (file) => ({
-        path: file,
-        sha256: this.contentHash(await fs.readFile(path.join(staged, entry.archiveRoot, ...file.split("/"))))
-      })));
-      return { description: entry.description, files, skillContent, manifest };
-    } finally {
-      await fs.rm(staged, { recursive: true, force: true });
-    }
-  }
-
-  private archiveContentEvidence(files: string[], skillContent: string): string {
-    const visible: string[] = [];
-    let bytes = 0;
-    for (const file of files) {
-      const lineBytes = Buffer.byteLength(`${file}\n`, "utf8");
-      if (bytes + lineBytes > MAX_AGENT_ARCHIVE_MANIFEST_EVIDENCE_BYTES) break;
-      visible.push(file);
-      bytes += lineBytes;
-    }
-    const omitted = files.length - visible.length;
-    const manifest = `${visible.join("\n")}${omitted ? `\n[${omitted} more files omitted; the SHA-256 identifies the complete approved archive]` : ""}`;
-    return `Validated archive file manifest (${files.length} files):\n${manifest}\nComplete proposed SKILL.md:\n${AGENT_SKILL_CONTENT_MARKER}\n${JSON.stringify(skillContent)}`;
+  private sharedSkillsRoot(environmentId: SkillEnvironmentId): string {
+    if (this.options.sharedSkillsDir) return path.resolve(this.options.sharedSkillsDir);
+    const agentDir = environmentId === "butler-pi" ? this.options.butlerPiAgentDir : this.options.workerPiAgentDir;
+    return path.resolve(agentDir, "skills");
   }
 
   private async validateSkillDocument(name: string, content: string): Promise<Skill> {
@@ -1193,7 +1290,7 @@ export class SkillsService {
       const origin = entry.originHint ?? this.classifyOrigin(filePath, roots);
       const projectLocal = roots.projectLocal.some((root) => isWithin(root, filePath));
       const scope: SkillScope = projectLocal ? "project" : "user";
-      const mutable = origin === "local" && (isWithin(roots.user, filePath) || projectLocal);
+      const mutable = origin === "local" && (isWithin(roots.user, filePath) || (!this.options.sharedSkillsDir && projectLocal));
       byPath.set(filePath, {
         id: skillId(environmentId, filePath),
         environment: environmentId,
@@ -1216,7 +1313,7 @@ export class SkillsService {
     const agentDir = environmentId === "butler-pi" ? this.options.butlerPiAgentDir : this.options.workerPiAgentDir;
     const project = path.resolve(cwd, ".pi", "skills");
     return {
-      user: path.resolve(agentDir, "skills"),
+      user: this.sharedSkillsRoot(environmentId),
       project,
       projectLocal: [project, ...this.ancestorAgentSkillRoots(cwd)],
       system: null,
@@ -1246,9 +1343,53 @@ export class SkillsService {
     if (!ENVIRONMENTS.some((entry) => entry.id === environmentId && entry.capabilities.create)) {
       throw new Error("This environment does not support skill changes.");
     }
+    if (this.options.sharedSkillsDir && scope === "project") {
+      throw new Error("Project skills are repository files and must be changed by Worker.");
+    }
     const resolvedCwd = await this.resolveCwd(cwd);
     const roots = this.roots(environmentId, resolvedCwd);
-    return scope === "project" ? this.ensureProjectRoot(roots.project, resolvedCwd) : roots.user;
+    return scope === "project" ? this.ensureProjectRoot(roots.project, resolvedCwd, this.directoryMode(environmentId, scope)) : roots.user;
+  }
+
+  private directoryMode(environmentId: SkillEnvironmentId, scope: SkillScope = "user"): number {
+    if (this.options.sharedSkillsDir && scope === "user") return 0o755;
+    return environmentId === "worker-pi" || scope === "project" ? 0o755 : 0o700;
+  }
+
+  private fileMode(environmentId: SkillEnvironmentId, executable: boolean, scope: SkillScope = "user"): number {
+    if (this.options.sharedSkillsDir && scope === "user") return executable ? 0o755 : 0o644;
+    if (environmentId === "worker-pi" || scope === "project") return executable ? 0o755 : 0o644;
+    return executable ? 0o700 : 0o600;
+  }
+
+  private async ensureMutableRoot(root: string, environmentId: SkillEnvironmentId, scope: SkillScope = "user"): Promise<void> {
+    const mode = this.directoryMode(environmentId, scope);
+    await fs.mkdir(root, { recursive: true, mode });
+    await fs.chmod(root, mode);
+    await this.setManagedOwnership(root, environmentId, scope);
+  }
+
+  private async setInstalledPermissions(root: string, environmentId: SkillEnvironmentId, scope: SkillScope = "user"): Promise<void> {
+    const visit = async (target: string): Promise<void> => {
+      const stats = await fs.lstat(target);
+      if (stats.isDirectory()) {
+        await fs.chmod(target, this.directoryMode(environmentId, scope));
+        await this.setManagedOwnership(target, environmentId, scope);
+        const entries = await fs.readdir(target);
+        for (const entry of entries) await visit(path.join(target, entry));
+        return;
+      }
+      if (!stats.isFile()) throw new Error("Installed skill contains an unsupported file type.");
+      await fs.chmod(target, this.fileMode(environmentId, (stats.mode & 0o111) !== 0, scope));
+      await this.setManagedOwnership(target, environmentId, scope);
+    };
+    await visit(root);
+  }
+
+  private async setManagedOwnership(target: string, environmentId: SkillEnvironmentId, scope: SkillScope): Promise<void> {
+    void target;
+    void environmentId;
+    void scope;
   }
 
   private async findRecord(environmentId: SkillEnvironmentId, id: string, cwd?: string | null): Promise<SkillRecord> {
@@ -1276,7 +1417,7 @@ export class SkillsService {
     return root;
   }
 
-  private async ensureProjectRoot(root: string, cwd: string): Promise<string> {
+  private async ensureProjectRoot(root: string, cwd: string, mode = 0o755): Promise<string> {
     let current = await fs.realpath(cwd);
     const relative = path.relative(path.resolve(cwd), path.resolve(root));
     if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Invalid project skill root.");
@@ -1288,9 +1429,10 @@ export class SkillsService {
         current = await fs.realpath(candidate);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        await fs.mkdir(candidate, { mode: 0o700 });
+        await fs.mkdir(candidate, { mode });
         current = await fs.realpath(candidate);
       }
+      await fs.chmod(current, mode);
       await this.assertProjectPath(current);
     }
     return current;
@@ -1322,11 +1464,15 @@ export class SkillsService {
     return filePath;
   }
 
-  private findByPath(records: SkillRecord[], filePath: string): SkillRecord {
-    const target = path.resolve(filePath);
-    const record = records.find((entry) => path.resolve(entry.filePath) === target);
-    if (!record) throw new Error("Installed skill was not discovered.");
-    return record;
+  private async findByPath(records: SkillRecord[], filePath: string): Promise<SkillRecord> {
+    const resolvedTarget = path.resolve(filePath);
+    const target = await fs.realpath(resolvedTarget).catch(() => resolvedTarget);
+    for (const record of records) {
+      const resolvedRecord = path.resolve(record.filePath);
+      const candidate = await fs.realpath(resolvedRecord).catch(() => resolvedRecord);
+      if (candidate === target) return record;
+    }
+    throw new Error("Installed skill was not discovered.");
   }
 
   private assertValidSkillDir(directory: string, expectedName: string): void {
@@ -1337,72 +1483,6 @@ export class SkillsService {
     }
   }
 
-  private async extractArchive(archive: Buffer, staged: string): Promise<ExtractedSkillArchive> {
-    const zip = await JSZip.loadAsync(archive, { createFolders: false });
-    const files = Object.values(zip.files).filter((entry) => !entry.dir);
-    if (files.length === 0 || files.length > MAX_ARCHIVE_FILES) throw new Error("Skill archive has an invalid number of files.");
-    let expandedBytes = 0;
-    const topLevel = new Set<string>();
-    for (const entry of files) {
-      const rawName = (entry as typeof entry & { unsafeOriginalName?: string }).unsafeOriginalName ?? entry.name;
-      const relative = validateArchivePath(rawName);
-      const unixMode = typeof entry.unixPermissions === "number" ? entry.unixPermissions : parseInt(String(entry.unixPermissions || "0"), 8);
-      if ((unixMode & 0o170000) === 0o120000) throw new Error("Skill archives cannot contain symbolic links.");
-      const destination = path.join(staged, ...relative.split("/"));
-      if (!isWithin(staged, destination)) throw new Error("Archive contains an unsafe path.");
-      await fs.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
-      expandedBytes += await this.extractArchiveEntry(entry, destination, expandedBytes, path.posix.basename(relative) === "SKILL.md");
-      topLevel.add(relative.split("/")[0]!);
-    }
-    const entries: ExtractedSkillArchive["entries"] = [];
-    const declaredNames = new Set<string>();
-    for (const archiveRoot of [...topLevel].sort()) {
-      const directory = path.join(staged, archiveRoot);
-      if (!(await exists(path.join(directory, "SKILL.md")))) throw new Error(`Imported skill ${archiveRoot} is missing SKILL.md.`);
-      const result = loadSkillsFromDir({ dir: directory, source: "staged" });
-      const skill = result.skills[0];
-      if (result.skills.length !== 1 || !skill) {
-        throw new Error(result.diagnostics[0]?.message ?? "SKILL.md must contain a valid name and description.");
-      }
-      const name = safeName(skill.name);
-      if (declaredNames.has(name)) throw new Error(`Skill archive declares ${name} more than once.`);
-      declaredNames.add(name);
-      entries.push({ archiveRoot, name, description: skill.description });
-    }
-    return { entries, files: files.map((entry) => validateArchivePath((entry as typeof entry & { unsafeOriginalName?: string }).unsafeOriginalName ?? entry.name)).sort() };
-  }
-
-  private async extractArchiveEntry(entry: JSZip.JSZipObject, destination: string, expandedBytes: number, isSkillFile: boolean): Promise<number> {
-    const handle = await fs.open(destination, "wx", 0o600);
-    let entryBytes = 0;
-    let failure: unknown = null;
-    try {
-      await pipeline(entry.nodeStream("nodebuffer"), new Writable({
-        write: (chunk: Buffer | Uint8Array | string, _encoding, callback) => {
-          const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-          entryBytes += data.length;
-          if (expandedBytes + entryBytes > MAX_ARCHIVE_EXPANDED_BYTES) {
-            callback(new Error("Expanded skill archive is too large."));
-            return;
-          }
-          if (isSkillFile && entryBytes > MAX_SKILL_BYTES) {
-            callback(new Error("Skill content is too large."));
-            return;
-          }
-          void handle.write(data).then(() => callback(), callback);
-        }
-      }));
-    } catch (error) {
-      failure = error;
-    } finally {
-      await handle.close();
-    }
-    if (failure) {
-      await fs.rm(destination, { force: true });
-      throw failure;
-    }
-    return entryBytes;
-  }
 }
 
 async function exists(target: string): Promise<boolean> {

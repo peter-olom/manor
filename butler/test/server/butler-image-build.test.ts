@@ -32,5 +32,5 @@ test('Manor appliance images are local source builds', async () => {
 
   assert.doesNotMatch(compose, /ghcr\.io\/peter-olom\/manor-/);
   assert.doesNotMatch(compose, /MANOR_IMAGE_(?:REGISTRY|TAG)/);
-  assert.equal((compose.match(/image: manor-[a-z-]+:local/g) ?? []).length, 8);
+  assert.equal((compose.match(/image: manor-[a-z-]+:local/g) ?? []).length, 9);
 });

@@ -28,11 +28,12 @@ const CALLBACK_REVIEW_TOOL_NAMES = new Set([
   "disprove_review_finding",
   "flush_rejected_acceptance_points",
   "review_preview_proof",
+  "confirm_worker_skill_operability",
   "request_self_improvement",
   "message_job",
   "reply_to_operator"
 ]);
-const CALLBACK_SUPERVISOR_COMPLETION_TOOLS = new Set(["flush_rejected_acceptance_points", "message_job", "reply_to_operator"]);
+const CALLBACK_SUPERVISOR_COMPLETION_TOOLS = new Set(["flush_rejected_acceptance_points", "confirm_worker_skill_operability", "message_job", "reply_to_operator"]);
 
 export function assertCallbackSupervisorPromptSucceeded(
   messages: readonly unknown[],

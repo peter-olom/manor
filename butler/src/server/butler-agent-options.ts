@@ -11,6 +11,7 @@ import type { VisionInspectionService } from "./vision-inspection.js";
 import type { ExtensionUiBroker } from "./extension-ui-broker.js";
 import type { SkillsService } from "./skills-service.js";
 import type { PairAutomation } from "../shared/pairing.js";
+import type { ButlerExecutorClient } from "./butler-executor-client.js";
 
 export type ButlerDelegationAttachmentAcknowledgement = {
   attached: boolean;
@@ -62,6 +63,7 @@ export type ButlerAutomationAccess = {
 export type ButlerAgentServiceOptions = {
   store: ButlerStateStore;
   piRpcWorkerClient?: PiRpcWorkerClient | null;
+  butlerExecutorClient?: ButlerExecutorClient | null;
   hostController: HostControllerClient;
   runtimeBroker: RuntimeBrokerClient;
   serviceTemplateRegistry: ServiceTemplateRegistry;

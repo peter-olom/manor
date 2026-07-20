@@ -445,6 +445,13 @@ test("isolated review tools stop when a newer callback replaces the attempt", as
         }
       },
       {
+        name: "unapproved_callback_tool",
+        label: "Unapproved callback tool",
+        description: "",
+        parameters: {} as never,
+        execute: async () => ({ content: [{ type: "text", text: "proposed" }], details: {} })
+      },
+      {
         name: "delete_job",
         label: "Delete job",
         description: "",

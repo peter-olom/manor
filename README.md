@@ -182,6 +182,23 @@ Worker outbound HTTP and HTTPS defaults to the Internet through Manor's proxy. T
 
 Tools that require `apt`, root access, system-wide paths, or additional operating-system libraries must use the Power User workflow: bake them into the Worker image and rebuild Manor. A user-space CLI that depends on a missing system library belongs in that image as well. This keeps the system layer reproducible while allowing self-contained CLIs to be installed when needed.
 
+## Shared Skills
+
+Butler and Worker load appliance-wide user skills from one shared registry. Butler publishes to it through Manor's validated skill workflow. Butler's command executor and every Worker mount the published registry read-only, so neither agent can bypass publication by changing installed files directly. Repository-local skills remain ordinary repository files.
+
+For a repository-backed skill, Butler performs the installation work itself:
+
+- clone through the standard CAR-aware Git path into writable Butler scratch
+- inspect the repository and choose the required build or installation commands
+- run the skill's real verification or doctor command
+- ask the operator to approve the exact prepared files
+- publish the validated package to the shared registry
+- start a fresh Worker session to load and independently exercise the installed skill
+
+The source repository is not pinned or replaced with a digest-addressed checkout. The approval records a hash of the exact prepared package so the files approved by the operator are the files Manor publishes.
+
+Butler's executor uses the Worker toolchain as an unprivileged account. It can write only its scratch volume. Repositories and installed skills are read-only there. Worker keeps normal write access to repositories and supplies the final execution proof. Existing Butler and Worker user skills are copied into the shared registry on upgrade when their names do not conflict; the old volumes remain intact.
+
 ## Content Admission Review
 
 Content Admission Review, or CAR, reviews a bounded representation at the main routes where external instructions enter Manor:
@@ -257,12 +274,13 @@ The Worker environment provides:
 - repo and worktree access through a dedicated Docker volume mounted at `/repos`
 - shared runtime state through dedicated Docker volumes
 - local helper access through `manor-harness`
+- read-only access to the appliance-wide shared skill registry
 
 The Pi RPC harness provides Worker sessions for Manor's supported OpenAI/Codex, Ollama Local, Ollama Cloud, and OpenCode Go providers. These sessions execute in the Worker environment and receive the same job payload, workspace access, harness capabilities, reporting contract, and Butler review.
 
 The `worker` service runs in the `manor-worker` container. Its runtime identity is `worker@manor-worker`, and it hosts the complete Worker environment. The UI exposes exactly two agent CLIs: Butler CLI and Worker CLI.
 
-Workers own repository work. Butler and the broker own runtime lifecycle and policy.
+Workers own repository changes. Butler can inspect repositories read-only, prepare and publish shared skills from isolated scratch, and manage runtime lifecycle and policy.
 
 ### Previews
 

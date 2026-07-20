@@ -42,3 +42,33 @@ test("the Pi Worker uses the shared Worker environment", async () => {
   assert.match(index, /workerPiRpcCliPath/);
   assert.match(index, /manageSessionDirectories: workerPiRpcCliPath === null/);
 });
+
+test("Butler and Worker share skills while repository writes stay Worker-only", async () => {
+  const compose = await readFile(composePath, "utf8");
+  const section = (name: string, next?: string) => {
+    const start = compose.indexOf(`\n  ${name}:\n`);
+    const end = next ? compose.indexOf(`\n  ${next}:\n`, start + 1) : compose.indexOf("\nnetworks:\n", start + 1);
+    assert.ok(start >= 0 && end > start, `missing ${name} service`);
+    return compose.slice(start, end);
+  };
+  const butler = section("butler", "butler-executor");
+  const executor = section("butler-executor", "ollama");
+  const worker = section("worker", "egress");
+  const desktop = section("desktop-proof");
+
+  assert.match(butler, /repos:\/repos:ro/);
+  assert.match(butler, /skill-registry:\/skills\n/);
+  assert.match(butler, /skill-registry:\/home\/butler\/\.pi\/agent\/skills:ro/);
+  assert.match(executor, /read_only: true/);
+  assert.match(executor, /repos:\/repos:ro/);
+  assert.match(executor, /skill-registry:\/skills:ro/);
+  assert.match(executor, /butler-scratch:\/scratch/);
+  assert.match(executor, /MANOR_HARNESS_SOCKET_PATH: \/butler-executor-runtime\/admission\.sock/);
+  assert.match(executor, /- executor-egress/);
+  assert.doesNotMatch(executor, /MANOR_BUTLER_BASE_URL|\n\s+- admission\n|\n\s+- internet\n/);
+  assert.match(executor, /pids_limit: 256/);
+  assert.doesNotMatch(executor, /RUNTIME_BROKER_TOKEN|MANOR_HOST_CONTROLLER_TOKEN|harness-state/);
+  assert.match(worker, /skill-registry:\/worker-pi\/agent\/skills:ro/);
+  assert.match(worker, /- repos:\/repos\n/);
+  assert.match(desktop, /repos:\/repos:ro/);
+});

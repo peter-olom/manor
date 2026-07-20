@@ -111,7 +111,134 @@ test("imports only staged skill files without executing package content", async 
   assert.deepEqual(imported.map((skill) => skill.name), ["safe-import"]);
   await assert.rejects(() => fs.access(marker));
   const scriptMode = (await fs.stat(path.join(setup.butlerPi, "skills", "safe-import", "scripts", "install.sh"))).mode & 0o777;
-  assert.equal(scriptMode, 0o600);
+  assert.equal(scriptMode, 0o700);
+});
+
+test("makes Worker skill archives readable and preserves executable assets", async (t) => {
+  const setup = await fixture(t);
+  const zip = new JSZip();
+  zip.file("worker-tool/SKILL.md", "---\nname: worker-tool\ndescription: Worker tool\n---\n\nRun bin/worker-tool.\n");
+  zip.file("worker-tool/bin/worker-tool", "#!/bin/sh\nexit 0\n", { unixPermissions: 0o100755 });
+  const archiveBase64 = (await zip.generateAsync({ type: "nodebuffer", platform: "UNIX" })).toString("base64");
+
+  await setup.service.importArchive({ environment: "worker-pi", archiveBase64, cwd: setup.cwd });
+
+  const skillRoot = path.join(setup.workerPi, "skills", "worker-tool");
+  assert.equal((await fs.stat(path.join(setup.workerPi, "skills"))).mode & 0o777, 0o755);
+  assert.equal((await fs.stat(skillRoot)).mode & 0o777, 0o755);
+  assert.equal((await fs.stat(path.join(skillRoot, "SKILL.md"))).mode & 0o777, 0o644);
+  assert.equal((await fs.stat(path.join(skillRoot, "bin", "worker-tool"))).mode & 0o777, 0o755);
+});
+
+test("repairs legacy Worker skill permissions on startup", async (t) => {
+  const setup = await fixture(t);
+  const skillRoot = path.join(setup.workerPi, "skills", "legacy-worker-tool");
+  await fs.mkdir(path.join(skillRoot, "bin"), { recursive: true, mode: 0o700 });
+  await fs.writeFile(path.join(skillRoot, "SKILL.md"), "---\nname: legacy-worker-tool\ndescription: Legacy tool\n---\n\nUse it.\n", { mode: 0o600 });
+  await fs.writeFile(path.join(skillRoot, "bin", "legacy-worker-tool"), "binary", { mode: 0o700 });
+  await fs.chmod(path.join(setup.workerPi, "skills"), 0o700);
+
+  await setup.service.repairWorkerUserSkillPermissions();
+
+  assert.equal((await fs.stat(path.join(setup.workerPi, "skills"))).mode & 0o777, 0o755);
+  assert.equal((await fs.stat(skillRoot)).mode & 0o777, 0o755);
+  assert.equal((await fs.stat(path.join(skillRoot, "SKILL.md"))).mode & 0o777, 0o644);
+  assert.equal((await fs.stat(path.join(skillRoot, "bin", "legacy-worker-tool"))).mode & 0o777, 0o755);
+  assert.equal((await fs.stat(skillRoot)).uid, process.getuid?.() ?? 0);
+  assert.equal((await fs.stat(skillRoot)).gid, process.getgid?.() ?? 0);
+});
+
+test("uses one shared user registry for Butler and Worker", async (t) => {
+  const setup = await fixture(t);
+  const sharedSkills = path.join(setup.root, "shared-skills");
+  const service = new SkillsService({
+    butlerPiAgentDir: setup.butlerPi,
+    workerPiAgentDir: setup.workerPi,
+    sharedSkillsDir: sharedSkills,
+    workspaceRoot: setup.workspace
+  });
+
+  await service.create({
+    environment: "butler-pi",
+    name: "shared-tool",
+    description: "Available to both agents",
+    instructions: "Run the shared tool.",
+    cwd: setup.cwd
+  });
+
+  assert.equal((await service.list("butler-pi", setup.cwd)).some((skill) => skill.name === "shared-tool"), true);
+  assert.equal((await service.list("worker-pi", setup.cwd)).some((skill) => skill.name === "shared-tool"), true);
+  assert.equal((await fs.stat(path.join(sharedSkills, "shared-tool"))).mode & 0o777, 0o755);
+  assert.equal((await fs.stat(path.join(sharedSkills, "shared-tool", "SKILL.md"))).mode & 0o777, 0o644);
+  const workerSkill = (await service.list("worker-pi", setup.cwd)).find((skill) => skill.name === "shared-tool")!;
+  await service.delete("worker-pi", workerSkill.id, setup.cwd);
+  assert.equal((await service.list("butler-pi", setup.cwd)).some((skill) => skill.name === "shared-tool"), false);
+
+  await writeSkill(path.join(setup.cwd, ".pi", "skills"), "repo-tool");
+  const repoTool = (await service.list("butler-pi", setup.cwd)).find((skill) => skill.name === "repo-tool")!;
+  assert.equal(repoTool.mutable, false);
+  await assert.rejects(() => service.create({
+    environment: "butler-pi",
+    scope: "project",
+    name: "blocked-project-tool",
+    description: "Must be changed by Worker",
+    instructions: "Do nothing.",
+    cwd: setup.cwd
+  }), /must be changed by Worker/i);
+});
+
+test("migrates valid legacy user skills without overwriting shared entries", async (t) => {
+  const setup = await fixture(t);
+  const sharedSkills = path.join(setup.root, "shared-skills");
+  const legacyButler = path.join(setup.root, "legacy-butler");
+  const legacyWorker = path.join(setup.root, "legacy-worker");
+  await writeSkill(legacyButler, "butler-tool", "Legacy Butler tool");
+  await fs.mkdir(path.join(legacyButler, "Invalid Legacy Name"), { recursive: true });
+  await writeSkill(legacyWorker, "worker-tool", "Legacy Worker tool");
+  await writeSkill(sharedSkills, "worker-tool", "Existing shared tool");
+  const service = new SkillsService({
+    butlerPiAgentDir: setup.butlerPi,
+    workerPiAgentDir: setup.workerPi,
+    sharedSkillsDir: sharedSkills,
+    workspaceRoot: setup.workspace
+  });
+
+  const result = await service.migrateLegacyUserSkills([legacyButler, legacyWorker]);
+
+  assert.deepEqual(result, { migrated: 1, skipped: 1, failed: 1 });
+  assert.equal((await service.list("butler-pi", setup.cwd)).some((skill) => skill.name === "butler-tool"), true);
+  assert.match(await fs.readFile(path.join(sharedSkills, "worker-tool", "SKILL.md"), "utf8"), /Existing shared tool/);
+  assert.match(await fs.readFile(path.join(legacyWorker, "worker-tool", "SKILL.md"), "utf8"), /Legacy Worker tool/);
+
+  await fs.rm(path.join(sharedSkills, "butler-tool"), { recursive: true });
+  const repeated = await service.migrateLegacyUserSkills([legacyButler, legacyWorker]);
+  assert.deepEqual(repeated, { migrated: 0, skipped: 0, failed: 0 });
+  await assert.rejects(() => fs.access(path.join(sharedSkills, "butler-tool")));
+});
+
+test("uses one readable permission policy for shared project skills", async (t) => {
+  const setup = await fixture(t);
+  const created = await setup.service.create({
+    environment: "butler-pi",
+    scope: "project",
+    name: "shared-project-tool",
+    description: "Shared project tool",
+    instructions: "Use it.",
+    cwd: setup.cwd
+  });
+  const filePath = path.join(setup.cwd, ".pi", "skills", "shared-project-tool", "SKILL.md");
+
+  assert.equal((await fs.stat(path.dirname(filePath))).mode & 0o777, 0o755);
+  assert.equal((await fs.stat(filePath)).mode & 0o777, 0o644);
+  assert.equal((await setup.service.list("worker-pi", setup.cwd)).some((skill) => skill.id !== created.id && skill.name === "shared-project-tool"), true);
+
+  await setup.service.edit({
+    environment: "worker-pi",
+    id: (await setup.service.list("worker-pi", setup.cwd)).find((skill) => skill.name === "shared-project-tool")!.id,
+    content: "---\nname: shared-project-tool\ndescription: Shared project tool\n---\n\nUpdated.\n",
+    cwd: setup.cwd
+  });
+  assert.equal((await fs.stat(filePath)).mode & 0o777, 0o644);
 });
 
 test("imports GitHub archives under the skill's declared name", async (t) => {

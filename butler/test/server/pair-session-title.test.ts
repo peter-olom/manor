@@ -206,6 +206,8 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
   codexUpdates: Array<{ model: string; effort: ReasoningEffort | null }>;
   threadEffortUpdates: Array<{ threadId: string; effort: ReasoningEffort }>;
   codexComposerCalls: string[];
+  capabilitiesEnsured: string[];
+  capabilitiesRevoked: string[];
   sessionRootDir: string;
 }> {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-pair-session-test-"));
@@ -216,6 +218,8 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
   const codexUpdates: Array<{ model: string; effort: ReasoningEffort | null }> = [];
   const threadEffortUpdates: Array<{ threadId: string; effort: ReasoningEffort }> = [];
   const codexComposerCalls: string[] = [];
+  const capabilitiesEnsured: string[] = [];
+  const capabilitiesRevoked: string[] = [];
   const workerModels = runtime?.workerModels ?? [];
   const sessionRootDir = path.join(dir, "sessions");
   const manager = new PairSessionManager({
@@ -251,6 +255,8 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
     sessionRootDir,
     artifactsDir: path.join(dir, "artifacts"),
     sessionTitleGenerator: generator,
+    ensureButlerExecutorCapability: async (threadId: string) => { capabilitiesEnsured.push(threadId); },
+    revokeButlerExecutorCapability: async (threadId: string) => { capabilitiesRevoked.push(threadId); },
     validateWorkspace: runtime?.validateWorkspace ?? (async (cwd: string) => cwd),
     listWorkspaceProjects: async () => [],
     createButlerService: (serviceOptions: unknown) => {
@@ -258,7 +264,7 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
       return service as never;
     }
   } as never);
-  return { manager, pairStore, service, store, codexUpdates, threadEffortUpdates, codexComposerCalls, sessionRootDir };
+  return { manager, pairStore, service, store, codexUpdates, threadEffortUpdates, codexComposerCalls, capabilitiesEnsured, capabilitiesRevoked, sessionRootDir };
 }
 
 test("pair Butler services receive a pair-scoped runtime thread id", async () => {
@@ -271,6 +277,15 @@ test("pair Butler services receive a pair-scoped runtime thread id", async () =>
   const second = await manager.createPair();
 
   assert.deepEqual(runtimeThreadIds, [`butler:${first.id}`, `butler:${second.id}`]);
+});
+
+test("pair Butler executor capabilities follow the pair lifecycle", async () => {
+  const { manager, capabilitiesEnsured, capabilitiesRevoked } = await createManager();
+  const pair = await manager.createPair();
+
+  assert.deepEqual(capabilitiesEnsured, [`butler:${pair.id}`]);
+  assert.equal(await manager.deletePair(pair.id), true);
+  assert.deepEqual(capabilitiesRevoked, [`butler:${pair.id}`]);
 });
 
 test("pair details and restart actions use that pair's Butler service", async () => {
@@ -498,7 +513,7 @@ test("worker-only skill invocation routes through Butler without native Butler e
   assert.match(prompt, /rotate the staging token$/);
 });
 
-test("Butler-only skill invocation requires provisioning before Worker delegation", async () => {
+test("Butler-only skill invocation requires Butler-led preparation before publication", async () => {
   const { manager, service } = await createManager(null, undefined, {
     butlerSkills: [{ id: "butler-asiri", name: "asiri", description: "Operate secrets safely", invocation: "/skill:asiri" }]
   });
@@ -508,7 +523,7 @@ test("Butler-only skill invocation requires provisioning before Worker delegatio
 
   assert.match(prompt, /^\/skill:asiri\n\nMANOR-WIDE SKILL ROUTING/);
   assert.match(prompt, /Selected Worker availability: not installed/);
-  assert.match(prompt, /propose installing the exact skill in worker-pi/);
+  assert.match(prompt, /Have Butler acquire, prepare, and exercise the skill in Butler scratch/);
 });
 
 test("shared Butler and Worker skills expand natively and delegate without provisioning", async () => {
@@ -525,7 +540,7 @@ test("shared Butler and Worker skills expand natively and delegate without provi
 
   assert.match(prompt, /^\/skill:asiri\n\nMANOR-WIDE SKILL ROUTING/);
   assert.match(prompt, /Selected Worker availability: installed/);
-  assert.doesNotMatch(prompt, /propose installing the exact skill/);
+  assert.doesNotMatch(prompt, /acquire, prepare, and exercise the exact skill/);
 });
 
 test("unknown skill invocation asks Butler to acquire it before delegation", async () => {

@@ -42,9 +42,10 @@ test("routing context covers installed, provisioned, and missing Worker skills",
 
   const provision = buildManorSkillRoutingContext("asiri", ["butler-pi"], "worker-pi");
   assert.match(provision, /Selected Worker availability: not installed/);
-  assert.match(provision, /propose installing the exact skill in worker-pi/);
-  assert.match(provision, /then delegate with \/skill:asiri/);
+  assert.match(provision, /Have Butler acquire, prepare, and exercise the skill in Butler scratch/);
+  assert.match(provision, /start a fresh Worker session with \/skill:asiri/i);
 
   const missing = buildManorSkillRoutingContext("asiri", [], "worker-pi");
   assert.match(missing, /No Manor environment currently has this skill/);
+  assert.match(missing, /Butler must inspect the repository/);
 });

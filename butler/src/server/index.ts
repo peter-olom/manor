@@ -7,6 +7,8 @@ import express from "express";
 import httpProxy from "http-proxy";
 
 import { ButlerAgentService } from "./butler-agent.js"; import { directWorkerDispatchMarker } from "./butler-callback-state.js";
+import { ButlerExecutorClient } from "./butler-executor-client.js";
+import { startButlerExecutorAdmissionServer } from "./butler-executor-admission-server.js";
 import { settleFailedDirectWorkerDispatch } from "./direct-codex-message.js";
 import { runSerializedJobMutation, runSerializedJobMutations } from "./butler-job-mutation-guard.js";
 import { createBackgroundModelServices } from "./background-model-services.js";
@@ -67,6 +69,11 @@ const workerPiRpcCliPath = process.env.WORKER_PI_RPC_CLI_PATH ?? null; const wor
 const stateDir = process.env.MANOR_STATE_DIR ?? "/state";
 const workerConfigDir = process.env.WORKER_CONFIG_DIR ?? "/worker-config";
 const harnessRegistryPath = process.env.MANOR_HARNESS_REGISTRY_PATH ?? path.join(stateDir, "harness-capabilities.json");
+const butlerExecutorClient = new ButlerExecutorClient({
+  socketPath: process.env.MANOR_BUTLER_EXECUTOR_SOCKET ?? "/butler-executor-runtime/executor.sock",
+  harnessRegistryPath,
+  contentAdmissionPolicyPath: process.env.MANOR_CONTENT_ADMISSION_POLICY_PATH ?? path.join(path.dirname(harnessRegistryPath), "content-admission-policy.json")
+});
 const harnessAccessPath = process.env.MANOR_HARNESS_ACCESS_FILE ?? path.join(stateDir, "harness-broker-access.json");
 const runtimeBrokerUrl = process.env.RUNTIME_BROKER_URL ?? "http://runtime-broker:8090"; const runtimeEgressAdminUrl = process.env.MANOR_EGRESS_ADMIN_URL ?? "http://egress:8092";
 const runtimeBrokerToken = process.env.RUNTIME_BROKER_TOKEN ?? null;
@@ -183,7 +190,13 @@ const piRpcWorkerClient = new PiRpcWorkerClient({
     await cleanupThreadRuntimeResources(runtimeAccess, context);
   }, extensionUiBroker
 });
-const skillsService = new SkillsService({ butlerPiAgentDir: piAgentDir, workerPiAgentDir, workspaceRoot: process.env.WORKER_REPOS_ROOT ?? "/repos" }); function buildOperatorPromptSuffix(): string | null {
+const skillsService = new SkillsService({
+  butlerPiAgentDir: piAgentDir,
+  workerPiAgentDir,
+  sharedSkillsDir: process.env.MANOR_SHARED_SKILLS_DIR ?? "/skills",
+  butlerScratchRoot: process.env.MANOR_BUTLER_SCRATCH_ROOT ?? "/scratch",
+  workspaceRoot: process.env.WORKER_REPOS_ROOT ?? "/repos"
+}); function buildOperatorPromptSuffix(): string | null {
   const name = getActiveManorSettings().overview.operatorName.trim();
   return name ? `Refer to the operator as ${name}.` : null;
 }
@@ -192,6 +205,7 @@ const butlerAgent = new ButlerAgentService({
   store,
   memoryScheduler,
   piRpcWorkerClient,
+  butlerExecutorClient,
   hostController,
   runtimeBroker,
   serviceTemplateRegistry,
@@ -226,6 +240,7 @@ const pairSessions = new PairSessionManager({
   pairStore,
   store,
   piRpcWorkerClient,
+  butlerExecutorClient,
   skillsService, extensionUiBroker,
   hostController,
   runtimeBroker,
@@ -241,6 +256,8 @@ const pairSessions = new PairSessionManager({
   refreshRuntimeInventory: syncRuntimeInventory,
   memoryScheduler,
   sessionTitleGenerator,
+  ensureButlerExecutorCapability: async (threadId) => { await harnessService.ensureThreadCapability(threadId, process.env.MANOR_BUTLER_SCRATCH_ROOT ?? "/scratch"); },
+  revokeButlerExecutorCapability: async (threadId) => { await harnessService.revokeThreadCapability(threadId); },
   onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload), onWorkerThreadRefreshed: (threadId) => sseHub?.broadcastWorkerThreadRefreshed(threadId)
 });
 const automationScheduler = new SessionAutomationScheduler({ pairStore, dispatch: (input) => pairSessions.runAutomation(input), isBusy: (pair) => pairSessions.isAutomationBusy(pair.id) }); const modelInventoryRefresh = createProviderModelRefreshCoordinator({ pairSessions, piRpcWorkerClient, butlerAgent, scheduleSse: () => sseHub?.schedule() });
@@ -272,6 +289,9 @@ sseHub = new ButlerSseHub(runtimeAccess);
 await fs.mkdir(stateDir, { recursive: true });
 await fs.mkdir(piAgentDir, { recursive: true }); await fs.mkdir(workerPiAgentDir, { recursive: true });
 await fs.mkdir(workerPiSessionRoot, { recursive: true });
+const legacySkillMigration = await skillsService.migrateLegacyUserSkills([process.env.MANOR_LEGACY_BUTLER_SKILLS_DIR ?? "/legacy-butler-pi/agent/skills", process.env.MANOR_LEGACY_WORKER_SKILLS_DIR ?? "/worker-pi/agent/skills"]);
+if (legacySkillMigration.migrated > 0 || legacySkillMigration.failed > 0) console.info(`Shared skill registry migration: ${legacySkillMigration.migrated} migrated, ${legacySkillMigration.skipped} already present, ${legacySkillMigration.failed} failed.`);
+await skillsService.repairSharedSkillRegistryPermissions(); await harnessService.ensureThreadCapability("butler", process.env.MANOR_BUTLER_SCRATCH_ROOT ?? "/scratch");
 
 await butlerAgent.start();
 await piRpcWorkerClient.start();
@@ -410,7 +430,7 @@ registerDeviceAuthRoutes(app, {
     if (target === "worker") void piRpcWorkerClient.refreshModels();
     else void butlerAgent.refreshModelSettings();
   }
-}); registerSkillsRoutes(app, skillsService, { onMutation: (environment) => { if (environment !== "butler-pi") return; void butlerAgent.reloadResources().catch((error) => console.error("Butler skill reload failed", error)); pairSessions.scheduleButlerSkillsReload(); } });
+}); registerSkillsRoutes(app, skillsService, { onMutation: () => { void butlerAgent.reloadResources().catch((error) => console.error("Butler skill reload failed", error)); pairSessions.scheduleButlerSkillsReload(); } });
 
 app.get("/api/runtime", async (_request, response) => {
   try {
@@ -1446,9 +1466,8 @@ if (viteDevServer) {
   });
 }
 
-server.listen(port, "0.0.0.0", () => {
-  console.log(`Butler listening on ${port} (${hotReloadEnabled ? "hot reload" : "static"})`);
-});
+const butlerExecutorAdmissionServer = await startButlerExecutorAdmissionServer(process.env.MANOR_BUTLER_EXECUTOR_ADMISSION_SOCKET ?? "/butler-executor-runtime/admission.sock", (input) => harnessService.handleAction(input));
+server.listen(port, "0.0.0.0", () => console.log(`Butler listening on ${port} (${hotReloadEnabled ? "hot reload" : "static"})`));
 
 server.on("upgrade", (request, socket, head) => {
   const previewRoute =
@@ -1472,6 +1491,7 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 server.on("close", () => { automationScheduler.stop(); stopOllamaCloudModelRecovery(); modelInventoryRefresh.dispose();
+  butlerExecutorAdmissionServer.close();
   clearInterval(leaseReaper);
   clearInterval(artifactReaper);
   clearInterval(runtimeReconciler);

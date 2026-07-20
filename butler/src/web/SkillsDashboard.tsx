@@ -41,7 +41,7 @@ export function SkillsDashboard({ active }: { active: boolean }) {
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
   const [cwd, setCwd] = useState("/repos");
-  const [scope, setScope] = useState<"user" | "project">("user");
+  const [scope] = useState<"user">("user");
   const [creating, setCreating] = useState(false);
   const [createName, setCreateName] = useState("");
   const [createDescription, setCreateDescription] = useState("");
@@ -169,7 +169,7 @@ export function SkillsDashboard({ active }: { active: boolean }) {
   return (
     <section className={`skills-dashboard${active ? " is-active" : ""}`} aria-label="Skills settings">
       <header className="skills-head">
-        <div><span className="eyebrow">Agent capabilities</span><h1>Skills</h1><p>See what your agents can do and where each skill is available.</p></div>
+        <div><span className="eyebrow">Agent capabilities</span><h1>Skills</h1><p>User skills are shared by Butler and Worker. Environment tabs also show repository and package skills.</p></div>
         <a className="button is-primary skills-ask-butler" href="/?ask=add-skill" onClick={askButler}>Ask Butler to add a skill</a>
       </header>
       <nav className="skills-environments" aria-label="Skill environments">
@@ -196,10 +196,10 @@ export function SkillsDashboard({ active }: { active: boolean }) {
       <details className="skills-advanced">
         <summary>Advanced</summary>
         <div className="skills-advanced-body">
-          <div><h2>Manual skill management</h2><p>Choose a destination before creating a skill or installing a trusted archive.</p></div>
+          <div><h2>Manual skill management</h2><p>Manual changes publish to the shared user registry. Ask Butler to have Worker change a repository skill.</p></div>
           <div className="skills-workspace">
             <label>Workspace<input className="input" value={cwd} onChange={(event) => setCwd(event.target.value)} onBlur={() => void loadCatalog()} /></label>
-            <label>Install scope<select className="input" value={scope} onChange={(event) => setScope(event.target.value as "user" | "project")}><option value="user">User</option><option value="project">Project</option></select></label>
+            <label>Install scope<select className="input" value={scope} disabled><option value="user">Shared user registry</option></select></label>
           </div>
           <div className="skills-advanced-actions">
             <button className="button" type="button" onClick={() => { setSelectedId(null); setCreating(true); }}>Create manually</button>
@@ -219,7 +219,7 @@ export function SkillsDashboard({ active }: { active: boolean }) {
           <div className="skills-dialog-head"><div><span className="eyebrow">{detail.scope} · {detail.origin}</span><h2 id="skill-detail-title">{detail.name}</h2><p>{detail.description}</p></div><button className="icon-button" type="button" aria-label="Close" autoFocus onClick={() => setSelectedId(null)}>×</button></div>
           <div className="skills-invocation"><span>Use in chat</span><code>{detail.invocation}</code></div>
           <label>Instructions<textarea className="input skills-content" value={draft} readOnly={!detail.mutable} onChange={(event) => setDraft(event.target.value)} aria-label={`${detail.name} skill content`} /></label>
-          {!detail.mutable ? <p className="muted">Package and system skills are read-only.</p> : null}
+          {!detail.mutable ? <p className="muted">Package, system, and repository skills are read-only here.</p> : null}
           <div className="skills-editor-actions"><button className="button is-danger" type="button" disabled={!detail.mutable || busy} onClick={() => void removeSkill()}>Delete skill</button><button className="button is-primary" type="button" disabled={!detail.mutable || busy || draft === detail.content} onClick={() => void saveSkill()}>Save changes</button></div>
         </> : <div className="skills-dialog-loading">Loading skill…</div>}
       </section></div> : null}

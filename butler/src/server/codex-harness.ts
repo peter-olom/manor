@@ -3,17 +3,16 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { handleHarnessArtifactPolicyAction } from "./codex-harness-artifact-policy.js";
 import {
-  type BrokerAccessRegistryPayload,
   type HarnessCapability,
-  type HarnessRegistryPayload,
-  atomicWriteJson,
   normalizeString,
   looksLikeHarnessLookupFailure,
   normalizeEnv,
   normalizeHeartbeatKind,
   normalizePositiveInteger,
   normalizeStringArray,
-  resolveHarnessStoragePaths
+  readHarnessRegistry,
+  resolveHarnessStoragePaths,
+  writeHarnessRegistries
 } from "./codex-harness-helpers.js";
 import { formatHarnessExecutionContract, formatHarnessRuntimeModel } from "./codex-harness-format.js";
 import { normalizeReportEvidence, normalizeWorkerClaimsReport, validateCompletedWorkerEvidence } from "./codex-harness-report-validation.js";
@@ -75,6 +74,7 @@ export class HarnessService {
   private readonly visionInspection: VisionInspectionService;
   private readonly inputActionAccess: HarnessInputActionAccess | null; private readonly contentAdmission: ContentAdmissionReviewService | null;
   private readonly capabilities = new Map<string, HarnessCapability>();
+  private saveQueue: Promise<void> = Promise.resolve();
   constructor(options: { harnessRegistryPath?: string | null; harnessAccessPath?: string | null; stateDir: string; artifactsDir: string; store: ButlerStateStore; runtimeBroker: RuntimeBrokerClient; serviceTemplateRegistry: ServiceTemplateRegistry; memoryReview?: CodexExecMemoryReviewService | null; memoryScheduler?: MemoryUpdateScheduler | null; visionInspection: VisionInspectionService; inputActionAccess?: HarnessInputActionAccess; contentAdmission?: ContentAdmissionReviewService | null }) {
     const storagePaths = resolveHarnessStoragePaths(options);
     this.registryPath = storagePaths.registryPath;
@@ -99,12 +99,11 @@ export class HarnessService {
   async load(): Promise<void> {
     await fs.mkdir(path.dirname(this.registryPath), { recursive: true });
     await fs.mkdir(path.dirname(this.brokerAccessPath), { recursive: true });
-    const raw = await fs.readFile(this.registryPath, "utf8").catch(() => "");
-    if (!raw) {
+    const parsed = await readHarnessRegistry(this.registryPath);
+    if (!parsed) {
       await this.save();
       return;
     }
-    const parsed = JSON.parse(raw) as Partial<HarnessRegistryPayload>;
     const capabilities = Array.isArray(parsed.capabilities) ? parsed.capabilities : [];
     this.capabilities.clear();
     for (const entry of capabilities) {
@@ -127,13 +126,12 @@ export class HarnessService {
     }
     await this.save();
   }
-  private async save(): Promise<void> {
-    const payload: HarnessRegistryPayload = { capabilities: [...this.capabilities.values()].sort((left, right) => left.createdAt - right.createdAt) };
-    const brokerAccessPayload: BrokerAccessRegistryPayload = { grants: payload.capabilities.map((capability) => ({ token: capability.token, threadId: capability.threadId, createdAt: capability.createdAt, updatedAt: capability.updatedAt })) };
-    await Promise.all([
-      atomicWriteJson(this.registryPath, payload),
-      atomicWriteJson(this.brokerAccessPath, brokerAccessPayload)
-    ]);
+  private save(): Promise<void> {
+    const queued = this.saveQueue.catch(() => undefined).then(async () => {
+      await writeHarnessRegistries(this.registryPath, this.brokerAccessPath, this.capabilities.values());
+    });
+    this.saveQueue = queued;
+    return queued;
   }
   async ensureThreadCapability(threadId: string, cwd: string | null | undefined): Promise<HarnessCapability | null> {
     const normalizedCwd = normalizeString(cwd);
@@ -420,20 +418,19 @@ export class HarnessService {
     action: string;
     params?: Record<string, unknown>;
   }): Promise<{ text: string; data?: Record<string, unknown> }> {
-    const capability = this.requireCapability(input.token);
     const action = normalizeString(input.action);
     const params = input.params ?? {};
-    const thread = this.getThreadContext(capability);
     if (action === "content.admit") {
+      const capability = this.getCapabilityByToken(input.token); if (!capability) throw new Error("Invalid harness token");
       if (!this.contentAdmission) throw new Error("Content admission review is unavailable.");
-      const source = normalizeString(params.source) as ContentAdmissionSource;
-      if (!(["repository", "web_search", "web_fetch", "browser"] as string[]).includes(source)) throw new Error("Unsupported content admission source.");
-      const content = typeof params.content === "string" ? params.content : "";
-      const metadata = typeof params.metadata === "string" ? params.metadata : "";
+      const source = normalizeString(params.source) as ContentAdmissionSource; if (!(["repository", "web_search", "web_fetch", "browser"] as string[]).includes(source)) throw new Error("Unsupported content admission source.");
+      const content = typeof params.content === "string" ? params.content : ""; const metadata = typeof params.metadata === "string" ? params.metadata : "";
       const admission = await this.contentAdmission.admit(source, content, metadata);
-      this.store.addEvent(capability.threadId, "content.admission", `Content admission ${admission.review?.verdict ?? (admission.unavailable ? "unavailable" : "off")} for ${source}.`);
+      if (this.store.getThread(capability.threadId)) this.store.addEvent(capability.threadId, "content.admission", `Content admission ${admission.review?.verdict ?? (admission.unavailable ? "unavailable" : "off")} for ${source}.`);
       return { text: formatContentAdmissionForAgent(admission), data: { admission } };
     }
+    const capability = this.requireCapability(input.token);
+    const thread = this.getThreadContext(capability);
     if (action === "context" || action.startsWith("stack.") || action.startsWith("preview.") || action.startsWith("service.") || action.startsWith("assist.")) {
       await this.maybeAdoptWorkspaceStack(capability);
     }

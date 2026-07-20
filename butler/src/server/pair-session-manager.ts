@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { ButlerAgentService } from "./butler-agent.js";
+import type { ButlerExecutorClient } from "./butler-executor-client.js";
 import { buildProofsByThreadMap } from "./butler-agent-helpers.js";
 import { buildComposerInputItemsPrompt, buildReferencePromptText, normalizeComposerInputItems } from "./reference-inputs.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
@@ -45,6 +46,7 @@ type PairSessionManagerOptions = {
   pairStore: PairStore;
   store: ButlerStateStore;
   piRpcWorkerClient?: PiRpcWorkerClient | null;
+  butlerExecutorClient?: ButlerExecutorClient | null;
   hostController: HostControllerClient;
   runtimeBroker: RuntimeBrokerClient;
   serviceTemplateRegistry: ServiceTemplateRegistry;
@@ -60,6 +62,8 @@ type PairSessionManagerOptions = {
   memoryScheduler?: MemoryUpdateScheduler | null;
   onButlerPatch?: (payload: ButlerLivePatchView) => void;
   onWorkerThreadRefreshed?: (threadId: string) => void;
+  ensureButlerExecutorCapability?: (threadId: string) => Promise<void>;
+  revokeButlerExecutorCapability?: (threadId: string) => Promise<void>;
   sessionTitleGenerator?: SessionTitleGenerator | null;
   skillsService: SkillsService;
   extensionUiBroker: ExtensionUiBroker;
@@ -115,6 +119,7 @@ function pairSystemPrompt(pairId: string): string {
     "The operator only talks to you. Do not tell the operator to message the worker directly.",
     "Call the execution role Worker. Never describe a generic delegation or job as Codex.",
     "When work should be executed, use delegate_to_worker or message_job. When Worker evidence returns, review it adversarially before replying to the operator.",
+    "Repository-backed skill installation belongs to Butler. Use Butler's shell in writable scratch to clone through Content Admission Review, inspect, build, and test the skill. Propose the prepared directory for publication to the shared registry, wait for approval, then apply it. Worker participates only afterward in the fresh-session operability confirmation.",
     "This session can have one automation. Use configure_automation for recurring work at fixed daily wall-clock times, or configure_interval_automation for a bounded request such as every 5 minutes for the next 30 minutes.",
     "Automation times run in the operator's configured timezone. Use local 24-hour HH:mm times and YYYY-MM-DD dates directly without converting to UTC. Distinguish one-off weekdays from recurring weekdays, inclusive end dates from unbounded schedules, and fixed daily windows from relative intervals. If the operator has not set a timezone it defaults to UTC.",
     "If the task or times are materially missing, use ask_operator before configuring. Never claim an automation was created, changed, paused, resumed, or deleted before the matching tool succeeds.",
@@ -880,6 +885,9 @@ export class PairSessionManager {
       throw error;
     }
     this.quiescedPairs.delete(pairId);
+    if (deleted) {
+      await this.options.revokeButlerExecutorCapability?.(`butler:${pairId}`);
+    }
     return deleted;
   }
 
@@ -1133,10 +1141,12 @@ export class PairSessionManager {
     }
     const sessionDir = path.join(this.options.sessionRootDir, pair.id);
     await fs.mkdir(sessionDir, { recursive: true });
+    await this.options.ensureButlerExecutorCapability?.(`butler:${pair.id}`);
     const createService = this.options.createButlerService ?? ((serviceOptions: ConstructorParameters<typeof ButlerAgentService>[0]) => new ButlerAgentService(serviceOptions));
     const service = createService({
       store: this.options.store,
       piRpcWorkerClient: this.options.piRpcWorkerClient ?? null,
+      butlerExecutorClient: this.options.butlerExecutorClient ?? null,
       hostController: this.options.hostController,
       runtimeBroker: this.options.runtimeBroker,
       serviceTemplateRegistry: this.options.serviceTemplateRegistry,

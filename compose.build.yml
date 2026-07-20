@@ -14,7 +14,7 @@ services:
         PI_VERSION: ${PI_VERSION:-0.80.6}
     image: manor-butler:local
     volumes:
-      - ${MANOR_HOST_PROJECT_SOURCE_DIR:-${PWD:-.}}:/repos/manor
+      - ${MANOR_HOST_PROJECT_SOURCE_DIR:-${PWD:-.}}:/repos/manor:ro
 
   # Local build of the Pi-backed Worker host.
   worker:
@@ -25,6 +25,13 @@ services:
     image: manor-worker:local
     volumes:
       - ${MANOR_HOST_PROJECT_SOURCE_DIR:-${PWD:-.}}:/repos/manor
+
+  butler-executor:
+    build:
+      context: .
+      dockerfile: docker/worker/Dockerfile
+      labels: *manor-source-build-labels
+    image: manor-worker:local
 
   egress:
     build:

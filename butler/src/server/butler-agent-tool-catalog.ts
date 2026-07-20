@@ -3,8 +3,8 @@ import type { ButlerToolView } from "./types.js";
 export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "bash",
-    label: "Sandboxed clock",
-    description: "Run the date command in a restricted just-bash sandbox using the operator's configured timezone.",
+    label: "Butler shell",
+    description: "Run a bounded command as the unprivileged Butler executor. The live repository and shared skills are read-only; /scratch is writable.",
     uiEffects: []
   },
   {
@@ -270,6 +270,18 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     label: "Inspect skills",
     description: "List, search, or read installed skills for Butler or Worker without changing them.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while reviewing installed skills." }]
+  },
+  {
+    name: "propose_repository_skill_install",
+    label: "Publish prepared skill",
+    description: "Verify a Butler-prepared skill from scratch and request operator approval to publish it to the shared registry.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while waiting for skill publication approval." }]
+  },
+  {
+    name: "confirm_worker_skill_operability",
+    label: "Confirm Worker skill operability",
+    description: "Confirm a published skill is ready after a fresh Worker loads and exercises it.",
+    uiEffects: [{ kind: "focusButler", description: "Returns the verified skill result to Butler." }]
   },
   {
     name: "propose_skill_change",

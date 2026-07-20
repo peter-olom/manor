@@ -4,26 +4,26 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import JSZip from "jszip";
-
 import { SkillsService } from "../../src/server/skills-service.js";
 import { buildButlerSkillTools } from "../../src/server/butler-agent-skill-tools.js";
 import type { ButlerAgentToolAccess } from "../../src/server/butler-agent-tool-access.js";
 
-async function fixture(t: test.TestContext, fetchImpl?: typeof fetch) {
+async function fixture(t: test.TestContext) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "manor-agent-skills-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const workspace = path.join(root, "repos");
   const cwd = path.join(workspace, "project");
+  const scratch = path.join(root, "scratch");
   await fs.mkdir(cwd, { recursive: true });
+  await fs.mkdir(scratch, { recursive: true });
   const service = new SkillsService({
     butlerPiAgentDir: path.join(root, "butler"),
     workerPiAgentDir: path.join(root, "worker"),
     workerCodexHomeDir: path.join(root, "codex"),
-    workspaceRoot: workspace,
-    fetchImpl
+    butlerScratchRoot: scratch,
+    workspaceRoot: workspace
   });
-  return { service, cwd, butlerDir: path.join(root, "butler") };
+  return { service, cwd, scratch, butlerDir: path.join(root, "butler"), workerDir: path.join(root, "worker") };
 }
 
 function approve(service: SkillsService, owner: string, proposalId: string, messageId = "message-1", questionId = "question-1") {
@@ -90,129 +90,132 @@ test("agent create and install proposals reject occupied destinations before app
   }), /already exists at the requested destination/i);
 });
 
-test("agent fetches, approves, and installs a public GitHub skill archive", async (t) => {
-  const zip = new JSZip();
-  const wrapper = `Asiri_Remote_Connect_Repository-${"a".repeat(40)}`;
-  zip.file(`${wrapper}/SKILL.md`, "---\nname: asiri-remote-connect\ndescription: Connect to mapped remote hosts\n---\n\nRun scripts/remote_connect.py.\n");
-  zip.file(`${wrapper}/scripts/remote_connect.py`, "print('ready')\n");
-  const archive = await zip.generateAsync({ type: "uint8array" });
-  let fetchedUrl = "";
-  let fetchCount = 0;
-  const fetchImpl = (async (input: string | URL | Request) => {
-    fetchCount += 1;
-    fetchedUrl = String(input);
-    return new Response(archive, { status: 200, headers: { "content-length": String(archive.byteLength) } });
-  }) as typeof fetch;
-  const { service, cwd, butlerDir } = await fixture(t, fetchImpl);
-  const owner = "butler:pair-github";
-
-  const proposal = await service.proposeAgentChange(owner, {
+test("repository-backed installs must be prepared by Butler", async (t) => {
+  const { service, cwd } = await fixture(t);
+  await assert.rejects(() => service.proposeAgentChange("butler:repo-install", {
     operation: "install",
-    environment: "butler-pi",
-    source: "https://github.com/peter-olom/asiri-remote-connect",
+    environment: "worker-pi",
+    name: "remote-skill",
+    source: "https://github.com/example/remote-skill",
     cwd
+  }), /Butler-led.*Butler scratch/i);
+});
+
+test("publishes the exact Butler-prepared skill candidate after approval", async (t) => {
+  const { service, scratch, butlerDir } = await fixture(t);
+  const candidate = path.join(scratch, "asiri-remote-connect");
+  await fs.mkdir(path.join(candidate, "bin"), { recursive: true });
+  await fs.writeFile(path.join(candidate, "SKILL.md"), "---\nname: asiri-remote-connect\ndescription: Connect to mapped remote hosts\n---\n\nRun bin/remote-connect.\n");
+  await fs.writeFile(path.join(candidate, "bin", "remote-connect"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const owner = "butler:prepared-candidate";
+
+  const proposal = await service.proposeButlerPreparedInstall(owner, {
+    name: "asiri-remote-connect",
+    source: "https://github.com/peter-olom/asiri-remote-connect @ abcdef1234567890",
+    candidatePath: candidate,
+    evidence: "Butler verification results:\n- doctor exited successfully"
   });
 
-  assert.equal(fetchedUrl, "https://github.com/peter-olom/asiri-remote-connect/archive/HEAD.zip");
-  assert.equal(proposal.sourceVerification, "fetched");
-  assert.match(proposal.contentEvidence, /scripts\/remote_connect\.py/);
-  assert.match(proposal.footprint, /2 files/);
+  assert.equal(proposal.sourceVerification, "butler-prepared");
+  assert.match(proposal.footprint, /Butler-prepared candidate containing 2 files/i);
+  assert.match(proposal.contentEvidence, /doctor exited successfully/);
   approve(service, owner, proposal.id);
   const result = await service.applyApprovedAgentChange(owner, proposal.id);
-
-  assert.equal(result.skill.name, "asiri-remote-connect");
-  assert.equal(fetchCount, 1);
-  assert.equal(await fs.readFile(path.join(butlerDir, "skills", "asiri-remote-connect", "scripts", "remote_connect.py"), "utf8"), "print('ready')\n");
+  const binary = path.join(butlerDir, "skills", "asiri-remote-connect", "bin", "remote-connect");
+  assert.equal((await fs.stat(binary)).mode & 0o777, 0o700);
+  assert.equal(result.verification.operability, "verification-pending");
 
   const undo = await service.proposeAgentChange(owner, { operation: "undo", resultId: result.id });
-  assert.match(undo.footprint, /complete approved archive/i);
   approve(service, owner, undo.id, "message-undo", "question-undo");
-  const undone = await service.applyApprovedAgentChange(owner, undo.id);
-  assert.equal(undone.undo.preservedLocation, null);
+  await service.applyApprovedAgentChange(owner, undo.id);
   await assert.rejects(() => fs.access(path.join(butlerDir, "skills", "asiri-remote-connect")));
-  assert.equal((await fs.readdir(path.join(butlerDir, "skills"))).some((entry) => entry.startsWith(".manor-preserved-asiri-remote-connect-")), false);
 });
 
-test("agent archive proposals cap SKILL.md and retained pending payloads", async (t) => {
-  const zip = new JSZip();
-  zip.file("repo-main/SKILL.md", `---\nname: bounded-archive\ndescription: Bounded archive\n---\n\n${"x".repeat(33 * 1024)}\n`);
-  const oversizedArchive = await zip.generateAsync({ type: "uint8array" });
-  let fetchCount = 0;
-  const oversizedFetch = (async () => {
-    fetchCount += 1;
-    return new Response(oversizedArchive, { status: 200 });
-  }) as typeof fetch;
-  const oversizedFixture = await fixture(t, oversizedFetch);
-  await assert.rejects(() => oversizedFixture.service.proposeAgentChange("butler:oversized", {
-    operation: "install",
-    environment: "butler-pi",
-    name: "bounded-archive",
-    source: "https://github.com/example/bounded-archive",
-    cwd: oversizedFixture.cwd
-  }), /32768 bytes/i);
-  assert.equal(fetchCount, 1);
+test("atomically replaces and can restore an existing broken repository skill", async (t) => {
+  const { service, scratch, butlerDir } = await fixture(t);
+  const installed = path.join(butlerDir, "skills", "asiri-remote-connect");
+  await fs.mkdir(installed, { recursive: true });
+  await fs.writeFile(path.join(installed, "SKILL.md"), "---\nname: asiri-remote-connect\ndescription: Old source-only install\n---\n\nThe binary is missing.\n");
+  const candidate = path.join(scratch, "asiri-remote-connect");
+  await fs.mkdir(path.join(candidate, "bin"), { recursive: true });
+  await fs.writeFile(path.join(candidate, "SKILL.md"), "---\nname: asiri-remote-connect\ndescription: Operational install\n---\n\nRun bin/remote-connect.\n");
+  await fs.writeFile(path.join(candidate, "bin", "remote-connect"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const owner = "butler:repair-existing";
 
-  const validZip = new JSZip();
-  validZip.file("repo-main/SKILL.md", "---\nname: bounded-archive\ndescription: Bounded archive\n---\n\nUse it.\n");
-  const validArchive = await validZip.generateAsync({ type: "uint8array" });
-  const validFetch = (async () => {
-    fetchCount += 1;
-    return new Response(validArchive, { status: 200 });
-  }) as typeof fetch;
-  const { service, cwd } = await fixture(t, validFetch);
-  const owner = "butler:bounded";
-  const first = await service.proposeAgentChange(owner, {
-    operation: "install", environment: "butler-pi", name: "bounded-archive", source: "https://github.com/example/bounded-archive", cwd
+  const proposal = await service.proposeButlerPreparedInstall(owner, {
+    name: "asiri-remote-connect",
+    source: "https://github.com/example/asiri-remote-connect",
+    candidatePath: candidate,
+    evidence: "sealed doctor exited 0"
   });
-  await service.proposeAgentChange(owner, {
-    operation: "install", environment: "worker-pi", name: "bounded-archive", source: "https://github.com/example/bounded-archive", cwd
-  });
-  await assert.rejects(() => service.proposeAgentChange(owner, {
-    operation: "install", environment: "butler-pi", name: "bounded-archive", source: "https://github.com/example/bounded-archive", cwd
-  }), /Too many pending archive skill approvals/i);
-  const reject = service.agentApprovalOptions(first.id).reject;
-  service.bindAgentProposalQuestion(owner, first.id, "message-reject", "question-reject");
-  service.recordAgentApprovalOption(owner, { messageId: "message-reject", questionId: "question-reject", optionId: reject });
-  await service.proposeAgentChange(owner, {
-    operation: "install", environment: "butler-pi", name: "bounded-archive", source: "https://github.com/example/bounded-archive", cwd
-  });
+  assert.match(proposal.conflict, /atomically replaced/i);
+  approve(service, owner, proposal.id);
+  const result = await service.applyApprovedAgentChange(owner, proposal.id);
+  assert.equal(await fs.readFile(path.join(installed, "bin", "remote-connect"), "utf8"), "#!/bin/sh\nexit 0\n");
+
+  const undo = await service.proposeAgentChange(owner, { operation: "undo", resultId: result.id });
+  assert.match(undo.footprint, /restores the complete previous installation/i);
+  approve(service, owner, undo.id, "message-undo-repair", "question-undo-repair");
+  await service.applyApprovedAgentChange(owner, undo.id);
+  assert.match(await fs.readFile(path.join(installed, "SKILL.md"), "utf8"), /Old source-only install/);
+  await assert.rejects(() => fs.access(path.join(installed, "bin", "remote-connect")));
 });
 
-test("concurrent archive proposals cannot bypass retained payload limits", async (t) => {
-  const zip = new JSZip();
-  zip.file("repo-main/SKILL.md", "---\nname: bounded-archive\ndescription: Bounded archive\n---\n\nUse it.\n");
-  const archive = await zip.generateAsync({ type: "uint8array" });
-  let fetchCount = 0;
-  const fetchImpl = (async () => {
-    fetchCount += 1;
-    return new Response(archive, { status: 200 });
-  }) as typeof fetch;
-  const { service, cwd } = await fixture(t, fetchImpl);
-  const owner = "butler:concurrent-bounded";
+test("sealed Butler candidates fail when verification changes their bytes", async (t) => {
+  const { service, scratch } = await fixture(t);
+  const candidate = path.join(scratch, "sealed-skill");
+  await fs.mkdir(candidate, { recursive: true });
+  await fs.writeFile(path.join(candidate, "SKILL.md"), "---\nname: sealed-skill\ndescription: Sealed candidate\n---\n\nRun it.\n");
+  const sealed = await service.sealButlerSkillCandidate("sealed-skill", candidate);
+  t.after(sealed.cleanup);
 
-  const results = await Promise.allSettled(["butler-pi", "worker-pi", "butler-pi"].map((environment) => service.proposeAgentChange(owner, {
-    operation: "install",
-    environment: environment as "butler-pi" | "worker-pi",
-    name: "bounded-archive",
-    source: "https://github.com/example/bounded-archive",
-    cwd
-  })));
-
-  assert.equal(results.filter((result) => result.status === "fulfilled").length, 2);
-  assert.equal(results.filter((result) => result.status === "rejected").length, 1);
-  assert.equal(fetchCount, 2);
-  assert.match(String((results.find((result) => result.status === "rejected") as PromiseRejectedResult).reason), /Too many pending archive skill approvals/i);
+  await fs.writeFile(path.join(sealed.verificationPath, "SKILL.md"), "---\nname: sealed-skill\ndescription: Changed candidate\n---\n\nChanged.\n");
+  await assert.rejects(
+    () => service.assertSealedButlerSkillCandidateUnchanged("sealed-skill", sealed.verificationPath, sealed.archiveBase64),
+    /changed during final verification/i
+  );
 });
 
-test("agent archive installs accept only public GitHub repository URLs", async (t) => {
-  const { service, cwd } = await fixture(t);
-  await assert.rejects(() => service.proposeAgentChange("butler:pair-1", {
-    operation: "install",
-    environment: "butler-pi",
-    name: "remote-skill",
-    source: "https://example.com/remote-skill.zip",
-    cwd
-  }), /public GitHub repository URL/i);
+test("rejects Butler candidates outside scratch and through scratch symlinks", async (t) => {
+  const { service, scratch } = await fixture(t);
+  const outside = path.join(path.dirname(scratch), "outside-candidate");
+  await fs.mkdir(outside, { recursive: true });
+  await fs.writeFile(path.join(outside, "SKILL.md"), "---\nname: escaped-skill\ndescription: Escaped skill\n---\n\nDo nothing.\n");
+
+  await assert.rejects(() => service.proposeButlerPreparedInstall("butler:escape", {
+    name: "escaped-skill",
+    source: "https://example.com/escaped-skill",
+    candidatePath: outside,
+    evidence: "verification passed"
+  }), /inside Butler scratch/i);
+
+  const linked = path.join(scratch, "escaped-skill");
+  await fs.symlink(outside, linked, "dir");
+  await assert.rejects(() => service.proposeButlerPreparedInstall("butler:escape", {
+    name: "escaped-skill",
+    source: "https://example.com/escaped-skill",
+    candidatePath: linked,
+    evidence: "verification passed"
+  }), /inside Butler scratch/i);
+});
+
+test("bounds pending Butler candidate packages per session", async (t) => {
+  const { service, scratch } = await fixture(t);
+  const candidate = path.join(scratch, "bounded-candidate");
+  await fs.mkdir(candidate);
+  await fs.writeFile(path.join(candidate, "SKILL.md"), "---\nname: bounded-candidate\ndescription: Bounded candidate\n---\n\nUse it.\n");
+  const input = {
+    name: "bounded-candidate",
+    source: "https://github.com/example/bounded-candidate @ abcdef1",
+    candidatePath: candidate,
+    evidence: "Verified by Butler."
+  };
+  await service.proposeButlerPreparedInstall("butler:bounded-candidate", input);
+  await service.proposeButlerPreparedInstall("butler:bounded-candidate", input);
+  await assert.rejects(
+    () => service.proposeButlerPreparedInstall("butler:bounded-candidate", input),
+    /Too many pending Butler skill candidates/i
+  );
 });
 
 test("agent create, install, and update reject multi-file skill references with Advanced guidance", async (t) => {
@@ -500,8 +503,6 @@ test("Butler skill proposal tool posts a decision-complete approval card and rel
   } as unknown as ButlerAgentToolAccess) as Array<{ name: string; description: string; promptSnippet: string; execute: (id: string, params: Record<string, unknown>) => Promise<{ details?: Record<string, unknown> }> }>;
 
   for (const tool of tools) {
-    assert.match(`${tool.description} ${tool.promptSnippet}`, /butler-pi/);
-    assert.match(`${tool.description} ${tool.promptSnippet}`, /worker-pi/);
     assert.doesNotMatch(`${tool.description} ${tool.promptSnippet}`, /worker-codex/);
   }
 
@@ -524,7 +525,7 @@ test("Butler skill proposal tool posts a decision-complete approval card and rel
   assert.match(question.context, /Approved content evidence: Complete proposed single-document SKILL\.md\./);
   assert.match(question.context, /MANOR_FULL_SKILL_CONTENT_V1_JSON/);
   const options = ((posted?.questions as Array<{ options: Array<{ label: string }> }>)[0]?.options ?? []);
-  assert.equal(options[0]?.label, "Install and verify");
+  assert.equal(options[0]?.label, "Publish skill");
 
   const proposal = proposed.details?.proposal as { id: string };
   const optionId = service.agentApprovalOptions(proposal.id).approve;
@@ -532,6 +533,129 @@ test("Butler skill proposal tool posts a decision-complete approval card and rel
   await tools.find((tool) => tool.name === "apply_skill_change")!.execute("call-2", { proposalId: proposal.id });
   assert.equal(reloads, 1);
   assert.equal((await service.list("butler-pi", cwd))[0]?.name, "agent-installed");
+});
+
+test("Butler verifies and packages a scratch candidate before Worker confirmation", async (t) => {
+  const { service, cwd, scratch } = await fixture(t);
+  const candidatePath = path.join(scratch, "prepared-skill");
+  await fs.mkdir(path.join(candidatePath, "bin"), { recursive: true });
+  await fs.writeFile(path.join(candidatePath, "SKILL.md"), "---\nname: prepared-skill\ndescription: Prepared by Butler\n---\n\nRun bin/prepared.\n");
+  await fs.writeFile(path.join(candidatePath, "bin", "prepared"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const owner = "butler:pair-candidate";
+  const threadId = "pi-worker-install";
+  const butlerSessionId = "butler-session-candidate";
+  const source = "https://github.com/example/prepared-skill";
+  const setupCommand = "./scripts/install.sh";
+  const verificationCommand = "./bin/prepared doctor";
+  const verificationThreadId = "pi-worker-verify";
+  const verificationReport = {
+    threadId: verificationThreadId,
+    turnId: "turn-verify",
+    status: "completed",
+    summary: "Loaded /skill:prepared-skill and verified the installed capability.",
+    details: "The managed installation is operational.",
+    evidence: [{
+      summary: "Installed doctor passed.",
+      details: null,
+      command: "/worker-pi/agent/skills/prepared-skill/bin/prepared doctor",
+      exitCode: 0,
+      proofRunId: null,
+      artifactId: null
+    }],
+    createdAt: 400,
+    updatedAt: 450
+  };
+  let posted: Record<string, unknown> | null = null;
+  let verificationInstruction = "";
+  let operatorReply = "";
+  let verificationStartedAt = 0;
+  let executedScript = "";
+  const tools = buildButlerSkillTools({
+    runtimeThreadId: owner,
+    skillsService: service,
+    butlerExecutorClient: {
+      execute: async (input: { script: string; threadId: string }) => {
+        executedScript = input.script;
+        assert.equal(input.threadId, owner);
+        return { stdout: "doctor ok", stderr: "", exitCode: 0, signal: null, timedOut: false, truncated: false };
+      }
+    },
+    store: {
+      getWorkerReport: (id: string) => id === verificationThreadId ? verificationReport : null,
+      getThreadJobPayload: (id: string) => id === verificationThreadId
+        ? { protocol: { butlerThreadId: butlerSessionId, workerThreadId: id } }
+        : null,
+      getThread: (id: string) => id === verificationThreadId ? { turns: [{ id: "turn-verify", startedAt: verificationStartedAt }] } : null
+    },
+    getButlerSessionId: () => butlerSessionId,
+    getWorkerDefaults: () => ({ runtime: "pi-rpc", threadId, harness: "pi", model: "worker-model", effort: "high", cwd }),
+    createOrUpdateJobPayload: async (input) => {
+      verificationInstruction = input.instruction;
+      return {} as never;
+    },
+    handoffWorker: async (input) => {
+      assert.equal(input.sourceThreadId, threadId);
+      return { threadId: verificationThreadId };
+    },
+    getToolUiEffects: () => [],
+    defineButlerTool: (definition) => definition,
+    scheduleButlerSkillReload: () => {},
+    postOperatorQuestion: async (input) => {
+      posted = input as Record<string, unknown>;
+      return {
+        id: "message-candidate",
+        question: {
+          id: "question-candidate",
+          questions: [{ id: "question-candidate" }]
+        }
+      } as never;
+    },
+    postOperatorJobReply: async (_threadId, text) => { operatorReply = text; }
+  } as unknown as ButlerAgentToolAccess) as Array<{ name: string; execute: (id: string, params: Record<string, unknown>) => Promise<{ details?: Record<string, unknown> }> }>;
+
+  const candidateTool = tools.find((tool) => tool.name === "propose_repository_skill_install")!;
+  await assert.rejects(() => candidateTool.execute("call-unresolved-dependency", {
+    name: "prepared-skill",
+    source,
+    candidatePath,
+    verificationCommand,
+    setupCommands: [setupCommand],
+    dependencies: ["missing runtime binary"]
+  }), /unresolved runtime dependencies/i);
+
+  const proposed = await candidateTool.execute("call-candidate", {
+    name: "prepared-skill",
+    source,
+    candidatePath,
+    verificationCommand,
+    setupCommands: [setupCommand],
+    dependencies: []
+  });
+
+  const proposal = proposed.details?.proposal as { id: string; sourceVerification: string; environment: string };
+  assert.equal(proposal.sourceVerification, "butler-prepared");
+  assert.equal(proposal.environment, "butler-pi");
+  assert.match(executedScript, /prepared-skill/);
+  const context = (posted?.questions as Array<{ context: string }>)[0]!.context;
+  assert.match(context, /prepared and exercised by Butler/i);
+  assert.match(context, /doctor ok/);
+
+  const optionId = service.agentApprovalOptions(proposal.id).approve;
+  service.validateAgentApprovalOption(owner, { messageId: "message-candidate", questionId: "question-candidate", optionId });
+  service.recordAgentApprovalOption(owner, { messageId: "message-candidate", questionId: "question-candidate", optionId });
+  const applied = await tools.find((tool) => tool.name === "apply_skill_change")!.execute("call-apply", { proposalId: proposal.id });
+  const result = applied.details?.result as { id: string; appliedAt: number; verification: { operability: string; verificationThreadId: string } };
+  verificationStartedAt = result.appliedAt + 1;
+  assert.equal(result.verification.operability, "verification-pending");
+  assert.equal(result.verification.verificationThreadId, verificationThreadId);
+  assert.match(verificationInstruction, /Load \/skill:prepared-skill/);
+
+  const confirmed = await tools.find((tool) => tool.name === "confirm_worker_skill_operability")!.execute("call-confirm", {
+    resultId: result.id,
+    threadId: verificationThreadId
+  });
+  assert.equal((confirmed.details?.result as { verification: { operability: string } }).verification.operability, "ready");
+  assert.match(operatorReply, /is ready/);
 });
 
 test("approval targets identify the single Worker Pi environment", async (t) => {

@@ -126,6 +126,7 @@ import { piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly piRpcWorkerClient: PiRpcWorkerClient | null;
+  private readonly butlerExecutorClient: NonNullable<ButlerAgentServiceOptions["butlerExecutorClient"]> | null;
   private readonly hostController: HostControllerClient;
   private readonly runtimeBroker: RuntimeBrokerClient;
   private readonly serviceTemplateRegistry: ServiceTemplateRegistry;
@@ -197,6 +198,7 @@ export class ButlerAgentService extends EventEmitter {
     super();
     this.store = options.store;
     this.piRpcWorkerClient = options.piRpcWorkerClient ?? null;
+    this.butlerExecutorClient = options.butlerExecutorClient ?? null;
     this.hostController = options.hostController;
     this.runtimeBroker = options.runtimeBroker;
     this.serviceTemplateRegistry = options.serviceTemplateRegistry;
@@ -676,7 +678,7 @@ export class ButlerAgentService extends EventEmitter {
   // side effects. Keep agent tool definitions aligned with this catalog.
   private buildToolCatalog(): ButlerToolView[] {
     const activeTools = new Set(this.session?.getActiveToolNames() ?? []);
-    const base = BUTLER_TOOL_CATALOG.filter((tool) => (tool.name !== "inspect_images" || activeTools.has(tool.name)) && (this.skillsService || !["inspect_skills", "propose_skill_change", "apply_skill_change"].includes(tool.name)) && (this.getAutomationAccess() || !["inspect_automation", "configure_automation", "configure_once_automation", "configure_weekly_automation", "configure_window_automation", "configure_interval_automation", "set_automation_enabled", "delete_automation"].includes(tool.name)));
+    const base = BUTLER_TOOL_CATALOG.filter((tool) => (tool.name !== "inspect_images" || activeTools.has(tool.name)) && (this.skillsService || !["inspect_skills", "propose_repository_skill_install", "confirm_worker_skill_operability", "propose_skill_change", "apply_skill_change"].includes(tool.name)) && (this.getAutomationAccess() || !["inspect_automation", "configure_automation", "configure_once_automation", "configure_weekly_automation", "configure_window_automation", "configure_interval_automation", "set_automation_enabled", "delete_automation"].includes(tool.name)));
     if (activeTools.has("inspect_images")) base.push({ name: "inspect_images", label: "Inspect images", description: "Inspect attached images through the configured vision companion.", uiEffects: [] });
     if (activeTools.has(PROVIDER_WEB_SEARCH_TOOL_NAME) && activeTools.has(PROVIDER_WEB_FETCH_TOOL_NAME)) {
       base.push(
@@ -716,6 +718,7 @@ export class ButlerAgentService extends EventEmitter {
 
   private getSessionAccess(): ButlerAgentSessionAccess { return this as unknown as ButlerAgentSessionAccess; }
 
+  getButlerSessionId(): string | null { return this.session?.sessionId ?? null; }
   getButlerDefaults(): ButlerAgentDefaults | null { return this.options?.getButlerDefaults?.() ?? null; }
   getWorkerDefaults(): ButlerWorkerDefaults | null { return this.options.getWorkerDefaults?.() ?? null; }
   getAutomationAccess() { return this.options.automationAccess ?? null; }

@@ -3,11 +3,13 @@
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import http from "node:http";
 
 const harnessHome = process.env.MANOR_HARNESS_HOME || "";
 const registryPath = process.env.MANOR_HARNESS_REGISTRY_PATH
   || (harnessHome ? path.join(harnessHome, "harness-capabilities.json") : path.join(os.homedir(), ".config", "manor", "harness-capabilities.json"));
 const butlerBaseUrl = process.env.MANOR_BUTLER_BASE_URL || "http://butler:8080";
+const butlerSocketPath = process.env.MANOR_HARNESS_SOCKET_PATH || "";
 const runtimeBrokerBaseUrl = process.env.MANOR_RUNTIME_BROKER_URL || "http://runtime-broker:8090";
 
 function printHelp() {
@@ -252,12 +254,45 @@ function resolveWorkspaceProjectId(cwd) {
 }
 
 async function callHarness(token, action, params = {}) {
+  const body = JSON.stringify({ token, action, params });
+  if (butlerSocketPath) {
+    return new Promise((resolve, reject) => {
+      const request = http.request({
+        socketPath: butlerSocketPath,
+        path: "/api/harness/action",
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body)
+        }
+      }, (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on("end", () => {
+          let payload;
+          try {
+            payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          } catch {
+            reject(new Error("Harness request returned an invalid response."));
+            return;
+          }
+          if ((response.statusCode ?? 500) >= 400 || payload?.ok === false) {
+            reject(new Error(payload?.error || `Harness request failed with ${response.statusCode ?? 500}`));
+            return;
+          }
+          resolve(payload);
+        });
+      });
+      request.on("error", reject);
+      request.end(body);
+    });
+  }
   const request = {
     method: "POST",
     headers: {
       "content-type": "application/json"
     },
-    body: JSON.stringify({ token, action, params })
+    body
   };
   const actionPaths = ["/api/harness/action"];
   for (const [index, actionPath] of actionPaths.entries()) {

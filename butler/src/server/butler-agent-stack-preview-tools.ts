@@ -1255,7 +1255,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
       name,
       label: "Delegate to worker",
       description: "Start a new worker workstream using the operator's selected worker model or Manor's authenticated-provider default.",
-      promptSnippet: "delegate_to_worker: start execution, coding, shell work, repo setup, app build, file generation, or other task delivery. Manor chooses the authenticated provider, model, harness, runtime, and thinking from operator preferences and defaults.",
+      promptSnippet: "delegate_to_worker: start execution, coding, shell work, repo setup, app build, file generation, or other task delivery. Skill installation is Butler-owned; delegate only the fresh post-install operability confirmation. Manor chooses the authenticated provider, model, harness, runtime, and thinking from operator preferences and defaults.",
       parameters: delegationParameters,
       uiEffects: access.getToolUiEffects("delegate_to_worker"),
       execute: async (_toolCallId, params) => {

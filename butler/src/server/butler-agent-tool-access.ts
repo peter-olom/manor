@@ -31,12 +31,14 @@ import type {
   ManorRestartRequestView,
   PreviewVerificationView,
   ProjectMemoryView,
+  ReasoningEffort,
   SupervisionChecklistView
 } from "./types.js";
 import type { PiRpcWorkerClient } from "./pi-rpc-worker-client.js";
 import type { ButlerOperatorThreadGuard, ProofScreenshotReview, ResolvedPreviewProof, SupervisionSmokePlan } from "./butler-agent-helpers.js";
 import type { ExtensionUiBroker } from "./extension-ui-broker.js";
 import type { SkillsService } from "./skills-service.js";
+import type { ButlerExecutorClient } from "./butler-executor-client.js";
 
 export type ButlerCustomTool = ReturnType<typeof defineTool>;
 export type ButlerCallbackReservation = {
@@ -71,6 +73,7 @@ export type ButlerAgentToolAccess = {
   store: ButlerStateStore;
   watchdogs: ActivityWatchdogService;
   piRpcWorkerClient: PiRpcWorkerClient | null;
+  butlerExecutorClient: ButlerExecutorClient | null;
   hostController: HostControllerClient;
   runtimeBroker: RuntimeBrokerClient;
   serviceTemplateRegistry: ServiceTemplateRegistry;
@@ -78,6 +81,15 @@ export type ButlerAgentToolAccess = {
   fileStore: FileReferenceStore;
   supervisionSmokePlans: Map<string, SupervisionSmokePlan>;
   defineButlerTool: ButlerToolDefiner;
+  getButlerSessionId(): string | null;
+  handoffWorker(input: {
+    sourceThreadId: string;
+    harness: "pi";
+    model: string;
+    effort: ReasoningEffort | null;
+    butlerThreadId?: string | null;
+    cwd?: string | null;
+  }): Promise<{ threadId: string }>;
   getToolUiEffects(name: string): ButlerToolUiEffect[];
   refreshRuntimeInventoryIfAvailable(): Promise<string | null>;
   scheduleButlerSkillReload(): void;

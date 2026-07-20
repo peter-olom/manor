@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -15,6 +15,107 @@ import type { RuntimeBrokerClient } from "../../src/server/runtime-broker-client
 import type { ServiceTemplateRegistry } from "../../src/server/service-templates.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
+
+function createHarness(root: string, store: ButlerStateStore, harnessRegistryPath?: string): HarnessService {
+  return new HarnessService({
+    harnessRegistryPath,
+    stateDir: path.join(root, "state"),
+    artifactsDir: path.join(root, "artifacts"),
+    store,
+    runtimeBroker: { listStacks: async () => [] } as unknown as RuntimeBrokerClient,
+    serviceTemplateRegistry: { list: () => [], get: () => undefined } as unknown as ServiceTemplateRegistry
+  });
+}
+
+test("harness replaces a malformed capability registry and preserves it for diagnosis", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-corrupt-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const stateDir = path.join(root, "state");
+  const registryDir = path.join(root, "harness-state");
+  const registryPath = path.join(registryDir, "harness-capabilities.json");
+  await mkdir(registryDir, { recursive: true });
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }), "utf8");
+  await writeFile(registryPath, '{"capabilities":[]} trailing data', "utf8");
+  const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
+  await store.load();
+
+  const harness = createHarness(root, store, registryPath);
+  await harness.load();
+
+  assert.deepEqual(JSON.parse(await readFile(registryPath, "utf8")), { capabilities: [] });
+  assert.equal((await readdir(registryDir)).filter((name) => name.startsWith("harness-capabilities.json.corrupt-")).length, 1);
+});
+
+test("harness quarantines a valid JSON registry with an invalid shape", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-invalid-shape-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const stateDir = path.join(root, "state");
+  const registryDir = path.join(root, "harness-state");
+  const registryPath = path.join(registryDir, "harness-capabilities.json");
+  await mkdir(registryDir, { recursive: true });
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }), "utf8");
+  await writeFile(registryPath, "null", "utf8");
+  const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
+  await store.load();
+
+  await createHarness(root, store, registryPath).load();
+
+  assert.deepEqual(JSON.parse(await readFile(registryPath, "utf8")), { capabilities: [] });
+  assert.equal((await readdir(registryDir)).filter((name) => name.startsWith("harness-capabilities.json.corrupt-")).length, 1);
+});
+
+test("concurrent capability creation persists one valid complete registry", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-concurrent-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const stateDir = path.join(root, "state");
+  const registryPath = path.join(root, "harness-state", "harness-capabilities.json");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }), "utf8");
+  const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
+  await store.load();
+  const harness = createHarness(root, store, registryPath);
+  await harness.load();
+
+  await Promise.all(Array.from({ length: 40 }, (_, index) => harness.ensureThreadCapability(`butler:pair-${index}`, "/scratch")));
+
+  const saved = JSON.parse(await readFile(registryPath, "utf8")) as { capabilities: Array<{ threadId: string }> };
+  assert.equal(saved.capabilities.length, 40);
+  assert.equal(new Set(saved.capabilities.map((entry) => entry.threadId)).size, 40);
+});
+
+test("Butler executor capabilities can call only content admission without a Worker record", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-butler-car-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const stateDir = path.join(root, "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }), "utf8");
+  const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
+  await store.load();
+  const harness = new HarnessService({
+    stateDir,
+    artifactsDir: path.join(root, "artifacts"),
+    store,
+    runtimeBroker: { listStacks: async () => [] } as unknown as RuntimeBrokerClient,
+    serviceTemplateRegistry: { list: () => [], get: () => undefined } as unknown as ServiceTemplateRegistry,
+    contentAdmission: {
+      admit: async () => ({ mode: "review", source: "repository", cacheHit: false, unavailable: false, review: null })
+    } as never
+  } as never);
+  await harness.load();
+  const capability = await harness.ensureThreadCapability("butler:pair-1", "/scratch");
+  assert.ok(capability);
+
+  const admitted = await harness.handleAction({
+    token: capability.token,
+    action: "content.admit",
+    params: { source: "repository", content: "safe content", metadata: "clone" }
+  });
+
+  assert.ok(admitted.data?.admission);
+  await assert.rejects(() => harness.handleAction({ token: capability.token, action: "context" }), /unknown thread/i);
+});
 
 test("harness reconciliation does not erase existing capabilities when thread inventory is empty", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-reconcile-"));

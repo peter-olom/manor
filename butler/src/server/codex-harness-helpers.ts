@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -41,7 +42,7 @@ export function resolveHarnessStoragePaths(options: {
 
 export async function atomicWriteJson(filePath: string, payload: unknown): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tmpPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
     await fs.writeFile(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
     await fs.rename(tmpPath, filePath);
@@ -49,6 +50,31 @@ export async function atomicWriteJson(filePath: string, payload: unknown): Promi
     await fs.rm(tmpPath, { force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+export async function readHarnessRegistry(filePath: string): Promise<HarnessRegistryPayload | null> {
+  const raw = await fs.readFile(filePath, "utf8").catch(() => "");
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !Array.isArray((parsed as Partial<HarnessRegistryPayload>).capabilities)) {
+      throw new Error("Harness capability registry must contain a capabilities array.");
+    }
+    return parsed as HarnessRegistryPayload;
+  } catch (error) {
+    const quarantinePath = `${filePath}.corrupt-${Date.now()}`;
+    await fs.rename(filePath, quarantinePath).catch(async () => {
+      await fs.rm(filePath, { force: true });
+    });
+    console.warn(`Replaced malformed harness capability registry: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+export async function writeHarnessRegistries(registryPath: string, brokerAccessPath: string, capabilities: Iterable<HarnessCapability>): Promise<void> {
+  const payload: HarnessRegistryPayload = { capabilities: [...capabilities].sort((left, right) => left.createdAt - right.createdAt) };
+  const brokerAccessPayload: BrokerAccessRegistryPayload = { grants: payload.capabilities.map((capability) => ({ token: capability.token, threadId: capability.threadId, createdAt: capability.createdAt, updatedAt: capability.updatedAt })) };
+  await Promise.all([atomicWriteJson(registryPath, payload), atomicWriteJson(brokerAccessPath, brokerAccessPayload)]);
 }
 
 export function normalizeString(value: unknown): string {

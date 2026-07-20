@@ -12,6 +12,11 @@ services:
       MANOR_HARNESS_HOME: /harness-state
       MANOR_HARNESS_REGISTRY_PATH: /harness-state/harness-capabilities.json
       MANOR_CONTENT_ADMISSION_POLICY_PATH: /harness-state/content-admission-policy.json
+      MANOR_SHARED_SKILLS_DIR: /skills
+      MANOR_BUTLER_SCRATCH_ROOT: /scratch
+      MANOR_BUTLER_EXECUTOR_SOCKET: /butler-executor-runtime/executor.sock
+      MANOR_LEGACY_BUTLER_SKILLS_DIR: /legacy-butler-pi/agent/skills
+      MANOR_LEGACY_WORKER_SKILLS_DIR: /worker-pi/agent/skills
       MANOR_HARNESS_ACCESS_FILE: /state/harness-broker-access.json
       PI_AGENT_DIR: /home/butler/.pi/agent
       WORKER_PI_AGENT_DIR: /worker-pi/agent
@@ -117,17 +122,24 @@ services:
     volumes:
       - butler-state:/state
       - butler-pi:/home/butler/.pi
+      - butler-pi:/legacy-butler-pi:ro
       - worker-pi:/worker-pi
       - worker-runtime:/worker-runtime
       - worker-config:/worker-config:ro
       - harness-state:/harness-state
-      - repos:/repos
+      - repos:/repos:ro
+      - skill-registry:/skills
+      - skill-registry:/home/butler/.pi/agent/skills:ro
+      - butler-scratch:/scratch
+      - butler-executor-runtime:/butler-executor-runtime
       - artifacts:/artifacts
       - inputs:/inputs
       - outputs:/outputs:ro
     depends_on:
       worker:
         condition: service_healthy
+      butler-executor:
+        condition: service_started
       egress:
         condition: service_healthy
       runtime-broker:
@@ -145,8 +157,54 @@ services:
       start_period: 30s
     networks:
       - control
-      - internet
-      - work
+      - butler-egress
+      - admission
+
+  butler-executor:
+    image: manor-worker:local
+    container_name: manor-butler-executor
+    hostname: manor-butler-executor
+    command: ["/usr/local/bin/node", "/opt/manor/worker/butler-executor.mjs"]
+    working_dir: /scratch
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      MANOR_ROLE: butler-executor
+      HOME: /home/worker
+      TMPDIR: /scratch/tmp
+      XDG_CACHE_HOME: /scratch/cache
+      NPM_CONFIG_CACHE: /scratch/cache/npm
+      PIP_CACHE_DIR: /scratch/cache/pip
+      MANOR_BUTLER_EXECUTOR_SOCKET: /butler-executor-runtime/executor.sock
+      MANOR_HARNESS_SOCKET_PATH: /butler-executor-runtime/admission.sock
+      HTTP_PROXY: http://egress:3128
+      HTTPS_PROXY: http://egress:3128
+      ALL_PROXY: http://egress:3128
+      NODE_USE_ENV_PROXY: "1"
+      http_proxy: http://egress:3128
+      https_proxy: http://egress:3128
+      all_proxy: http://egress:3128
+      NO_PROXY: localhost,127.0.0.1,egress
+      no_proxy: localhost,127.0.0.1,egress
+    volumes:
+      - repos:/repos:ro
+      - skill-registry:/skills:ro
+      - butler-scratch:/scratch
+      - butler-executor-runtime:/butler-executor-runtime
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0
+    depends_on:
+      egress:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - executor-egress
 
   ollama:
     image: ollama/ollama:latest
@@ -260,6 +318,7 @@ services:
       - worker-tools:/home/worker/.local
       - harness-state:/harness-state
       - worker-pi:/worker-pi
+      - skill-registry:/worker-pi/agent/skills:ro
       - worker-runtime:/worker-runtime
       - repos:/repos
       - artifacts:/artifacts
@@ -294,6 +353,8 @@ services:
     networks:
       - work
       - internet
+      - butler-egress
+      - executor-egress
 
   preview-egress:
     image: manor-preview-egress:local
@@ -524,7 +585,7 @@ services:
       - "127.0.0.1:${DESKTOP_PROOF_NOVNC_PORT:-6080}:6080"
     volumes:
       - desktop-proof-state:/state
-      - repos:/repos
+      - repos:/repos:ro
     restart: unless-stopped
     healthcheck:
       test:
@@ -551,6 +612,12 @@ networks:
   preview:
     internal: true
   internet: {}
+  admission:
+    internal: true
+  butler-egress:
+    internal: true
+  executor-egress:
+    internal: true
 
 volumes:
   artifacts:
@@ -560,6 +627,9 @@ volumes:
   worker-pi:
   worker-runtime:
   worker-tools:
+  butler-executor-runtime:
+  butler-scratch:
+  skill-registry:
   butler-state:
   worker-config:
   desktop-proof-state:
