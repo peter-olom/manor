@@ -307,6 +307,15 @@ export type ButlerAgentSessionAccess = {
   saveOperatorMessageState(): Promise<void>;
   saveActivitySummaryState(): Promise<void>;
   getButlerDefaults?: () => { model: string | null; thinkingLevel: string | null } | null;
+  getWorkerDefaults?: () => {
+    runtime: "auto" | "pi-rpc" | null;
+    cwd?: string | null;
+    threadId?: string | null;
+    runtimeOwnerThreadIds?: string[];
+    harness?: string | null;
+    model?: string | null;
+    effort?: string | null;
+  } | null;
   emit(event: "change"): boolean;
   emit(event: "butlerPatch", payload: import("./types.js").ButlerLivePatchView): boolean;
   persistActivitySummaryTurn(turn: ButlerActivityTurnView): void;

@@ -792,7 +792,7 @@ export class ButlerAgentService extends EventEmitter {
       return null;
     }
 
-    return `Butler has reached the supervision limit for job ${threadId}. Used ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns} Butler turns. Raise the limit on that thread before asking Butler to steer it again.`;
+    return `Butler has used ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns} reviewed Worker turns for the current operator message on job ${threadId}. Raise the visible turn limit or send a new operator message before dispatching more Worker work.`;
   }
 
   private getOperatorCloseoutBlocker(threadId: string): string | null { return getCloseoutBlocker(this.store, threadId); }
@@ -873,8 +873,8 @@ export class ButlerAgentService extends EventEmitter {
       this.imageStore.buildCodexInput(formatJobPayloadMessage(payload.kind as JobPayloadKind, payload.threadId, payload.workerDirective, payload.display.summary), [])
     );
     await this.bindJobPayloadDelivery(threadId, { turnId: sent.turnId });
-    this.store.noteButlerSteer(threadId);
-    this.store.addEvent(threadId, "butler.supervision.turn_spent", "Butler spent a private supervision turn on this job.");
+    this.store.noteReviewedWorkerDispatch(threadId);
+    this.store.addEvent(threadId, "butler.supervision.cycle_spent", "Butler dispatched another Worker turn for adversarial review.");
   }); }
 
   private async processCallbackReviews(): Promise<void> {
@@ -1433,9 +1433,10 @@ export class ButlerAgentService extends EventEmitter {
   async trackScratchPadDelegation(threadId: string): Promise<void> {
     this.queueDelegationAcknowledgement(threadId, `Added to the scratch pad. I started a deeper async pass in job ${threadId} and will return here with the result.`);
     await this.trackExternalWorkerDelegation(threadId);
+    this.store.noteReviewedWorkerDispatch(threadId);
   }
   async trackExternalWorkerDelegation(threadId: string): Promise<void> { if (this.quiescing) throw new Error("Butler session is closing."); await runSerializedCallbackReplacement(threadId, async () => {
-    if (this.quiescing) throw new Error("Butler session is closing."); await this.registerPendingChatCallback(threadId, { requestedAt: this.store.getThread(threadId)?.createdAt ?? Date.now() }); this.store.noteButlerSteer(threadId);
+    if (this.quiescing) throw new Error("Butler session is closing."); await this.registerPendingChatCallback(threadId, { requestedAt: this.store.getThread(threadId)?.createdAt ?? Date.now() });
   }); }
   async ensureExternalWorkerDelegation(threadId: string): Promise<void> { const callback = this.pendingChatCallbacks.get(threadId); if (callback && isCallbackOutstanding(callback)) return; const thread = this.store.getThread(threadId); const latestTurnId = getFallbackTurnId(thread); if (latestTurnId) { const closeoutId = buildCloseoutId(threadId, latestTurnId); if (this.deliveredCloseoutIds.has(closeoutId) || this.operatorMessages.some((message) => message.id === `callback-${closeoutId}` || message.id === `callback-fallback-${closeoutId}`)) return; } const latestWorkAt = Math.max(this.store.getWorkerReport(threadId)?.updatedAt ?? 0, thread?.turns.at(-1)?.startedAt ?? 0); if (callback && latestWorkAt <= (callback.closedAt ?? callback.updatedAt)) return; await this.trackExternalWorkerDelegation(threadId); }
   async handoffWorker(input: { sourceThreadId: string; harness: string; model: string; effort: ReasoningEffort | null; butlerThreadId?: string | null; cwd?: string | null }) {
@@ -1447,7 +1448,10 @@ export class ButlerAgentService extends EventEmitter {
       targetEffort: input.effort,
       artifactsDir: this.artifactsDir, targetCwd: input.cwd ?? null,
       butlerThreadId: input.butlerThreadId ?? this.session?.sessionId ?? null,
-      trackCallback: (threadId) => this.trackExternalWorkerDelegation(threadId),
+      trackCallback: async (threadId) => {
+        await this.trackExternalWorkerDelegation(threadId);
+        this.store.noteReviewedWorkerDispatch(threadId);
+      },
       removeCallback: (threadId) => this.removeExternalWorkerDelegation(threadId),
       attach: (result, text, at) => this.attachDelegationAcknowledgement(result.threadId, text, at, {
         runtime: result.runtime, harness: result.harness, provider: result.provider, model: result.model,
@@ -1457,7 +1461,7 @@ export class ButlerAgentService extends EventEmitter {
     });
   }
   async removeExternalWorkerDelegation(threadId: string): Promise<void> { await runSerializedCallbackReplacement(threadId, async () => { const callback = this.pendingChatCallbacks.get(threadId); if (!callback) return; const failureCount = this.callbackReviewFailureCount.get(threadId); const notBefore = this.callbackReviewNotBefore.get(threadId); const smokePlan = this.supervisionSmokePlans.get(threadId); this.pendingChatCallbacks.delete(threadId); this.callbackReviewFailureCount.delete(threadId); this.callbackReviewNotBefore.delete(threadId); this.supervisionSmokePlans.delete(threadId); try { await this.saveCallbackState(); } catch (error) { this.pendingChatCallbacks.set(threadId, callback); if (failureCount !== undefined) this.callbackReviewFailureCount.set(threadId, failureCount); if (notBefore !== undefined) this.callbackReviewNotBefore.set(threadId, notBefore); if (smokePlan) this.supervisionSmokePlans.set(threadId, smokePlan); throw error; } this.delegationWatchdogs.unregister(threadId); this.emit("change"); }); }
-  private async prepareOperatorTurn(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null; removeOnFailure?: boolean; fileReferenceIds?: string[]; hiddenFromTranscript?: boolean } = {}): Promise<{ completion: Promise<boolean> }> {
+  private async prepareOperatorTurn(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null; removeOnFailure?: boolean; fileReferenceIds?: string[]; hiddenFromTranscript?: boolean; startsOperatorBudgetWindow?: boolean } = {}): Promise<{ completion: Promise<boolean> }> {
     const guard = buildOperatorThreadGuard(this.store, text, this.getRecentFocusedThreadId());
     const attachments = [...this.imageStore.resolveViews(imageReferenceIds).map(({ id, name, mimeType, sizeBytes, url }) => ({ id, kind: "image" as const, name, mimeType, sizeBytes, url })), ...this.fileStore.resolveViews(options.fileReferenceIds ?? []).map(({ id, name, mimeType, sizeBytes, url }) => ({ id, kind: "file" as const, name, mimeType, sizeBytes, url }))];
     this.activeOperatorThreadGuard = guard;
@@ -1475,7 +1479,7 @@ export class ButlerAgentService extends EventEmitter {
       try {
         if (options.mode === "steer") { await stopButlerPrompt(this.getSessionAccess(), { clearPendingOperatorMessages: false }); ignoreStopRequestSequence = this.stopRequestSequence; }
         if (guard.contextPrompt) await promptButlerInternal(this.getSessionAccess(), ["This is hidden grounding for the next operator turn.", "Do not answer it directly.", "Use it to keep job references exact during the next operator turn only.", guard.contextPrompt].join("\n"));
-        const delivered = await promptButler(this.getSessionAccess(), text, imageReferenceIds, { mode: options.mode === "steer" ? "queue" : options.mode, pendingOperatorMessageId, ignoreStopRequestSequence, fileReferenceIds: options.fileReferenceIds });
+        const delivered = await promptButler(this.getSessionAccess(), text, imageReferenceIds, { mode: options.mode === "steer" ? "queue" : options.mode, pendingOperatorMessageId, ignoreStopRequestSequence, fileReferenceIds: options.fileReferenceIds, startsOperatorBudgetWindow: options.startsOperatorBudgetWindow });
         if (!delivered && options.removeOnFailure && removeOperatorMessage(this.operatorMessages, pendingOperatorMessageId)) await this.saveOperatorMessageState();
         return delivered;
       } catch (error) { removePendingOperatorPrompt(this.getSessionAccess(), pendingOperatorMessageId); if (removeOperatorMessage(this.operatorMessages, pendingOperatorMessageId)) await this.saveOperatorMessageState(); throw error; } finally { this.activeOperatorThreadGuard = null; }
@@ -1484,7 +1488,7 @@ export class ButlerAgentService extends EventEmitter {
   }
   private async promptOperatorTurn(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null; fileReferenceIds?: string[] } = {}): Promise<boolean> { return (await this.prepareOperatorTurn(text, imageReferenceIds, options)).completion; }
   prompt(text: string, imageReferenceIds: string[] = [], options: { mode?: "queue" | "steer"; displayText?: string | null; fileReferenceIds?: string[] } = {}): void { void this.promptOperatorTurn(text, imageReferenceIds, options); }
-  async runAutomationPrompt(text: string, displayText: string): Promise<boolean> { return (await this.prepareOperatorTurn(text, [], { mode: "queue", displayText, removeOnFailure: true })).completion; }
+  async runAutomationPrompt(text: string, displayText: string): Promise<boolean> { return (await this.prepareOperatorTurn(text, [], { mode: "queue", displayText, removeOnFailure: true, startsOperatorBudgetWindow: false })).completion; }
   async postAutomationNotice(text: string): Promise<void> { const at = Date.now(); upsertOperatorMessage(this.operatorMessages, `automation-notice-${at}-${this.operatorMessages.length}`, text, at); await this.saveOperatorMessageState(); this.emit("change"); }
   async stopPrompt(): Promise<boolean> { return stopButlerPrompt(this.getSessionAccess()); }
   async updateComposeSettings(provider: string, modelId: string, thinkingLevel: ButlerThinkingLevel): Promise<void> { await updateButlerComposeSettings(this.getSessionAccess(), provider, modelId, thinkingLevel); this.toolCatalog = this.buildToolCatalog(); this.emit("change"); }

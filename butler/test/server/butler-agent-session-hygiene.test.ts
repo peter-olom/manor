@@ -30,6 +30,7 @@ import {
   registerPendingOperatorPrompt,
   removeCommittedPendingOperatorPrompt,
   removePendingOperatorPrompt,
+  startOperatorSupervisionBudgetWindow,
   stopButlerPrompt,
   syncOperatorMessagesFromSessionFiles,
   updateButlerComposeSettings
@@ -77,6 +78,15 @@ test("queued operator turns expose only their own attachment references", async 
   await Promise.all([first, second]);
   assert.deepEqual(seen, [["image-first"], ["image-second"]]);
   assert.equal(scope.activeOperatorReferences, null);
+});
+
+test("an operator turn starts a fresh budget window for the attached Worker", () => {
+  const reset: string[] = [];
+  startOperatorSupervisionBudgetWindow({
+    getWorkerDefaults: () => ({ runtime: "auto", threadId: "worker-1" }),
+    store: { resetThreadSupervisionUsage: (threadId: string) => { reset.push(threadId); } } as never
+  });
+  assert.deepEqual(reset, ["worker-1"]);
 });
 
 function pendingAccess() {

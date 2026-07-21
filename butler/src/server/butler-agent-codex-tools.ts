@@ -132,6 +132,15 @@ async function continueWorkerJobLocked(
   await reactivate();
   const reservation = await access.reserveDirectCodexMessage({ threadId: typedParams.threadId, text: typedParams.text, requestedAt, nextWorkerReportAction });
   let sent = false;
+  let reviewedDispatchCounted = false;
+  let supervision = access.store.getThreadSupervision(typedParams.threadId);
+  const countReviewedDispatch = () => {
+    if (reviewedDispatchCounted) return supervision;
+    supervision = access.store.noteReviewedWorkerDispatch(typedParams.threadId);
+    reviewedDispatchCounted = true;
+    access.store.addEvent(typedParams.threadId, "butler.supervision.cycle_spent", "Butler dispatched another Worker turn for adversarial review.");
+    return supervision;
+  };
   try {
     const refreshedChecklist = typedParams.refreshChecklist
       ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text, { force: true })
@@ -160,16 +169,16 @@ async function continueWorkerJobLocked(
     const dispatch = await sendWorkerMessage(access, typedParams.threadId, workerInput);
     sent = true;
     dispatchState.accepted = true;
+    countReviewedDispatch();
     await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: dispatch.turnId });
     await access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, dispatch.turnId);
-    const supervision = access.store.noteButlerSteer(typedParams.threadId);
-    access.store.addEvent(typedParams.threadId, "butler.supervision.turn_spent", "Butler spent a private supervision turn on this job.");
     access.noteThreadFocus(typedParams.threadId, "message_job");
     return {
-      content: [{ type: "text" as const, text: `Sent a private follow-up to job ${typedParams.threadId}. Butler budget: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}. Next worker report action: ${nextWorkerReportAction}.` }],
+      content: [{ type: "text" as const, text: `Sent a private follow-up to job ${typedParams.threadId}. Reviewed Worker turns: ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns ?? "∞"}. Next worker report action: ${nextWorkerReportAction}.` }],
       details: { dispatched: true, checklist: refreshedChecklist, payload, supervision, thread: access.store.getThread(typedParams.threadId) ?? null }
     };
   } catch (error) {
+    if (!reviewedDispatchCounted && workerMessageDispatchMayHaveBeenAccepted(error)) countReviewedDispatch();
     if (!sent) await settleFailedDirectWorkerDispatch(error, () => access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, null), () => access.rollbackDirectCodexMessage(typedParams.threadId, requestedAt, reservation));
     throw error;
   }
@@ -184,6 +193,14 @@ export async function continueWorkerJob(access: ButlerAgentToolAccess, typedPara
       dispatchState,
       (reactivate) => continueWorkerJobLocked(access, typedParams, dispatchState, reactivate)
     )
+  );
+}
+
+function assertDeletionDoesNotBypassSupervisionLimit(access: ButlerAgentToolAccess, threadId: string): void {
+  const attachedWorkerThreadId = access.getWorkerDefaults?.()?.threadId ?? null;
+  if (threadId !== attachedWorkerThreadId || !access.store.getThreadSupervision(threadId).capReached) return;
+  throw new Error(
+    "This Worker reached the review-turn limit for the current operator message. Deleting it would bypass that limit. Wait for a new operator message or use the session controls for an operator-directed deletion."
   );
 }
 
@@ -725,6 +742,15 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
         const requestedAt = Date.now();
         const reservation = await access.reserveDirectCodexMessage({ threadId: typedParams.threadId, text, requestedAt });
         let sent = false;
+        let reviewedDispatchCounted = false;
+        let supervision = access.store.getThreadSupervision(typedParams.threadId);
+        const countReviewedDispatch = () => {
+          if (reviewedDispatchCounted) return supervision;
+          supervision = access.store.noteReviewedWorkerDispatch(typedParams.threadId);
+          reviewedDispatchCounted = true;
+          access.store.addEvent(typedParams.threadId, "butler.supervision.rejection_followup", "Butler sent queued rejected checklist items to the worker.");
+          return supervision;
+        };
         try {
           const payload = await access.createOrUpdateJobPayload({
             threadId: typedParams.threadId,
@@ -735,13 +761,13 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
           assertCallbackReviewCurrent(typedParams.threadId);
           const dispatch = await sendWorkerMessage(access, typedParams.threadId, `${formatJobPayloadMessage("rejection_followup", typedParams.threadId, payload.workerDirective, payload.display.summary)}\n\n${directWorkerDispatchMarker(typedParams.threadId, requestedAt)}`);
           sent = true;
+          countReviewedDispatch();
           await access.bindJobPayloadDelivery(typedParams.threadId, { turnId: dispatch.turnId });
           await access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, dispatch.turnId);
           access.store.clearQueuedRejectionInstructions(typedParams.threadId);
-          const supervision = access.store.noteButlerSteer(typedParams.threadId);
-          access.store.addEvent(typedParams.threadId, "butler.supervision.rejection_followup", "Butler sent queued rejected checklist items to the worker.");
           return { content: [{ type: "text", text: `Sent queued rejected acceptance points to job ${typedParams.threadId}.` }], details: { payload, supervision, checklist: access.store.getSupervisionChecklist(typedParams.threadId) } };
         } catch (error) {
+          if (!reviewedDispatchCounted && workerMessageDispatchMayHaveBeenAccepted(error)) countReviewedDispatch();
           if (!sent) await settleFailedDirectWorkerDispatch(error, () => access.markPendingChatCallbackDispatched(typedParams.threadId, requestedAt, null), () => access.rollbackDirectCodexMessage(typedParams.threadId, requestedAt, reservation));
           throw error;
         }
@@ -878,6 +904,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       uiEffects: access.getToolUiEffects("delete_job"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { threadId: string };
+        assertDeletionDoesNotBypassSupervisionLimit(access, typedParams.threadId);
         try {
           const result = await deleteWorkerThread(access, typedParams.threadId);
           return {
@@ -897,6 +924,8 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       parameters: Type.Object({}),
       uiEffects: access.getToolUiEffects("delete_all_jobs"),
       execute: async () => {
+        const attachedWorkerThreadId = access.getWorkerDefaults?.()?.threadId ?? null;
+        if (attachedWorkerThreadId) assertDeletionDoesNotBypassSupervisionLimit(access, attachedWorkerThreadId);
         const threadIds = access.store.listThreads().map((thread) => thread.id);
         const result = await runSerializedJobMutations(threadIds, async () => {
           try {

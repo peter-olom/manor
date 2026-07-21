@@ -60,3 +60,23 @@ test("plausible provider millisecond timestamps far in the future are quarantine
   assert.ok((store.getThread("future")?.createdAt ?? Infinity) <= Date.now());
   assert.ok((store.getThread("future")?.updatedAt ?? Infinity) <= Date.now());
 });
+
+test("a new operator turn resets reviewed Worker usage without changing the configured limit", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-supervision-window-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  await store.load();
+  store.setThreadSupervisionLimit("worker-1", 2);
+  store.noteReviewedWorkerDispatch("worker-1");
+  store.noteReviewedWorkerDispatch("worker-1");
+
+  assert.deepEqual(store.getThreadSupervision("worker-1"), {
+    butlerTurnsUsed: 2,
+    maxButlerTurns: 2,
+    capReached: true
+  });
+  assert.deepEqual(store.resetThreadSupervisionUsage("worker-1"), {
+    butlerTurnsUsed: 0,
+    maxButlerTurns: 2,
+    capReached: false
+  });
+});

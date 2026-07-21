@@ -912,7 +912,7 @@ export async function promptButler(
   access: ButlerAgentSessionAccess,
   text: string,
   imageReferenceIds: string[] = [],
-  options: { mode?: "queue" | "steer"; pendingOperatorMessageId?: string | null; displayText?: string | null; ignoreStopRequestSequence?: number | null; fileReferenceIds?: string[] } = {}
+  options: { mode?: "queue" | "steer"; pendingOperatorMessageId?: string | null; displayText?: string | null; ignoreStopRequestSequence?: number | null; fileReferenceIds?: string[]; startsOperatorBudgetWindow?: boolean } = {}
 ): Promise<boolean> {
   if (options.mode === "steer" && !options.pendingOperatorMessageId) {
     clearPendingOperatorPrompts(access);
@@ -924,7 +924,13 @@ export async function promptButler(
     ignoreStopRequestSequence = access.stopRequestSequence;
   }
 
-  return queueButlerPrompt(access, text, imageReferenceIds, { background: false, pendingOperatorMessageId, ignoreStopRequestSequence, fileReferenceIds: options.fileReferenceIds });
+  return queueButlerPrompt(access, text, imageReferenceIds, {
+    background: false,
+    pendingOperatorMessageId,
+    ignoreStopRequestSequence,
+    fileReferenceIds: options.fileReferenceIds,
+    startsOperatorBudgetWindow: options.startsOperatorBudgetWindow !== false
+  });
 }
 
 export async function stopButlerPrompt(access: ButlerAgentSessionAccess, options: { clearPendingOperatorMessages?: boolean } = {}): Promise<boolean> {
@@ -973,6 +979,13 @@ export function activateOperatorReferences(
   };
 }
 
+export function startOperatorSupervisionBudgetWindow(
+  access: Pick<ButlerAgentSessionAccess, "getWorkerDefaults" | "store">
+): void {
+  const workerThreadId = access.getWorkerDefaults?.()?.threadId;
+  if (workerThreadId) access.store.resetThreadSupervisionUsage(workerThreadId);
+}
+
 export async function syncOperatorMessagesFromSessionFiles(
   access: Pick<ButlerAgentSessionAccess, "operatorMessages" | "sessionDir" | "saveOperatorMessageState">
 ): Promise<boolean> {
@@ -987,7 +1000,7 @@ async function queueButlerPrompt(
   access: ButlerAgentSessionAccess,
   text: string,
   imageReferenceIds: string[],
-  options: { background: boolean; pendingOperatorMessageId?: string | null; ignoreStopRequestSequence?: number | null; fileReferenceIds?: string[] }
+  options: { background: boolean; pendingOperatorMessageId?: string | null; ignoreStopRequestSequence?: number | null; fileReferenceIds?: string[]; startsOperatorBudgetWindow?: boolean }
 ): Promise<boolean> {
   if (access.modelRefreshPromise) await access.modelRefreshPromise;
   if (!access.session) {
@@ -1028,6 +1041,9 @@ async function queueButlerPrompt(
       if (!options.background && hasBlockingStopRequest(access, acceptedStopRequestSequence)) {
         removePendingOperatorPrompt(access, options.pendingOperatorMessageId);
         return false;
+      }
+      if (options.startsOperatorBudgetWindow) {
+        startOperatorSupervisionBudgetWindow(access);
       }
       await runButlerPrompt(access, text, imageReferenceIds);
       if (!options.background) {

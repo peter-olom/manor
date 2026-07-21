@@ -4,7 +4,7 @@ import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { ActivityOnlyBubble, Bubble, ButlerPane, durableActivitySupersedesLive, findActiveOperatorQuestionMessage, LiveBubble, pendingActivityOwner, persistedButlerMessageCoversLive, ReviewActivityBubble, WorkerWaitIndicator, WorkLoaderBubble } from "../../src/web/ButlerPane.js";
+import { ActivityOnlyBubble, Bubble, ButlerPane, durableActivitySupersedesLive, findActiveOperatorQuestionMessage, LiveBubble, pendingActivityOwner, persistedButlerMessageCoversLive, ReviewActivityBubble, ReviewCycleBudgetControl, WorkerWaitIndicator, WorkLoaderBubble } from "../../src/web/ButlerPane.js";
 import { ThinkingTrace } from "../../src/web/ThinkingTrace.js";
 import { applyPatchToState, type LiveTurnState } from "../../src/web/useLiveButlerTurn.js";
 
@@ -399,6 +399,19 @@ test("live activity stays above the decision input and suppresses the composer",
 
   assert.ok(markup.indexOf("working-indicator") < markup.indexOf("operator-question-input"));
   assert.doesNotMatch(markup, /composer-form/);
+});
+
+test("review turn budget stays compact, visible, and preserves custom limits", () => {
+  const markup = renderToStaticMarkup(React.createElement(ReviewCycleBudgetControl, {
+    supervision: { butlerTurnsUsed: 3, maxButlerTurns: 7, capReached: false },
+    disabled: false,
+    onChange: () => undefined
+  }));
+
+  assert.match(markup, />Turns</);
+  assert.match(markup, />3\/<\/span>/);
+  assert.match(markup, /aria-label="Butler to Worker review turn limit"/);
+  assert.match(markup, /<option value="7" selected="">7<\/option>/);
 });
 
 test("worker-running state uses a dedicated Worker indicator", () => {

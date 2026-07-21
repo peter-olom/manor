@@ -16,7 +16,7 @@ import { addComposerContextItem, applyComposerSuggestion, composerItemKey, compo
 import { buildProjectArtifactPreview, type ProjectArtifactPreview, type ProjectArtifactPreviewTarget } from "./project-artifact-preview";
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
-import type { PairButlerActivityOutcome, PairComposerInputItem, PairComposerSuggestion, PairDetail, PairMessage, PairModelOption, PairReviewActivity, PairTraceItem } from "../shared/pairing";
+import type { PairButlerActivityOutcome, PairComposerInputItem, PairComposerSuggestion, PairDetail, PairMessage, PairModelOption, PairReviewActivity, PairTraceItem, PairWorkerSupervision } from "../shared/pairing";
 import { getJson, isVisionImageFile, type FileReference } from "./api";
 import type { PreviewMedia } from "./ImagePreviewModal";
 
@@ -33,6 +33,8 @@ type ButlerPaneProps = {
   onButlerPatch: ((patch: ProviderRuntimeLivePatch) => void) | null;
   onThinkingLevelChange: (level: string) => void;
   onButlerModelChange: (model: string) => void;
+  onReviewCycleLimitChange: (limit: number | null) => void;
+  reviewCycleLimitPending: boolean;
   onRetryReview: () => void;
   onStopReview: () => void;
   onStopButler: () => void;
@@ -68,6 +70,41 @@ function roleLabel(role: string): string {
   if (role === "butler") return "Butler";
   if (role === "worker") return "Worker";
   return "System";
+}
+
+export function ReviewCycleBudgetControl({
+  supervision,
+  disabled,
+  onChange
+}: {
+  supervision: PairWorkerSupervision | null;
+  disabled: boolean;
+  onChange: (limit: number | null) => void;
+}) {
+  if (!supervision) return null;
+  const standardLimits = [20, 40, 100];
+  const customLimit = supervision.maxButlerTurns !== null && !standardLimits.includes(supervision.maxButlerTurns)
+    ? supervision.maxButlerTurns
+    : null;
+  return (
+    <label
+      className={`review-cycle-budget${supervision.capReached ? " is-capped" : ""}`}
+      title="Butler-to-Worker dispatches that enter adversarial review for the current operator message"
+    >
+      <span className="review-cycle-budget-label">Turns</span>
+      <span className="review-cycle-budget-used">{supervision.butlerTurnsUsed}/</span>
+      <select
+        aria-label="Butler to Worker review turn limit"
+        disabled={disabled}
+        value={supervision.maxButlerTurns === null ? "null" : String(supervision.maxButlerTurns)}
+        onChange={(event) => onChange(event.target.value === "null" ? null : Number(event.target.value))}
+      >
+        {customLimit !== null ? <option value={customLimit}>{customLimit}</option> : null}
+        {standardLimits.map((limit) => <option key={limit} value={limit}>{limit}</option>)}
+        <option value="null">∞</option>
+      </select>
+    </label>
+  );
 }
 
 function workLoaderMessage(pair: PairDetail): PairMessage {
@@ -820,6 +857,8 @@ export function ButlerPane({
   onButlerPatch,
   onThinkingLevelChange,
   onButlerModelChange,
+  onReviewCycleLimitChange,
+  reviewCycleLimitPending,
   onRetryReview,
   onStopReview,
   onStopButler,
@@ -971,12 +1010,19 @@ export function ButlerPane({
           <h2>Butler</h2>
           <span className="pane-sub">{pair.messages.length} messages · {shortId(pair.id)}</span>
         </div>
-        {!pair.butlerPending ? <SessionControlsButton pairId={pair.id} lane="butler" disabled={!pair.butlerReady} /> : null}
-        {pair.butlerPending && !pair.review ? (
-          <button className="button is-ghost" type="button" disabled={stoppingButler} onClick={onStopButler}>
-            {stoppingButler ? "Stopping…" : "Stop Butler"}
-          </button>
-        ) : null}
+        <div className="pane-head-controls">
+          <ReviewCycleBudgetControl
+            supervision={pair.workerSupervision}
+            disabled={reviewCycleLimitPending}
+            onChange={onReviewCycleLimitChange}
+          />
+          {!pair.butlerPending ? <SessionControlsButton pairId={pair.id} lane="butler" disabled={!pair.butlerReady} /> : null}
+          {pair.butlerPending && !pair.review ? (
+            <button className="button is-ghost" type="button" disabled={stoppingButler} onClick={onStopButler}>
+              {stoppingButler ? "Stopping…" : "Stop Butler"}
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="transcript" ref={ref} onScroll={onScroll} data-count={totalCount}>
         {liveHasConnected && !liveConnected ? <div className="live-connection-warning" role="status">Live updates disconnected. Polling continues.</div> : null}

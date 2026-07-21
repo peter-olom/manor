@@ -18,6 +18,8 @@
 - Treat a missing capability in one agent environment as a routing fact. Infer whether Butler should advise, prepare, inspect, or execute, and whether Worker should perform the environment-dependent work.
 - Keep tool contracts goal-oriented where judgment helps. Return concrete runtime facts and results so the agent can adapt without encoding every reasonable branch in server code.
 - Test outcomes and invariants. Allow multiple valid execution paths when the safety boundary and required evidence stay intact.
+- Scope the Butler-Worker turn budget to one operator turn. Start a fresh allowance when each queued operator message begins. Count one turn only when Butler successfully dispatches Worker work that will enter adversarial review: `Butler -> Worker -> Review`. Rework dispatched after a rejection consumes the next turn. Worker tool calls and internal turns, review attempts or schema retries, callback registration, held context, and startup recovery do not consume turns.
+- Treat the turn budget as an execution boundary. Autonomous supervision must not delete, detach, hand off, or replace a Worker to obtain a fresh allowance. A new operator turn resets usage, while the configured limit remains unchanged.
 - Ask the operator when a missing choice would materially change the result. Handle ordinary routing, command selection, retries, and verification choices through agent judgment.
 
 ## Butler Model Providers And Harnesses

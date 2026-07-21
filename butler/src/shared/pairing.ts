@@ -167,6 +167,12 @@ export type PairWorker = {
   handedOffFrom?: PairWorkerHandoff | null;
 };
 
+export type PairWorkerSupervision = {
+  butlerTurnsUsed: number;
+  maxButlerTurns: number | null;
+  capReached: boolean;
+};
+
 export type PairWorkspaceOption = {
   id: string;
   label: string;
@@ -298,6 +304,7 @@ export type PairDetail = PairChat & {
   butlerActivity: PairTraceItem[];
   butlerActivityOutcome: PairButlerActivityOutcome | null;
   review: PairReviewActivity | null;
+  workerSupervision: PairWorkerSupervision | null;
   pendingManorRestartRequest: ManorRestartRequestView | null;
   loadedStart: number;
   hasMore: boolean;

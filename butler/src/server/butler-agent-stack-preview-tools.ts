@@ -1355,7 +1355,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           throw new Error("This session already has a Worker. Continue it with message_job or use Switch worker for an atomic handoff.");
         }
         await access.registerPendingChatCallback(result.threadId);
-        const supervision = access.store.noteButlerSteer(result.threadId);
+        const supervision = access.store.noteReviewedWorkerDispatch(result.threadId);
 
         return {
           content: [
@@ -1475,7 +1475,7 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
           totalFollowUps,
           followUpsSent: 0
         });
-        const supervision = access.store.noteButlerSteer(result.threadId);
+        const supervision = access.store.noteReviewedWorkerDispatch(result.threadId);
 
         return {
           content: [

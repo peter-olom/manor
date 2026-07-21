@@ -1080,18 +1080,13 @@ export class ButlerStateStore extends EventEmitter {
     return this.windows.map((window) => window.threadId);
   }
 
-  getThreadSupervision(threadId: string): { butlerTurnsUsed: number; maxButlerTurns: number | null; capReached: boolean } {
-    return this.getOrCreateThread(threadId).supervision;
-  }
+  getThreadSupervision(threadId: string): { butlerTurnsUsed: number; maxButlerTurns: number | null; capReached: boolean } { return this.getOrCreateThread(threadId).supervision; }
 
-  noteButlerSteer(threadId: string): { butlerTurnsUsed: number; maxButlerTurns: number | null; capReached: boolean } {
-    const thread = this.getOrCreateThread(threadId);
-    thread.supervision.butlerTurnsUsed += 1;
-    this.refreshDerivedThreadState(thread);
-    this.queueSave();
-    this.emitChange();
-    return thread.supervision;
-  }
+  /** Count one Butler -> Worker dispatch whose result will enter adversarial review. */
+  noteReviewedWorkerDispatch(threadId: string): { butlerTurnsUsed: number; maxButlerTurns: number | null; capReached: boolean } { const thread = this.getOrCreateThread(threadId); thread.supervision.butlerTurnsUsed += 1; this.refreshDerivedThreadState(thread); this.queueSave(); this.emitChange(); return thread.supervision; }
+
+  /** Start a fresh review-cycle allowance for a new operator turn without changing its configured limit. */
+  resetThreadSupervisionUsage(threadId: string): { butlerTurnsUsed: number; maxButlerTurns: number | null; capReached: boolean } { const thread = this.getOrCreateThread(threadId); thread.supervision.butlerTurnsUsed = 0; this.refreshDerivedThreadState(thread); this.queueSave(); this.emitChange(); return thread.supervision; }
 
   setThreadSupervisionLimit(threadId: string, maxButlerTurns: number | null): { butlerTurnsUsed: number; maxButlerTurns: number | null; capReached: boolean } {
     const thread = this.getOrCreateThread(threadId);

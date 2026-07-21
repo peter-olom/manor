@@ -111,7 +111,11 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
       runtime: "auto",
       threadId: options.attachedWorkerThreadId === undefined ? threadId : options.attachedWorkerThreadId
     }),
-    getThreadBudgetLimitMessage: () => options.budgetLimitMessage ?? null,
+    getThreadBudgetLimitMessage: (workerThreadId: string) => {
+      if (options.budgetLimitMessage) return options.budgetLimitMessage;
+      const supervision = store.getThreadSupervision(workerThreadId);
+      return supervision.capReached ? "Worker supervision budget is exhausted." : null;
+    },
     prepareDelegationWorkspace: async (_task: string, cwd?: string) => {
       workspacePreparations += 1;
       return { cwd: cwd ?? "/workspace", branchName: null };
@@ -367,7 +371,7 @@ test("batch acceptance review requires rejection steering before mutating any po
 });
 
 test("message_job updates the job payload and sends readable chat", async () => {
-  const { threadId, sent, payloads, tools } = await createHarness({
+  const { store, threadId, sent, payloads, tools } = await createHarness({
     activeImageReferenceIds: ["image-current-turn"],
     activeFileReferenceIds: ["file-current-turn"]
   });
@@ -386,6 +390,14 @@ test("message_job updates the job payload and sends readable chat", async () => 
   assert.match(JSON.stringify(sent[0]), /Please retry the browser proof/);
   assert.match(JSON.stringify(sent[0]), /I updated the job payload/);
   assert.doesNotMatch(JSON.stringify(sent[0]), /MANOR INSTRUCTION/);
+  assert.equal(store.getThreadSupervision(threadId).butlerTurnsUsed, 1);
+
+  await tool(tools, "message_job").execute("call-direct-reply", {
+    threadId,
+    text: "Return this result directly to the operator.",
+    nextWorkerReportAction: "reply_to_operator"
+  });
+  assert.equal(store.getThreadSupervision(threadId).butlerTurnsUsed, 2);
 });
 
 test("continuing a self-improvement Worker reactivates its tracked request", async () => {
@@ -436,7 +448,7 @@ test("an ambiguously accepted self-improvement continuation stays running", asyn
 });
 
 test("a self-improvement continuation stays running after post-dispatch persistence failure", async () => {
-  const { threadId, sent, tools } = await createHarness({ bindError: new Error("payload binding failed") });
+  const { store, threadId, sent, tools } = await createHarness({ bindError: new Error("payload binding failed") });
   const { state, request } = await createReadySelfImprovementState(threadId);
 
   await assert.rejects(() => tool(tools, "message_job").execute("call-self-improvement-bind-failed", {
@@ -445,6 +457,7 @@ test("a self-improvement continuation stays running after post-dispatch persiste
   }), /payload binding failed/);
 
   assert.equal(sent.length, 1);
+  assert.equal(store.getThreadSupervision(threadId).butlerTurnsUsed, 1);
   assert.equal(state.get(request.id)?.status, "running");
   assert.equal(state.get(request.id)?.completedAt, null);
   await resetSelfImprovementRequestState();
@@ -562,7 +575,7 @@ test("message_job reserves its callback before a steered turn can settle", async
 test("message_job preserves supervision when a timed-out dispatch may have been accepted", async () => {
   const dispatchError = new Error("Worker message send timed out; stopping the uncertain turn.");
   dispatchError.name = "WorkerSendTimeoutError";
-  const { callbackDispatches, dispatchOrder, threadId, tools } = await createHarness({
+  const { callbackDispatches, dispatchOrder, store, threadId, tools } = await createHarness({
     dispatchError,
     stopError: new Error("interrupt transport unavailable")
   });
@@ -571,6 +584,7 @@ test("message_job preserves supervision when a timed-out dispatch may have been 
 
   assert.deepEqual(dispatchOrder, ["reserve", "send", "mark"]);
   assert.equal(callbackDispatches[0]?.turnId, null);
+  assert.equal(store.getThreadSupervision(threadId).butlerTurnsUsed, 1);
 });
 
 test("failed refreshed follow-up restores the prior review scope and payload", async () => {
@@ -610,6 +624,52 @@ test("rejected checklist flush updates payload and clears the queue", async () =
   assert.match(String(sent[0]), /checklist items/);
   assert.equal(store.buildQueuedRejectionInstruction(threadId), null);
   assert.equal(watchdogs.size, 0);
+  assert.equal(store.getThreadSupervision(threadId).butlerTurnsUsed, 1);
+});
+
+test("an ambiguously accepted rejection follow-up spends one reviewed turn", async () => {
+  const dispatchError = new Error("Worker message send timed out; stopping the uncertain turn.");
+  dispatchError.name = "WorkerSendTimeoutError";
+  const { store, threadId, tools } = await createHarness({
+    dispatchError,
+    stopError: new Error("interrupt transport unavailable")
+  });
+  store.reviewAcceptancePoint({
+    threadId,
+    pointId: "point-1",
+    status: "rejected",
+    nextInstruction: "Fix the first point with evidence."
+  });
+
+  await assert.rejects(
+    () => runWithCallbackReviewGuard(
+      { threadId, isCurrent: () => true },
+      () => tool(tools, "flush_rejected_acceptance_points").execute("call-ambiguous-rejection", { threadId })
+    ),
+    /timed out/
+  );
+
+  assert.equal(store.getThreadSupervision(threadId).butlerTurnsUsed, 1);
+});
+
+test("a rejection follow-up spends one reviewed turn before delivery persistence", async () => {
+  const { store, threadId, tools } = await createHarness({ bindError: new Error("payload binding failed") });
+  store.reviewAcceptancePoint({
+    threadId,
+    pointId: "point-1",
+    status: "rejected",
+    nextInstruction: "Fix the first point with evidence."
+  });
+
+  await assert.rejects(
+    () => runWithCallbackReviewGuard(
+      { threadId, isCurrent: () => true },
+      () => tool(tools, "flush_rejected_acceptance_points").execute("call-bind-failed-rejection", { threadId })
+    ),
+    /payload binding failed/
+  );
+
+  assert.equal(store.getThreadSupervision(threadId).butlerTurnsUsed, 1);
 });
 
 test("hold_job_context persists held context in the payload without sending a turn", async () => {
@@ -641,6 +701,18 @@ test("stop_job immediately stops the Worker and removes its pending callback", a
   assert.deepEqual(stopped, [threadId]);
   assert.deepEqual(removedCallbacks, [threadId]);
   assert.match(JSON.stringify(result), /Stopped job thread-tools/);
+});
+
+test("a capped attached Worker cannot be deleted to obtain a fresh budget", async () => {
+  const { store, threadId, tools } = await createHarness();
+  store.setThreadSupervisionLimit(threadId, 1);
+  store.noteReviewedWorkerDispatch(threadId);
+
+  await assert.rejects(
+    () => tool(tools, "delete_job").execute("call-delete-capped", { threadId }),
+    /Deleting it would bypass that limit/
+  );
+  assert.ok(store.getThread(threadId));
 });
 
 test("partial delete all removes Butler callbacks only for deleted Workers", async () => {

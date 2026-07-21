@@ -1395,6 +1395,40 @@ a:hover {
   font-variant-numeric: tabular-nums;
 }
 
+.pane-head-controls,
+.review-cycle-budget {
+  display: flex;
+  align-items: center;
+}
+
+.pane-head-controls {
+  gap: 8px;
+  min-width: 0;
+}
+
+.review-cycle-budget {
+  gap: 2px;
+  color: var(--text-subtle);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.review-cycle-budget.is-capped {
+  color: var(--danger);
+}
+
+.review-cycle-budget select {
+  width: 43px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  padding: 0 2px;
+}
+
 .cli-pane {
   display: none;
   grid-column: 1;

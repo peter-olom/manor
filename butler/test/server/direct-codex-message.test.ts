@@ -574,10 +574,12 @@ test("startup rearms when Worker has a newer undelivered turn", async () => {
     pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
   };
   internals.deliveredCloseoutIds.add(`${threadId}:turn-1`);
+  store.noteReviewedWorkerDispatch(threadId);
 
   await agent.ensureExternalWorkerDelegation(threadId);
 
   assert.equal(internals.pendingChatCallbacks.get(threadId)?.owesOperatorReply, true);
+  assert.equal(store.getThreadSupervision(threadId).butlerTurnsUsed, 1);
   agent.dispose();
 });
 

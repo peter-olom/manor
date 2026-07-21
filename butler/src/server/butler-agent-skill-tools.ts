@@ -359,6 +359,7 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
                   throw new Error("This Butler session already has a Worker and could not attach the confirmation job.");
                 }
                 await access.registerPendingChatCallback(started.threadId);
+                access.store.noteReviewedWorkerDispatch(started.threadId);
                 access.noteThreadFocus(started.threadId, "skill verification");
                 verificationThreadId = started.threadId;
               }

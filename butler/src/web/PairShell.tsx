@@ -40,6 +40,7 @@ import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebar-preferenc
 import { TerminalPane } from "./TerminalPane";
 import { useEventStream } from "./useEventStream"; import { useProjectArtifactPreview } from "./useProjectArtifactPreview"; import { useSessionAutomation } from "./useSessionAutomation";
 import { useManorRestartApproval } from "./useManorRestartApproval";
+import { useReviewCycleLimit } from "./useReviewCycleLimit";
 import { useWorkerThreadHistory } from "./useWorkerThreadHistory";
 import { WorkerPane } from "./WorkerPane";
 import type { WorkerTimeline } from "./WorkerPane";
@@ -666,6 +667,7 @@ export function PairShell() {
   useEffect(() => writeSidebarCollapsed(desktopSidebarCollapsed), [desktopSidebarCollapsed]);
   const manorSurface = manorSurfaceForView(viewMode);
   const activePair = pair?.id === selectedPairId ? pair : null;
+  const reviewCycleLimit = useReviewCycleLimit(activePair, setPair, setError);
   const displayedError = error ?? pairRefreshError;
   const activeWorkerHandoff = activePair ? workerHandoffByPairId[activePair.id] ?? null : null;
   const shouldLoadWorkerThread = manorSurface === "sessions" && viewMode !== "butler" && Boolean(activePair?.worker);
@@ -1372,6 +1374,8 @@ export function PairShell() {
                     onButlerPatch={onButlerPatchRef}
                     onThinkingLevelChange={(level) => void onThinkingLevelChange(level)}
                     onButlerModelChange={(model) => void onButlerModelChange(model)}
+                    onReviewCycleLimitChange={(limit) => void reviewCycleLimit.update(limit)}
+                    reviewCycleLimitPending={reviewCycleLimit.pending}
                     onRetryReview={() => void updateReview("retry-review")}
                     onStopReview={() => void updateReview("stop-review")}
                     onStopButler={() => void stopButler()}
