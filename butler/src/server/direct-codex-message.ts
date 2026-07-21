@@ -11,6 +11,7 @@ import { workerMessageDispatchMayHaveBeenAccepted } from "./worker-client-router
 
 export type DirectCodexMessagePingInput = {
   text: string;
+  operatorRequestText?: string | null;
   imageReferenceIds?: string[];
   fileReferenceIds?: string[];
   inputItems?: unknown[];
@@ -75,7 +76,7 @@ export type DirectCodexMessageAccess = {
   store: ButlerStateStore;
   registerPendingChatCallback(
     threadId: string,
-    options?: { privateSteerText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null; dispatchState?: "ready" | "reserving" }
+    options?: { privateSteerText?: string | null; operatorRequestText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null; dispatchState?: "ready" | "reserving" }
   ): Promise<void>;
   createOrUpdateJobPayload?(input: {
     threadId: string;
@@ -351,6 +352,7 @@ export async function notifyDirectCodexMessage(
     if (!input.callbackAlreadyRegistered) {
       await access.registerPendingChatCallback(input.threadId, {
         privateSteerText,
+        operatorRequestText: input.operatorRequestText ?? input.text,
         nextWorkerReportAction: "review",
         requestedAt
       });

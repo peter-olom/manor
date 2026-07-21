@@ -135,6 +135,7 @@ export interface ButlerThreadCallbackView {
   callbackState: ButlerCallbackState;
   resolutionState: ButlerCallbackResolutionState;
   requestedAt: number;
+  operatorRequestText?: string | null;
   lastEventAt: number | null;
   lastWorkerStatusSeen: CodexThreadStatus | null;
   lastTerminalReportAt: number | null;

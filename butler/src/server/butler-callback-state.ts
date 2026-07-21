@@ -79,6 +79,7 @@ function normalizeCallbackEntry(entry: PendingChatCallback): PendingChatCallback
     callbackState: normalizedCallbackState,
     resolutionState,
     requestedAt,
+    operatorRequestText: typeof entry.operatorRequestText === "string" && entry.operatorRequestText.trim() ? entry.operatorRequestText.trim() : null,
     lastEventAt: repairEpochMilliseconds(entry.lastEventAt, updatedAt, now),
     lastWorkerStatusSeen:
       entry.lastWorkerStatusSeen === "active" || entry.lastWorkerStatusSeen === "idle" || entry.lastWorkerStatusSeen === "unknown"

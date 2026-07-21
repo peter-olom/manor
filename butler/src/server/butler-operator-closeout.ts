@@ -87,7 +87,13 @@ export async function postOperatorJobReply(access: OperatorJobReplyAccess, threa
       throw new Error(closeoutBlocker);
     }
     await rotateAcceptedBaseline(access, threadId, relevantWorkerReport?.status === "completed");
-    const closeoutText = buildOperatorCloseoutText({ store: access.store, thread, workerReport: relevantWorkerReport, text });
+    const closeoutText = buildOperatorCloseoutText({
+      store: access.store,
+      thread,
+      workerReport: relevantWorkerReport,
+      text,
+      operatorRequestText: callback.operatorRequestText
+    });
     upsertOperatorMessage(access.operatorMessages, messageId, closeoutText, at, elapsedTaskDurationMs(callback.requestedAt, completedAt), { trace: callbackReviewTrace(callback, completedAt) });
     await access.saveOperatorMessageState();
     access.operatorSink?.onOperatorReply?.({ threadId, text: closeoutText, at });

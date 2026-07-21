@@ -5,8 +5,11 @@ export function buildOperatorCloseoutText(input: {
   thread: NonNullable<ReturnType<ButlerStateStore["getThread"]>>;
   workerReport: ReturnType<ButlerStateStore["getWorkerReport"]>;
   text: string;
+  operatorRequestText?: string | null;
 }): string {
   const trimmed = input.text.trim();
+  const focusedOperatorRequest = input.operatorRequestText?.trim() || null;
+  if (focusedOperatorRequest) return trimmed;
   if (!input.workerReport || input.workerReport.status !== "completed" || trimmed.toLowerCase().includes("proof dossier")) {
     return trimmed;
   }

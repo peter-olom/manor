@@ -221,9 +221,9 @@ export type ButlerAgentToolAccess = {
   }): ButlerDelegationAttachmentAcknowledgement | void;
   registerPendingChatCallback(
     threadId: string,
-    options?: { privateSteerText?: string | null; preservePrivateSteer?: boolean; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null }
+    options?: { privateSteerText?: string | null; preservePrivateSteer?: boolean; operatorRequestText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null }
   ): Promise<void>;
-  reserveDirectCodexMessage(input: { threadId: string; text: string; requestedAt: number; nextWorkerReportAction?: ButlerNextWorkerReportAction }): Promise<ButlerCallbackReservation>;
+  reserveDirectCodexMessage(input: { threadId: string; text: string; operatorRequestText?: string | null; requestedAt: number; nextWorkerReportAction?: ButlerNextWorkerReportAction }): Promise<ButlerCallbackReservation>;
   markPendingChatCallbackDispatched(threadId: string, requestedAt: number, acceptedWorkerTurnId: string | null): Promise<void>;
   rollbackDirectCodexMessage(threadId: string, requestedAt: number, reservation: ButlerCallbackReservation): Promise<void>;
   removeExternalWorkerDelegation?(threadId: string): Promise<void>;

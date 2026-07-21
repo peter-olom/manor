@@ -20,6 +20,7 @@
 - Test outcomes and invariants. Allow multiple valid execution paths when the safety boundary and required evidence stay intact.
 - Scope the Butler-Worker turn budget to one operator turn. Start a fresh allowance when each queued operator message begins. Count one turn only when Butler successfully dispatches Worker work that will enter adversarial review: `Butler -> Worker -> Review`. Rework dispatched after a rejection consumes the next turn. Worker tool calls and internal turns, review attempts or schema retries, callback registration, held context, and startup recovery do not consume turns.
 - Treat the turn budget as an execution boundary. Autonomous supervision must not delete, detach, hand off, or replace a Worker to obtain a fresh allowance. A new operator turn resets usage, while the configured limit remains unchanged.
+- Scope every terminal Butler reply to the latest operator message that caused the Worker dispatch. Carry Butler-side checks and the subsequent Worker report into review, lead with the direct answer, and do not recap accepted earlier work unless it is relevant. Automatically replace a completed review scope for new follow-up work; keep incomplete or rejected scope visible and governing until Butler explicitly replaces it.
 - Ask the operator when a missing choice would materially change the result. Handle ordinary routing, command selection, retries, and verification choices through agent judgment.
 
 ## Butler Model Providers And Harnesses

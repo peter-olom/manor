@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
+import { buildCallbackReviewPrompt } from "../../src/server/butler-agent-helpers.js";
 import { buildButlerCodexTools } from "../../src/server/butler-agent-codex-tools.js";
 import { buildButlerDelegationTools } from "../../src/server/butler-agent-stack-preview-tools.js";
 import { runWithCallbackReviewGuard } from "../../src/server/butler-job-mutation-guard.js";
@@ -16,7 +17,7 @@ import { buildThreadExecutionContract } from "../../src/server/thread-contract.j
 import type { ButlerAgentToolAccess } from "../../src/server/butler-agent-tool-access.js";
 import type { JobPayloadView } from "../../src/server/job-payload-types.js";
 
-async function createHarness(options: { attachedWorkerThreadId?: string | null; activeImageReferenceIds?: string[]; activeFileReferenceIds?: string[]; settleDuringSend?: boolean; dispatchError?: Error; stopError?: Error; bindError?: Error; budgetLimitMessage?: string; sendDelayMs?: number } = {}) {
+async function createHarness(options: { attachedWorkerThreadId?: string | null; activeImageReferenceIds?: string[]; activeFileReferenceIds?: string[]; activeOperatorRequestText?: string; settleDuringSend?: boolean; dispatchError?: Error; stopError?: Error; bindError?: Error; budgetLimitMessage?: string; sendDelayMs?: number } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-codex-instruction-tools-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   await store.load();
@@ -44,6 +45,7 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
   const removedCallbacks: string[] = [];
   const payloads: JobPayloadView[] = [];
   const callbackDispatches: Array<{ requestedAt: number; turnId: string | null }> = [];
+  const reservedInputs: Parameters<ButlerAgentToolAccess["reserveDirectCodexMessage"]>[0][] = [];
   const dispatchOrder: string[] = [];
   let activeSends = 0;
   let maxConcurrentSends = 0;
@@ -102,7 +104,12 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
       payloads.push(payload);
       return payload;
     },
-    getActiveOperatorThreadGuard: () => null,
+    getActiveOperatorThreadGuard: () => options.activeOperatorRequestText ? ({
+      explicitThreadIds: [],
+      lockedThreadId: threadId,
+      contextPrompt: null,
+      operatorRequestText: options.activeOperatorRequestText
+    }) : null,
     getActiveOperatorReferences: () => ({
       imageReferenceIds: options.activeImageReferenceIds ?? [],
       fileReferenceIds: options.activeFileReferenceIds ?? []
@@ -124,7 +131,8 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
       if (options.bindError) throw options.bindError;
       return store.getThreadJobPayload(threadId);
     },
-    reserveDirectCodexMessage: async () => {
+    reserveDirectCodexMessage: async (input) => {
+      reservedInputs.push(input);
       dispatchOrder.push("reserve");
       const thread = store.getThread(threadId);
       return {
@@ -157,7 +165,7 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
     noteThreadFocus: () => undefined
   } as unknown as ButlerAgentToolAccess;
   const tools = buildButlerCodexTools(access);
-  return { access, store, threadId, sent, started, stopped, removedCallbacks, payloads, callbackDispatches, dispatchOrder, tools, watchdogs, maxConcurrentSends: () => maxConcurrentSends, workspacePreparations: () => workspacePreparations };
+  return { access, store, threadId, sent, started, stopped, removedCallbacks, payloads, callbackDispatches, reservedInputs, dispatchOrder, tools, watchdogs, maxConcurrentSends: () => maxConcurrentSends, workspacePreparations: () => workspacePreparations };
 }
 
 async function createReadySelfImprovementState(threadId: string) {
@@ -371,9 +379,11 @@ test("batch acceptance review requires rejection steering before mutating any po
 });
 
 test("message_job updates the job payload and sends readable chat", async () => {
-  const { store, threadId, sent, payloads, tools } = await createHarness({
+  const operatorRequestText = "See if you and the Worker have here.now egress.";
+  const { store, threadId, sent, payloads, reservedInputs, tools } = await createHarness({
     activeImageReferenceIds: ["image-current-turn"],
-    activeFileReferenceIds: ["file-current-turn"]
+    activeFileReferenceIds: ["file-current-turn"],
+    activeOperatorRequestText: operatorRequestText
   });
 
   await tool(tools, "message_job").execute("call-1", {
@@ -390,6 +400,7 @@ test("message_job updates the job payload and sends readable chat", async () => 
   assert.match(JSON.stringify(sent[0]), /Please retry the browser proof/);
   assert.match(JSON.stringify(sent[0]), /I updated the job payload/);
   assert.doesNotMatch(JSON.stringify(sent[0]), /MANOR INSTRUCTION/);
+  assert.equal(reservedInputs[0]?.operatorRequestText, operatorRequestText);
   assert.equal(store.getThreadSupervision(threadId).butlerTurnsUsed, 1);
 
   await tool(tools, "message_job").execute("call-direct-reply", {
@@ -562,6 +573,55 @@ test("message_job without refresh keeps the existing review contract", async () 
   assert.deepEqual(payloads[0]?.checklist.map((item) => item.text), before?.acceptancePoints);
 });
 
+test("message_job automatically replaces a completed review scope for a new follow-up", async () => {
+  const operatorRequestText = "See if you and the Worker have here.now egress.";
+  const { store, threadId, payloads, reservedInputs, tools } = await createHarness({ activeOperatorRequestText: operatorRequestText });
+  for (const item of store.getSupervisionChecklist(threadId)?.items ?? []) {
+    store.reviewAcceptancePoint({ threadId, pointId: item.id, status: "accepted", note: "Original work is complete." });
+  }
+
+  await tool(tools, "message_job").execute("call-implicit-refresh", {
+    threadId,
+    text: "Check here.now reachability from the Worker shell and report the exact HTTP result."
+  });
+
+  const contract = store.getThread(threadId)?.executionContract;
+  assert.equal(contract?.requestedTask, "Check here.now reachability from the Worker shell and report the exact HTTP result.");
+  assert.deepEqual(contract?.acceptancePoints, ["Check here.now reachability from the Worker shell and report the exact HTTP result"]);
+  assert.doesNotMatch(JSON.stringify(payloads[0]), /First point|Second point/);
+  assert.equal(reservedInputs[0]?.operatorRequestText, operatorRequestText);
+
+  store.recordWorkerReport(threadId, {
+    turnId: "turn-egress",
+    status: "completed",
+    summary: "Worker can reach here.now.",
+    details: "HTTP 200 and proxy CONNECT succeeded."
+  });
+  const prompt = buildCallbackReviewPrompt(store, {
+    threadId,
+    callbackState: "received_worker_callback",
+    resolutionState: "received_worker_callback",
+    requestedAt: 1,
+    operatorRequestText,
+    lastEventAt: Date.now(),
+    lastWorkerStatusSeen: "idle",
+    lastTerminalReportAt: Date.now(),
+    lastPrivateSteerText: "Check here.now reachability from the Worker shell and report the exact HTTP result.",
+    lastPrivateSteerAt: 2,
+    nextWorkerReportAction: "review",
+    operatorCloseoutStatus: "owed",
+    owesOperatorReply: true,
+    closeoutChannel: "none",
+    reviewState: "queued",
+    reviewReason: "worker_callback",
+    closedAt: null,
+    updatedAt: Date.now()
+  });
+  assert.match(prompt, /Governing Worker review scope/);
+  assert.match(prompt, /Structured supervision checklist/);
+  assert.doesNotMatch(prompt, /Original job context \(background only\)|First point|Second point/);
+});
+
 test("message_job reserves its callback before a steered turn can settle", async () => {
   const { callbackDispatches, dispatchOrder, store, threadId, tools } = await createHarness({ settleDuringSend: true });
 
@@ -596,6 +656,27 @@ test("failed refreshed follow-up restores the prior review scope and payload", a
     threadId,
     text: "- Replace the old scope\n- Verify the replacement",
     refreshChecklist: true
+  }), /send failed/);
+
+  assert.deepEqual(store.getThread(threadId)?.executionContract, priorContract);
+  assert.equal(store.getSupervisionChecklist(threadId)?.requestedTask, priorChecklist?.requestedTask);
+  assert.deepEqual(store.getSupervisionChecklist(threadId)?.items, priorChecklist?.items);
+  assert.equal(store.getSupervisionChecklist(threadId)?.reviewState, priorChecklist?.reviewState);
+  assert.equal(store.getThreadJobPayload(threadId), null);
+  assert.deepEqual(dispatchOrder, ["reserve", "send", "rollback"]);
+});
+
+test("failed implicit follow-up refresh restores the prior completed scope and payload", async () => {
+  const { store, threadId, dispatchOrder, tools } = await createHarness({ dispatchError: new Error("send failed") });
+  for (const item of store.getSupervisionChecklist(threadId)?.items ?? []) {
+    store.reviewAcceptancePoint({ threadId, pointId: item.id, status: "accepted", note: "Original work is complete." });
+  }
+  const priorContract = structuredClone(store.getThread(threadId)?.executionContract ?? null);
+  const priorChecklist = structuredClone(store.getSupervisionChecklist(threadId));
+
+  await assert.rejects(() => tool(tools, "message_job").execute("call-implicit-refresh-failure", {
+    threadId,
+    text: "Check here.now reachability."
   }), /send failed/);
 
   assert.deepEqual(store.getThread(threadId)?.executionContract, priorContract);

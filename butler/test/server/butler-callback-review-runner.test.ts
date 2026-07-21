@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
-import { applyCallbackReviewFailure, applyCallbackReviewProgress, assertCallbackSupervisorPromptSucceeded, buildCallbackAdversarialReviewBrief, buildGuardedCallbackReviewTools, CallbackReviewScheduler, isCallbackReviewAutomationPause, isCallbackReviewOperatorPause, isCallbackReviewRetryablePause, isCurrentCallbackReview, pauseCallbackReview, prepareCallbackReviewRetry, selectRunnableCallbackReviews, shouldIgnoreCallbackReviewFailure } from "../../src/server/butler-callback-review-runner.js";
+import { applyCallbackReviewFailure, applyCallbackReviewProgress, assertCallbackSupervisorPromptSucceeded, buildCallbackAdversarialReviewBrief, buildCurrentOperatorTurnContext, buildGuardedCallbackReviewTools, CallbackReviewScheduler, isCallbackReviewAutomationPause, isCallbackReviewOperatorPause, isCallbackReviewRetryablePause, isCurrentCallbackReview, pauseCallbackReview, prepareCallbackReviewRetry, selectRunnableCallbackReviews, shouldIgnoreCallbackReviewFailure } from "../../src/server/butler-callback-review-runner.js";
 import { blockCloseoutReview } from "../../src/server/butler-closeout-gate.js";
 import type { PendingChatCallback } from "../../src/server/butler-agent-helpers.js";
 import { loadButlerCallbackState } from "../../src/server/butler-callback-state.js";
@@ -397,6 +397,107 @@ test("adversarial review brief carries Butler's latest steering and unresolved d
   assert.ok(brief.indexOf("Held correction 3.") < brief.indexOf("Held correction 7."));
   assert.match(brief, /Add an exhausted-retry assertion/);
   assert.match(brief, /retry loop hides the original error/);
+});
+
+test("a scoped operator follow-up stays primary without hiding its governing checklist", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-review-followup-scope-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  const target = callback("worker", Date.now());
+  target.operatorRequestText = "See if you and the Worker have here.now egress.";
+  target.lastPrivateSteerText = "Check here.now from the Worker shell.";
+  store.upsertThreadSummary({ id: target.threadId, status: "idle", cwd: dir, turns: [] });
+  const contract = buildThreadExecutionContract({
+    threadId: target.threadId,
+    workspaceCwd: dir,
+    projectId: "project",
+    projectLabel: "Boardwalk",
+    branch: null,
+    taskText: "Build and publish the 24-point Boardwalk dossier.",
+    notes: []
+  });
+  store.setThreadExecutionContract(target.threadId, contract);
+  const firstPoint = store.getSupervisionChecklist(target.threadId)?.items[0];
+  assert.ok(firstPoint);
+  store.reviewAcceptancePoint({
+    threadId: target.threadId,
+    pointId: firstPoint.id,
+    status: "rejected",
+    nextInstruction: "Finish the old dossier proof."
+  });
+
+  const brief = buildCallbackAdversarialReviewBrief(store, target);
+  assert.match(brief, /Current operator request governing this callback/);
+  assert.match(brief, /See if you and the Worker have here\.now egress/);
+  assert.match(brief, /Finish the old dossier proof|Unresolved or rejected checklist points/);
+});
+
+test("a huge operator follow-up cannot crowd governing review context out of the brief", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-review-long-followup-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  const target = callback("worker", Date.now());
+  target.operatorRequestText = `${"pasted-log ".repeat(2_000)} Actual request: check both environments.`;
+  target.lastPrivateSteerText = `${"prior-steer-context ".repeat(200)} Final steer: verify the Worker result directly.`;
+  store.upsertThreadSummary({ id: target.threadId, status: "idle", cwd: dir, turns: [] });
+  const contract = buildThreadExecutionContract({
+    threadId: target.threadId,
+    workspaceCwd: dir,
+    projectId: "project",
+    projectLabel: "Boardwalk",
+    branch: null,
+    taskText: "Complete the governing task.",
+    notes: []
+  });
+  store.setThreadExecutionContract(target.threadId, contract);
+  const firstPoint = store.getSupervisionChecklist(target.threadId)?.items[0];
+  assert.ok(firstPoint);
+  store.reviewAcceptancePoint({
+    threadId: target.threadId,
+    pointId: firstPoint.id,
+    status: "rejected",
+    nextInstruction: "Resolve the governing rejected point."
+  });
+
+  const brief = buildCallbackAdversarialReviewBrief(store, target);
+  assert.ok(brief.length <= 12_000);
+  assert.match(brief, /Current operator request governing this callback/);
+  assert.match(brief, /Actual request: check both environments/);
+  assert.match(brief, /Final steer: verify the Worker result directly/);
+  assert.match(brief, /middle omitted/);
+  assert.match(brief, /Resolve the governing rejected point/);
+});
+
+test("current operator turn context carries Butler-side evidence into callback review", () => {
+  const request = "See if you and the Worker have here.now egress.";
+  const context = buildCurrentOperatorTurnContext([
+    { role: "user", content: [{ type: "text", text: request }] },
+    { role: "assistant", content: [{ type: "text", text: "I will test Butler first." }] },
+    { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "https://here.now/ => HTTP 200" }] },
+    { role: "assistant", content: [{ type: "text", text: "Butler can reach it; I am asking Worker now." }] },
+    { role: "user", content: [{ type: "text", text: "A later unrelated question." }] },
+    { role: "assistant", content: [{ type: "text", text: "Unrelated answer." }] }
+  ], request);
+
+  assert.match(context ?? "", /Butler can reach it/);
+  assert.match(context ?? "", /HTTP 200/);
+  assert.doesNotMatch(context ?? "", /Unrelated answer/);
+});
+
+test("current operator turn context keeps newest bounded results and redacts secrets", () => {
+  const request = "Check egress from Butler and Worker.";
+  const privateKeyBody = "private-key-material-".repeat(180);
+  const context = buildCurrentOperatorTurnContext([
+    { role: "user", content: [{ type: "text", text: request }] },
+    { role: "toolResult", toolName: "bash", content: [{ type: "text", text: `old output ${"x".repeat(20_000)}` }] },
+    { role: "toolResult", toolName: "message_job", content: [{ type: "text", text: "Internal dispatch bookkeeping." }] },
+    { role: "toolResult", toolName: "read_job", content: [{ type: "text", text: "Old 24-point dossier inventory." }] },
+    { role: "toolResult", toolName: "bash", content: [{ type: "text", text: `-----BEGIN PRIVATE KEY-----\n${privateKeyBody}\n-----END PRIVATE KEY-----` }] },
+    { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "latest result HTTP 200 Authorization: Bearer secret-token-value" }] }
+  ], request);
+
+  assert.match(context ?? "", /latest result HTTP 200/);
+  assert.match(context ?? "", /\[REDACTED\]/);
+  assert.doesNotMatch(context ?? "", /Internal dispatch bookkeeping|Old 24-point dossier inventory|secret-token-value|private-key-material/);
+  assert.ok((context?.length ?? 0) <= 12_000);
 });
 
 test("a replacement callback is a new review generation", () => {

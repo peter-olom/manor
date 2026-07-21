@@ -3,7 +3,7 @@ import path from "node:path";
 import { AuthStorage, createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import type { ButlerAgentSessionAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
-import { buildCallbackReviewPrompt, isCallbackOutstanding, type PendingChatCallback } from "./butler-agent-helpers.js";
+import { buildCallbackReviewPrompt, contentToText, isCallbackOutstanding, type PendingChatCallback } from "./butler-agent-helpers.js";
 import { ensureButlerAdversarialReview, type AdversarialReviewProgress } from "./butler-adversarial-review.js";
 import { getButlerShellSnapshot } from "./butler-agent-session.js";
 import { isolatedModelResourceOptions } from "./isolated-model-resources.js";
@@ -34,6 +34,51 @@ const CALLBACK_REVIEW_TOOL_NAMES = new Set([
   "reply_to_operator"
 ]);
 const CALLBACK_SUPERVISOR_COMPLETION_TOOLS = new Set(["flush_rejected_acceptance_points", "confirm_worker_skill_operability", "message_job", "reply_to_operator"]);
+const CALLBACK_BUTLER_EVIDENCE_TOOL_NAMES = new Set([
+  "bash",
+  "browser_session_action",
+  "browser_session_state",
+  "desktop_current_screen",
+  "desktop_proof_status",
+  "desktop_session_action",
+  "desktop_session_state",
+  "download_project_artifact",
+  "exec_preview",
+  "exec_service",
+  "inspect_automation",
+  "inspect_filesystem",
+  "inspect_images",
+  "inspect_preview",
+  "inspect_service",
+  "inspect_skills",
+  "inspect_stack",
+  "manor_browser_action",
+  "manor_browser_start",
+  "manor_browser_stop",
+  "manor_preview_exec",
+  "manor_preview_inspect",
+  "manor_preview_logs",
+  "manor_preview_start",
+  "manor_preview_stop",
+  "manor_preview_wait",
+  "preview_logs",
+  "preview_processes",
+  "read_manor_restart_status",
+  "read_manor_source_state",
+  "record_file_proof",
+  "review_preview_proof",
+  "service_logs",
+  "share_project_file",
+  "start_browser_session",
+  "start_desktop_session",
+  "start_preview",
+  "start_preview_browser_session",
+  "start_service",
+  "start_stack",
+  "web_fetch",
+  "web_search",
+  "web_search_exa"
+]);
 
 export function assertCallbackSupervisorPromptSucceeded(
   messages: readonly unknown[],
@@ -143,14 +188,71 @@ export function buildCallbackAdversarialReviewBrief(store: ButlerStateStore, cal
     ?.filter((finding) => finding.blocking && !finding.waived)
     .slice(-10)
     .map((finding) => `${finding.id} ${finding.severity}: ${finding.findingSummary}`) ?? [];
+  const operatorRequestText = callback.operatorRequestText?.trim() || null;
+  const boundedSection = (value: string | null, maxChars: number): string | null => {
+    if (!value || value.length <= maxChars) return value;
+    const omission = "\n...[middle omitted]...\n";
+    const retainedChars = maxChars - omission.length;
+    const headChars = Math.ceil(retainedChars / 2);
+    return `${value.slice(0, headChars)}${omission}${value.slice(-(retainedChars - headChars))}`;
+  };
   return [
-    callback.lastPrivateSteerText ? `Latest Butler steer: ${callback.lastPrivateSteerText}` : null,
-    payload?.workerDirective && payload.kind !== "held_context" ? `Latest sent Worker directive: ${payload.workerDirective}` : null,
-    payload?.workerDirective && payload.kind === "held_context" ? `Held context awaiting Butler review; this was not sent to the Worker:\n${payload.workerDirective}` : null,
-    heldContext.length > 0 ? `Held operator context:\n${heldContext.join("\n")}` : null,
-    unresolvedChecklist.length > 0 ? `Unresolved or rejected checklist points:\n${unresolvedChecklist.join("\n")}` : null,
-    priorBlockingFindings.length > 0 ? `Prior blocking review findings being reworked:\n${priorBlockingFindings.join("\n")}` : null
+    boundedSection(operatorRequestText ? `Current operator request governing this callback:\n${operatorRequestText}` : null, 3_200),
+    boundedSection(operatorRequestText ? "Review the new Worker report against this request while preserving the persisted checklist as the completion boundary." : null, 250),
+    boundedSection(callback.lastPrivateSteerText ? `Latest Butler steer: ${callback.lastPrivateSteerText}` : null, 1_200),
+    boundedSection(unresolvedChecklist.length > 0 ? `Unresolved or rejected checklist points:\n${unresolvedChecklist.join("\n")}` : null, 2_600),
+    boundedSection(priorBlockingFindings.length > 0 ? `Prior blocking review findings being reworked:\n${priorBlockingFindings.join("\n")}` : null, 1_800),
+    boundedSection(payload?.workerDirective && payload.kind !== "held_context" ? `Latest sent Worker directive: ${payload.workerDirective}` : null, 1_700),
+    boundedSection(payload?.workerDirective && payload.kind === "held_context" ? `Held context awaiting Butler review; this was not sent to the Worker:\n${payload.workerDirective}` : null, 1_700),
+    boundedSection(heldContext.length > 0 ? `Held operator context:\n${heldContext.join("\n")}` : null, 900)
   ].filter((entry): entry is string => Boolean(entry)).join("\n\n").slice(0, 12_000);
+}
+
+export function buildCurrentOperatorTurnContext(messages: readonly unknown[], operatorRequestText: string | null | undefined): string | null {
+  const maxEntryChars = 2_000;
+  const maxContextChars = 12_000;
+  const request = operatorRequestText?.trim();
+  if (!request) return null;
+
+  let anchor = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message !== "object") continue;
+    const record = message as Record<string, unknown>;
+    if (record.role !== "user" && record.role !== "user-with-attachments") continue;
+    if (contentToText(record.content).trim() === request) {
+      anchor = index;
+      break;
+    }
+  }
+  if (anchor < 0) return null;
+
+  const lines: string[] = [];
+  for (let index = anchor + 1; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!message || typeof message !== "object") continue;
+    const record = message as Record<string, unknown>;
+    const role = typeof record.role === "string" ? record.role : "";
+    if (role === "user" || role === "user-with-attachments") break;
+    if (role !== "assistant" && role !== "toolResult") continue;
+    if (role === "toolResult" && (typeof record.toolName !== "string" || !CALLBACK_BUTLER_EVIDENCE_TOOL_NAMES.has(record.toolName))) continue;
+    const text = contentToText(record.content).trim();
+    if (!text) continue;
+    const toolName = role === "toolResult" && typeof record.toolName === "string" ? ` (${record.toolName})` : "";
+    const safeText = redactSensitiveText(text).trim();
+    if (!safeText) continue;
+    lines.push(`${role === "assistant" ? "Butler" : "Butler tool result"}${toolName}: ${safeText.slice(-maxEntryChars)}`);
+  }
+  const selected: string[] = [];
+  let selectedChars = 0;
+  for (const line of lines.reverse()) {
+    const remaining = maxContextChars - selectedChars;
+    if (remaining <= 0) break;
+    selected.push(line.slice(-remaining));
+    selectedChars += Math.min(line.length, remaining) + 2;
+  }
+  const context = selected.reverse().join("\n\n").trim();
+  return context || null;
 }
 
 export function isCurrentCallbackReview(attempted: PendingChatCallback, current: PendingChatCallback | undefined): current is PendingChatCallback {
@@ -401,7 +503,9 @@ export async function runCallbackAdversarialReview(input: {
       });
     });
     await Promise.race([
-      session.prompt(buildCallbackReviewPrompt(input.store, callback)),
+      session.prompt(buildCallbackReviewPrompt(input.store, callback, {
+        butlerTurnContext: buildCurrentOperatorTurnContext(sessionAccess.session.messages, callback.operatorRequestText)
+      })),
       reviewHealth
     ]);
     assertCallbackSupervisorPromptSucceeded(session.messages, completedSupervisorAction, formatProviderModelRef({ provider: model.provider, model: model.id }) ?? model.id);

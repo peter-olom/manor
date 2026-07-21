@@ -12,6 +12,7 @@ import { elapsedTaskDurationMs } from "./task-timing.js";
 import { buildCurrentReportProofCoverageLines } from "./preview-proof-resolution.js";
 import { BUTLER_BACKGROUND_PROMPT_PREFIX, isButlerBackgroundPromptText, stripEphemeralButlerTurns } from "./butler-background-context.js";
 export { BUTLER_BACKGROUND_PROMPT_PREFIX, BUTLER_EPHEMERAL_BACKGROUND_PROMPT_PREFIX, isButlerBackgroundPromptText } from "./butler-background-context.js";
+export { describePendingCallbacks } from "./butler-callback-summary.js";
 export { buildJobDetail } from "./butler-job-detail.js";
 import type { WorkspaceProjectDirectory } from "./repo-worktree.js";
 import type {
@@ -57,6 +58,7 @@ export type ButlerOperatorThreadGuard = {
   explicitThreadIds: string[];
   lockedThreadId: string | null;
   contextPrompt: string | null;
+  operatorRequestText: string;
 };
 export const SNAPSHOT_MESSAGE_TAIL_LIMIT = 80;
 export const MAX_HISTORY_PAGE_SIZE = 1000;
@@ -311,7 +313,8 @@ export function buildOperatorThreadGuard(
   return {
     explicitThreadIds,
     lockedThreadId,
-    contextPrompt: contextLines.length > 0 ? contextLines.join("\n") : null
+    contextPrompt: contextLines.length > 0 ? contextLines.join("\n") : null,
+    operatorRequestText: text.trim()
   };
 }
 
@@ -807,47 +810,15 @@ export function buildFallbackChatCallbackText(thread: ReturnType<ButlerStateStor
   ].join("\n\n");
 }
 
-export function describePendingCallbacks(store: ButlerStateStore, callbacks: PendingChatCallback[]): string {
-  const outstandingCallbacks = callbacks.filter(isCallbackOutstanding);
-  if (outstandingCallbacks.length === 0) {
-    return "Delegated callback state: none pending.";
-  }
-
-  const lines = outstandingCallbacks
-    .map((callback) => {
-      const thread = store.getThread(callback.threadId);
-      const projectLabel = thread?.supervisor.projectLabel ?? "unknown";
-      const status = callback.lastWorkerStatusSeen ?? thread?.status ?? "unknown";
-      const workerReport = callback.lastTerminalReportAt !== null ? store.getWorkerReport(callback.threadId) : null;
-      if (callback.callbackState === "missing_worker_callback") {
-        return `- job ${callback.threadId} on ${projectLabel}: no worker callback received; latest known thread status is ${status}. Butler still owes one operator reply and may need to inspect the thread directly before replying.`;
-      }
-      if (callback.callbackState === "received_worker_callback" && workerReport) {
-        const details = [workerReport.summary, workerReport.details].filter(Boolean).join(" | ");
-        return `- job ${callback.threadId} on ${projectLabel}: worker callback received (${workerReport.status}). Butler still owes one operator reply. Latest report: ${details}`;
-      }
-      if (callback.watchdogProbeState === "busy") {
-        const wait = callback.watchdogProtectedOperation ? ` Protected wait: ${callback.watchdogProtectedOperation}.` : "";
-        return `- job ${callback.threadId} on ${projectLabel}: waiting on worker callback; a runtime health probe confirms the Worker is still busy.${wait}`;
-      }
-      if (callback.watchdogAttentionAt) {
-        const reason = callback.watchdogAttentionReason ? ` Last stop attempt: ${callback.watchdogAttentionReason}` : "";
-        return `- job ${callback.threadId} on ${projectLabel}: Worker runtime is unresponsive and could not be safely stopped; Manor is still monitoring it.${reason}`;
-      }
-      if (callback.watchdogProbeState === "unreachable" && (callback.watchdogProbeFailures ?? 0) > 0) {
-        return `- job ${callback.threadId} on ${projectLabel}: waiting on worker callback; runtime health probe failures: ${callback.watchdogProbeFailures}. Manor is retrying before any intervention.`;
-      }
-      return `- job ${callback.threadId} on ${projectLabel}: waiting on worker callback; latest known thread status is ${status}.`;
-    })
-    .join("\n");
-
-  return ["Delegated callback state:", lines].join("\n");
-}
-
-export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: PendingChatCallback): string {
+export function buildCallbackReviewPrompt(
+  store: ButlerStateStore,
+  callback: PendingChatCallback,
+  options: { butlerTurnContext?: string | null } = {}
+): string {
   const thread = store.getThread(callback.threadId);
   const workerReport = store.getWorkerReport(callback.threadId);
   const relevantWorkerReport = workerReport && workerReport.updatedAt >= callback.requestedAt ? workerReport : null;
+  const operatorRequestText = callback.operatorRequestText?.trim() || null;
   let alreadyQueuedSelfImprovement = false;
   try {
     alreadyQueuedSelfImprovement = getSelfImprovementRequestState().hasOpenSourceRequest(thread?.id ?? null);
@@ -893,6 +864,12 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     BUTLER_BACKGROUND_PROMPT_PREFIX,
     "This is an internal delegated-job supervision event, not an operator turn.",
     "Do not write a normal Butler chat reply.",
+    operatorRequestText ? `Current operator request governing this callback:\n${operatorRequestText}` : null,
+    operatorRequestText ? "This latest operator request is the authoritative response scope. Lead the operator reply with its direct answer." : null,
+    operatorRequestText ? "The persisted review scope still governs whether work may close. Use it for supervision, while keeping the operator reply focused on the latest request." : null,
+    operatorRequestText ? "Do not lead with or recap accepted earlier work unless it is necessary to answer the current request." : null,
+    options.butlerTurnContext ? `Butler-side work from the current operator turn:\n${options.butlerTurnContext}` : null,
+    options.butlerTurnContext ? "Treat these Butler-side results and the new Worker report as complementary evidence. If the operator asked about both environments, report both explicitly." : null,
     "Use review_acceptance_points to batch two or more checklist decisions in one atomic call. Use review_acceptance_point only for a single targeted decision. Every rejected decision requires nextInstruction; flush_rejected_acceptance_points once after all rejected points are marked.",
     "Use message_job only for private follow-ups that are not rejected-checklist steering.",
     "If the job is done, blocked, or needs operator input now, use reply_to_operator exactly once.",
@@ -901,7 +878,7 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     `Project: ${thread?.supervisor.projectLabel ?? "unknown"}`,
     `Current thread status: ${thread?.status ?? "unknown"}`,
     `Callback state: ${callback.callbackState}`,
-    contract ? `Requested task: ${contract.requestedTask}` : "Requested task: unknown",
+    contract ? `${operatorRequestText ? "Governing Worker review scope" : "Requested task"}: ${contract.requestedTask}` : "Requested task: unknown",
     acceptancePoints.length > 0
       ? `Acceptance points:\n${acceptancePoints.map((point, index) => `${index + 1}. ${point}`).join("\n")}`
       : "Acceptance points: none recorded; infer the operator-visible outcome from the requested task.",
@@ -935,6 +912,7 @@ export function buildCallbackReviewPrompt(store: ButlerStateStore, callback: Pen
     `Current next worker report action: ${callback.nextWorkerReportAction}.`,
     "Do not send the same private steer twice.",
     "Prefer concise outcome-based follow-ups over re-sending the whole job brief.",
+    operatorRequestText ? "The reply_to_operator text must stay within the current operator request. Do not substitute a general job completion report." : null,
     "Use nextWorkerReportAction=review when Butler should inspect the next worker report before deciding what to surface.",
     "Use nextWorkerReportAction=reply_to_operator only for no-checklist jobs, blocked reports, or operator-input reports. Completed checklist work must still go through Butler review.",
     "Decide from the job context and thread state, not from worker phrasing heuristics.",

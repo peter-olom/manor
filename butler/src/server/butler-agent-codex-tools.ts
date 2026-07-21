@@ -130,7 +130,13 @@ async function continueWorkerJobLocked(
   const nextWorkerReportAction = typedParams.nextWorkerReportAction ?? "review";
 
   await reactivate();
-  const reservation = await access.reserveDirectCodexMessage({ threadId: typedParams.threadId, text: typedParams.text, requestedAt, nextWorkerReportAction });
+  const reservation = await access.reserveDirectCodexMessage({
+    threadId: typedParams.threadId,
+    text: typedParams.text,
+    operatorRequestText: activeGuard?.operatorRequestText ?? null,
+    requestedAt,
+    nextWorkerReportAction
+  });
   let sent = false;
   let reviewedDispatchCounted = false;
   let supervision = access.store.getThreadSupervision(typedParams.threadId);
@@ -142,9 +148,11 @@ async function continueWorkerJobLocked(
     return supervision;
   };
   try {
-    const refreshedChecklist = typedParams.refreshChecklist
-      ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text, { force: true })
-      : null;
+    const refreshedChecklist = access.store.refreshCompletedSupervisionChecklistForFollowup(
+      typedParams.threadId,
+      typedParams.text,
+      { force: typedParams.refreshChecklist === true }
+    );
     if (refreshedChecklist) {
       const refreshedThread = access.store.getThread(typedParams.threadId);
       reservation.reviewScopeReplacement = { executionContract: refreshedThread?.executionContract ? structuredClone(refreshedThread.executionContract) : null, supervisionChecklist: refreshedThread?.supervisionChecklist ? structuredClone(refreshedThread.supervisionChecklist) : null };
@@ -809,7 +817,11 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
           instruction: typedParams.text
         });
         assertCallbackReviewCurrent(typedParams.threadId);
-        await access.registerPendingChatCallback(typedParams.threadId, { preservePrivateSteer: true, nextWorkerReportAction: "review" });
+        await access.registerPendingChatCallback(typedParams.threadId, {
+          preservePrivateSteer: true,
+          operatorRequestText: activeGuard?.operatorRequestText ?? null,
+          nextWorkerReportAction: "review"
+        });
         access.noteThreadFocus(typedParams.threadId, "hold_job_context");
         access.store.addEvent(typedParams.threadId, "butler.context.held", typedParams.text.trim());
         return {

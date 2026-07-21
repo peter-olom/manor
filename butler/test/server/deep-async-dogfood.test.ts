@@ -204,6 +204,51 @@ test("backend dogfood closes only after API smoke, failure path, logs, Butler re
   assert.match(closeout, /Proof recorded: none/);
 });
 
+test("focused operator follow-up does not inherit the old proof dossier", async () => {
+  const store = await createStore();
+  const contract = buildThreadExecutionContract({
+    threadId: "focused-followup-closeout",
+    workspaceCwd: "/workspace",
+    projectId: "project-1",
+    projectLabel: "Project One",
+    branch: "main",
+    requestedTask: "Build and verify the old 24-point dossier.",
+    taskText: "Build and verify the old 24-point dossier.",
+    notes: []
+  });
+  createThread(store, contract);
+  const report = store.recordWorkerReport(contract.threadId, {
+    turnId: "turn-old-dossier",
+    status: "completed",
+    summary: "Old dossier completed.",
+    details: "All old points were verified.",
+    evidence: contract.verificationMatrix.map((row) => evidence("command", row))
+  });
+  for (const item of store.getSupervisionChecklist(contract.threadId)?.items ?? []) {
+    store.reviewAcceptancePoint({ threadId: contract.threadId, pointId: item.id, status: "accepted", note: "Accepted earlier." });
+  }
+
+  const closeout = buildOperatorCloseoutText({
+    store,
+    thread: store.getThread(contract.threadId)!,
+    workerReport: report,
+    text: "Yes. Butler and Worker can both reach here.now.",
+    operatorRequestText: "Can Butler and Worker reach here.now?"
+  });
+
+  assert.equal(closeout, "Yes. Butler and Worker can both reach here.now.");
+  assert.doesNotMatch(closeout, /Proof dossier|old 24-point dossier|Accepted evidence/);
+
+  const negatedProofCloseout = buildOperatorCloseoutText({
+    store,
+    thread: store.getThread(contract.threadId)!,
+    workerReport: report,
+    text: "Yes.",
+    operatorRequestText: "No proof details, just answer yes or no."
+  });
+  assert.equal(negatedProofCloseout, "Yes.");
+});
+
 test("UI dogfood rejects weak proof, steers rework privately, then closes with proof review and dossier", async () => {
   const store = await createStore();
   const contract = buildThreadExecutionContract({

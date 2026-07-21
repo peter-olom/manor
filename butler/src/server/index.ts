@@ -935,7 +935,7 @@ app.post("/api/threads/messages", async (request, response) => {
   try {
     await runSerializedJobMutation(threadId, async () => {
       const requestedAt = Date.now();
-      const directInput = { threadId, text, imageReferenceIds, fileReferenceIds, inputItems, requestedAt };
+      const directInput = { threadId, text, operatorRequestText: text, imageReferenceIds, fileReferenceIds, inputItems, requestedAt };
       const reservation = await butlerAgent.reserveDirectCodexMessage(directInput);
       let sent = false;
       try {
