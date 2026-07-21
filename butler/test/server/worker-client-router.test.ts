@@ -31,7 +31,7 @@ const openAiModel: ModelOption = {
 async function context() {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-pi-only-router-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
-  const calls = { starts: 0, sends: 0, loads: 0, updates: 0 };
+  const calls = { starts: 0, sends: 0, loads: 0, updates: 0, workspacePreparations: 0 };
   const piRpcWorkerClient = {
     getConnectionState: () => ({
       connected: true,
@@ -50,7 +50,7 @@ async function context() {
     deleteThread: async (threadId: string) => store.removeThreadDurably(threadId),
     getLastRuntimeActivityAt: () => null
   };
-  return { store, calls, access: { store, piRpcWorkerClient, prepareWorkerWorkspace: async () => undefined } as never };
+  return { store, calls, access: { store, piRpcWorkerClient, prepareWorkerWorkspace: async () => { calls.workspacePreparations += 1; } } as never };
 }
 
 test("OpenAI subscription models are exposed through the single Pi Worker route", async () => {
@@ -77,6 +77,7 @@ test("new Worker jobs start and continue through Pi", async () => {
   assert.equal(started.runtime, "pi-rpc");
   assert.equal(started.harness, "pi");
   assert.equal(calls.starts, 1);
+  assert.equal(calls.workspacePreparations, 0);
   await loadWorkerThread(access, started.threadId);
   await sendWorkerMessage(access, started.threadId, "Continue");
   assert.equal(calls.loads, 1);

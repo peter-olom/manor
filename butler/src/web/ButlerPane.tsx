@@ -645,7 +645,7 @@ export const WorkerWaitIndicator = memo(function WorkerWaitIndicator({
 const REVIEW_STAGE_LABELS: Record<PairReviewActivity["stage"], string> = {
   queued: "Review queued",
   preparing: "Preparing isolated review",
-  reviewing_changes: "Reviewing the Worker change",
+  reviewing_changes: "Reviewing the Worker result",
   supervising_closeout: "Deciding the closeout action",
   retry_wait: "Waiting to retry review",
   blocked: "Review blocked"
@@ -696,7 +696,7 @@ export const ReviewActivityBubble = memo(function ReviewActivityBubble({ review,
       ) : null}
       {diagnosticHistory ? (
         <details className="review-diagnostics" open={review.state === "blocked"}>
-          <summary>{review.state === "blocked" ? "Why review stopped" : "Review failure history"}</summary>
+          <summary>{review.state === "blocked" ? "Why review stopped" : "Reviewer tool history"}</summary>
           <Markdown className="trace-body" text={diagnosticHistory} />
         </details>
       ) : null}

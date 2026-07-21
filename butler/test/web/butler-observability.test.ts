@@ -514,7 +514,7 @@ test("active review shows progress and Stop without an arbitrary timeout countdo
       lastActivity: "Reviewer is reasoning over the change.",
       lastTool: null,
       lastError: null,
-      errors: [],
+      errors: [{ at: 110, stage: "reviewing_changes", tool: "read", message: "Worker runtime path is unavailable in this review workspace." }],
       modelProvider: "ollama-cloud",
       modelId: "glm-5.2",
       thinkingLevel: "high",
@@ -526,8 +526,9 @@ test("active review shows progress and Stop without an arbitrary timeout countdo
     onStop: () => undefined
   }));
 
-  assert.match(markup, /Reviewing the Worker change/);
+  assert.match(markup, /Reviewing the Worker result/);
   assert.match(markup, /Reviewer is reasoning over the change/);
+  assert.match(markup, /Reviewer tool history/);
   assert.match(markup, /Stop review/);
   assert.doesNotMatch(markup, /before timeout|maximum/);
 });

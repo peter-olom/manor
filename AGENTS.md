@@ -10,6 +10,16 @@
 - Manor self-improvement uses the active checkout. Do not create a branch, worktree, or commit unless the operator explicitly asks.
 - Leave experiments uncommitted. A source restart builds the working tree; if startup fails, Manor retries from clean `HEAD` without resetting or cleaning the user's files.
 
+## Agent Judgment And Hard Boundaries
+
+- Give Butler and Worker the goal, relevant context, live capabilities, constraints, and useful evidence. Let the agents choose and revise the execution path.
+- Keep workflow prompts focused on outcomes. Prescribe an exact sequence only when the operator asked for that method or the sequence protects a real safety or integrity boundary.
+- Use deterministic enforcement for authentication, permissions, Content Admission Review, operator approval, package integrity, ownership, concurrency, destructive actions, and proof binding.
+- Treat a missing capability in one agent environment as a routing fact. Infer whether Butler should advise, prepare, inspect, or execute, and whether Worker should perform the environment-dependent work.
+- Keep tool contracts goal-oriented where judgment helps. Return concrete runtime facts and results so the agent can adapt without encoding every reasonable branch in server code.
+- Test outcomes and invariants. Allow multiple valid execution paths when the safety boundary and required evidence stay intact.
+- Ask the operator when a missing choice would materially change the result. Handle ordinary routing, command selection, retries, and verification choices through agent judgment.
+
 ## Butler Model Providers And Harnesses
 
 - Treat Butler and Worker as the two agent environments. Butler contains Butler's Pi-backed supervisor agent. The `worker` service runs the Pi-backed Worker host. Its runtime account and hostname are `worker` and `manor-worker`.

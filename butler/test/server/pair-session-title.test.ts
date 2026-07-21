@@ -523,7 +523,9 @@ test("Butler-only skill invocation requires Butler-led preparation before public
 
   assert.match(prompt, /^\/skill:asiri\n\nMANOR-WIDE SKILL ROUTING/);
   assert.match(prompt, /Selected Worker availability: not installed/);
-  assert.match(prompt, /Have Butler acquire, prepare, and exercise the skill in Butler scratch/);
+  assert.match(prompt, /prepare a publishable skill in fresh scratch/);
+  assert.match(prompt, /repository's instructions and Butler's judgment/);
+  assert.match(prompt, /representative user outcome/);
 });
 
 test("shared Butler and Worker skills expand natively and delegate without provisioning", async () => {

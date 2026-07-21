@@ -278,6 +278,87 @@ test("Worker bridge rejects Pi sessions outside the shared repository root", asy
   }
 });
 
+test("Worker bridge validates workspace writes inside the Worker runtime", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "manor-worker-pi-workspace-check-"));
+  const reposRoot = path.join(root, "repos");
+  const invalidCwd = path.join(reposRoot, "not-a-directory");
+  const sessionRoot = path.join(root, "sessions");
+  const extensionRoot = path.join(root, "extensions");
+  const socketRoot = await mkdtemp("/tmp/manor-pi-socket-");
+  const socketPath = path.join(socketRoot, "bridge.sock");
+  const fakeCliPath = path.join(root, "fake-pi-cli.mjs");
+  await Promise.all([
+    mkdir(reposRoot, { recursive: true }),
+    mkdir(sessionRoot, { recursive: true }),
+    mkdir(extensionRoot, { recursive: true }),
+    writeFile(invalidCwd, "not a workspace", "utf8"),
+    writeFile(fakeCliPath, "setInterval(() => undefined, 1000);\n", "utf8")
+  ]);
+  const bridgeStderr: string[] = [];
+  const bridge = spawn(process.execPath, [bridgePath.pathname], {
+    env: {
+      ...process.env,
+      WORKER_PI_CLI_PATH: fakeCliPath,
+      WORKER_PI_EXTENSION_DIR: extensionRoot,
+      WORKER_PI_RPC_SOCKET: socketPath,
+      WORKER_PI_SESSION_ROOT: sessionRoot,
+      WORKER_REPOS_ROOT: reposRoot
+    },
+    stdio: ["ignore", "ignore", "pipe"]
+  });
+  bridge.stderr?.on("data", (chunk) => bridgeStderr.push(chunk.toString()));
+  try {
+    await waitForSocket(socketPath, bridge, bridgeStderr);
+    const message = await readBridgeStartError(socketPath, {
+      type: "start",
+      cwd: invalidCwd,
+      env: { MANOR_THREAD_ID: "pi-workspace-check" },
+      args: ["--mode", "rpc", "--provider", "fake", "--model", "fake", "--session-dir", path.join(sessionRoot, "pi-workspace-check")]
+    });
+    assert.match(message, /not writable inside the Worker runtime/i);
+  } finally {
+    await stopBridge(bridge);
+  }
+});
+
+test("Worker bridge rejects a workspace whose Git object store is not writable", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "manor-worker-pi-git-check-"));
+  const reposRoot = path.join(root, "repos");
+  const cwd = path.join(reposRoot, "project");
+  const sessionRoot = path.join(root, "sessions");
+  const extensionRoot = path.join(root, "extensions");
+  const binRoot = path.join(root, "bin");
+  const socketRoot = await mkdtemp("/tmp/manor-pi-socket-");
+  const socketPath = path.join(socketRoot, "bridge.sock");
+  const fakeCliPath = path.join(root, "fake-pi-cli.mjs");
+  const fakeGitPath = path.join(binRoot, "git");
+  const fakeIndexPath = path.join(root, "git-index");
+  await Promise.all([mkdir(cwd, { recursive: true }), mkdir(sessionRoot, { recursive: true }), mkdir(extensionRoot, { recursive: true }), mkdir(binRoot, { recursive: true })]);
+  await writeFile(fakeCliPath, "setInterval(() => undefined, 1000);\n", "utf8");
+  await writeFile(fakeGitPath, `#!/bin/sh
+case "$*" in
+  *"rev-parse --show-toplevel"*) printf '%s\\n' "${cwd}" ;;
+  *"rev-parse --path-format=absolute --git-path index"*) printf '%s\\n' "${fakeIndexPath}" ;;
+  *"hash-object -w"*) echo 'object store denied' >&2; exit 1 ;;
+  *"status --short"*) exit 0 ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o755 });
+  const bridgeStderr: string[] = [];
+  const bridge = spawn(process.execPath, [bridgePath.pathname], {
+    env: { ...process.env, PATH: `${binRoot}:${process.env.PATH ?? ""}`, WORKER_PI_CLI_PATH: fakeCliPath, WORKER_PI_EXTENSION_DIR: extensionRoot, WORKER_PI_RPC_SOCKET: socketPath, WORKER_PI_SESSION_ROOT: sessionRoot, WORKER_REPOS_ROOT: reposRoot },
+    stdio: ["ignore", "ignore", "pipe"]
+  });
+  bridge.stderr?.on("data", (chunk) => bridgeStderr.push(chunk.toString()));
+  try {
+    await waitForSocket(socketPath, bridge, bridgeStderr);
+    const message = await readBridgeStartError(socketPath, { type: "start", cwd, env: { MANOR_THREAD_ID: "pi-git-check" }, args: ["--mode", "rpc", "--provider", "fake", "--model", "fake", "--session-dir", path.join(sessionRoot, "pi-git-check")] });
+    assert.match(message, /object store denied/i);
+  } finally {
+    await stopBridge(bridge);
+  }
+});
+
 test("bridge disconnect rejects pending Pi RPC requests without waiting for the client timeout", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "manor-worker-pi-disconnect-"));
   const reposRoot = path.join(root, "repos");

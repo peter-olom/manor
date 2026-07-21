@@ -7,122 +7,8 @@ import { loadSkillsFromDir, type Skill } from "@earendil-works/pi-coding-agent";
 import { archiveButlerSkillCandidate, archiveSkillContentEvidence, archiveSkillDirectory, extractSkillArchive, inspectAgentSkillArchive, MAX_SKILL_ARCHIVE_BYTES } from "./skill-archive.js";
 import { assertSealedButlerSkillCandidateUnchanged as assertSealedCandidateUnchanged, replaceExistingSkillArchive, sealButlerSkillCandidate as sealCandidate, snapshotExistingSkill } from "./skill-install-lifecycle.js";
 import { migrateLegacySkillRegistry } from "./skill-registry-migration.js";
-
-export type SkillEnvironmentId = "butler-pi" | "worker-pi";
-export type SkillScope = "user" | "project";
-export type SkillOrigin = "local" | "package" | "system";
-
-export type SkillCapabilities = {
-  read: boolean;
-  edit: boolean;
-  delete: boolean;
-};
-
-export type SkillCatalogItem = {
-  id: string;
-  environment: SkillEnvironmentId;
-  name: string;
-  description: string;
-  scope: SkillScope;
-  origin: SkillOrigin;
-  mutable: boolean;
-  invocation: string;
-  capabilities: SkillCapabilities;
-};
-
-export type SkillEnvironmentView = {
-  id: SkillEnvironmentId;
-  label: string;
-  harness: "pi";
-  capabilities: {
-    list: true;
-    read: true;
-    create: boolean;
-    install: boolean;
-    edit: boolean;
-    delete: boolean;
-    import: boolean;
-    packageManagement: false;
-  };
-};
-
-export type AgentSkillChangeInput =
-  | {
-      operation: "create";
-      environment: SkillEnvironmentId;
-      name: string;
-      description: string;
-      instructions: string;
-      scope?: SkillScope;
-      cwd?: string | null;
-    }
-  | {
-      operation: "install";
-      environment: SkillEnvironmentId;
-      name?: string;
-      content?: string;
-      candidateArchiveBase64?: string;
-      candidateEvidence?: string;
-      source: string;
-      scope?: SkillScope;
-      cwd?: string | null;
-    }
-  | {
-      operation: "update";
-      environment: SkillEnvironmentId;
-      id: string;
-      content: string;
-      reason: string;
-      cwd?: string | null;
-    }
-  | {
-      operation: "undo";
-      resultId: string;
-    };
-
-export type AgentSkillChangeProposal = {
-  id: string;
-  operation: AgentSkillChangeInput["operation"];
-  summary: string;
-  environment: SkillEnvironmentId;
-  skillName: string;
-  scope: SkillScope;
-  source: string | null;
-  sourceVerification: "agent-reported" | "butler-prepared";
-  description: string;
-  target: string;
-  footprint: string;
-  conflict: string;
-  verificationPlan: string;
-  contentSha256: string;
-  contentEvidence: string;
-  createdAt: number;
-  expiresAt: number;
-  status: "pending" | "approved" | "rejected" | "applying" | "applied" | "failed";
-  resultId: string | null;
-  error: string | null;
-};
-
-export type AgentSkillChangeResult = {
-  id: string;
-  proposalId: string;
-  operation: AgentSkillChangeInput["operation"];
-  skill: SkillCatalogItem;
-  appliedAt: number;
-  verification: {
-    catalogVisible: boolean;
-    invocation: string;
-    resourceReload: "scheduled" | "next-session";
-    operability: "ready" | "verification-pending";
-    verificationThreadId: string | null;
-  };
-  undo: {
-    available: boolean;
-    resultId: string;
-    instruction: string;
-    preservedLocation: string | null;
-  };
-};
+import type { AgentSkillChangeInput, AgentSkillChangeProposal, AgentSkillChangeResult, SkillCatalogItem, SkillEnvironmentId, SkillEnvironmentView, SkillOrigin, SkillScope } from "./skill-types.js";
+export type { AgentSkillChangeInput, AgentSkillChangeProposal, AgentSkillChangeResult, SkillCapabilities, SkillCatalogItem, SkillEnvironmentId, SkillEnvironmentView, SkillOrigin, SkillScope } from "./skill-types.js";
 
 type SkillRecord = SkillCatalogItem & {
   filePath: string;
@@ -149,6 +35,8 @@ type NormalizedAgentSkillChangeInput =
       archiveManifest?: Array<{ path: string; sha256: string }>;
       replacement?: { archiveBase64: string; archiveSha256: string };
       candidateEvidence?: string;
+      workerVerificationGoal?: string;
+      runtimeRequirements?: string[];
       source: string;
       scope: SkillScope;
       cwd: string | null;
@@ -281,6 +169,8 @@ export class SkillsService {
     candidatePath: string;
     candidateArchiveBase64?: string;
     evidence: string;
+    workerVerificationGoal?: string;
+    runtimeRequirements?: string[];
   }): Promise<AgentSkillChangeProposal> {
     const name = safeName(input.name);
     const archive = input.candidateArchiveBase64
@@ -293,7 +183,9 @@ export class SkillsService {
       source: input.source,
       scope: "user",
       candidateArchiveBase64: archive.toString("base64"),
-      candidateEvidence: input.evidence
+      candidateEvidence: input.evidence,
+      workerVerificationGoal: input.workerVerificationGoal,
+      runtimeRequirements: input.runtimeRequirements
     });
   }
 
@@ -337,6 +229,8 @@ export class SkillsService {
     let approvedContent: string | Buffer;
     let contentEvidence: string;
     let footprint: string;
+    let workerVerificationGoal: string | null = null;
+    let runtimeRequirements: string[] = [];
 
     if (input.operation === "undo") {
       const result = this.requireAgentResult(normalizedOwner, input.resultId);
@@ -383,6 +277,8 @@ export class SkillsService {
         summary = `Update ${skillName} in ${this.agentTarget(environment, skillScope)}. Reason: ${input.reason}`;
       } else if (input.operation === "install") {
         skillName = input.name;
+        workerVerificationGoal = input.workerVerificationGoal ?? `Load /skill:${skillName} and prove the capability works in the Worker environment.`;
+        runtimeRequirements = [...(input.runtimeRequirements ?? [])];
         if (input.archiveBase64) {
           const archive = Buffer.from(input.archiveBase64, "base64");
           const inspected = await inspectAgentSkillArchive(skillName, archive, MAX_AGENT_SKILL_BYTES);
@@ -440,12 +336,14 @@ export class SkillsService {
       footprint,
       conflict,
       verificationPlan: sourceVerification === "butler-prepared"
-        ? "Publish the exact validated candidate to the shared registry, reload Butler, then start a fresh Worker session and invoke the capability before declaring it ready."
+        ? `Publish the exact validated candidate, reload Butler, then let a fresh Worker pursue this operational goal before declaring it ready: ${workerVerificationGoal}`
         : this.options.sharedSkillsDir && input.operation === "install"
           ? "Publish the approved skill document to the shared registry, reload Butler, then start a fresh Worker session and invoke it before declaring it ready."
         : environment === "butler-pi"
           ? "Reload the active Butler resources and confirm the resulting catalog entry and invocation."
           : "Confirm the resulting catalog entry and invocation. New Worker sessions load the change; an existing Worker session may need replacement.",
+      workerVerificationGoal,
+      runtimeRequirements,
       contentSha256: this.contentHash(approvedContent),
       contentEvidence,
       createdAt: now,
@@ -834,7 +732,9 @@ export class SkillsService {
         invocation: skill.invocation,
         resourceReload: this.options.sharedSkillsDir || skill.environment === "butler-pi" ? "scheduled" : "next-session",
         operability: input.operation === "install" && (Boolean(input.archiveBase64) || Boolean(this.options.sharedSkillsDir)) ? "verification-pending" : "ready",
-        verificationThreadId: null
+        verificationThreadId: null,
+        goal: proposal.workerVerificationGoal,
+        runtimeRequirements: [...proposal.runtimeRequirements]
       },
       undo: {
         available: true,
@@ -908,7 +808,9 @@ export class SkillsService {
         invocation: skill.invocation,
         resourceReload: this.options.sharedSkillsDir || original.environment === "butler-pi" ? "scheduled" : "next-session",
         operability: "ready",
-        verificationThreadId: null
+        verificationThreadId: null,
+        goal: null,
+        runtimeRequirements: []
       },
       undo: {
         available: false,
@@ -954,6 +856,8 @@ export class SkillsService {
           name,
           archiveBase64: archive.toString("base64"),
           candidateEvidence: evidence,
+          workerVerificationGoal: this.agentText(input.workerVerificationGoal ?? `Load /skill:${name} and prove the capability works in the Worker environment.`, "Worker verification goal", 2_000),
+          runtimeRequirements: this.agentTextList(input.runtimeRequirements, "Runtime requirements", 20, 1_000),
           source,
           scope: changeScope,
           cwd
@@ -1001,6 +905,12 @@ export class SkillsService {
     const text = typeof value === "string" ? value.trim() : "";
     if (!text || text.length > maxLength) throw new Error(`${label} must be between 1 and ${maxLength} characters.`);
     return text;
+  }
+
+  private agentTextList(value: unknown, label: string, maxItems: number, maxLength: number): string[] {
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.length > maxItems) throw new Error(`${label} must contain ${maxItems} items or fewer.`);
+    return value.map((entry) => this.agentText(entry, label, maxLength));
   }
 
   private agentLine(value: unknown, label: string, maxLength: number): string {
@@ -1160,12 +1070,12 @@ export class SkillsService {
 
   private publicAgentProposal(proposal: AgentSkillProposalRecord): AgentSkillChangeProposal {
     const { owner: _owner, input: _input, beforeContent: _beforeContent, beforeHash: _beforeHash, questionMessageId: _questionMessageId, questionId: _questionId, ...view } = proposal;
-    return { ...view };
+    return { ...view, runtimeRequirements: [...view.runtimeRequirements] };
   }
 
   private publicAgentResult(result: AgentSkillResultRecord): AgentSkillChangeResult {
     const { owner: _owner, environment: _environment, cwd: _cwd, createdSkillId: _createdSkillId, previousContent: _previousContent, appliedContentHash: _appliedContentHash, appliedContent: _appliedContent, appliedArchiveManifest: _appliedArchiveManifest, previousArchiveBase64: _previousArchiveBase64, installedArchiveSha256: _installedArchiveSha256, undoneAt: _undoneAt, ...view } = result;
-    return { ...view, verification: { ...view.verification }, undo: { ...view.undo }, skill: { ...view.skill, capabilities: { ...view.skill.capabilities } } };
+    return { ...view, verification: { ...view.verification, runtimeRequirements: [...view.verification.runtimeRequirements] }, undo: { ...view.undo }, skill: { ...view.skill, capabilities: { ...view.skill.capabilities } } };
   }
 
   private contentHash(content: string | Buffer): string {

@@ -1389,6 +1389,8 @@ test("delegated worker instructions define provider-neutral memory and shell bou
   assert.match(instructions, /Skip memory reads for clearly self-contained mechanical work/);
   assert.match(instructions, /Write memory only when it will help a future worker/);
   assert.match(instructions, /Do not write routine progress/);
+  assert.match(instructions, /Work from the desired outcome, constraints, current runtime facts, and evidence/);
+  assert.match(instructions, /Choose and revise the execution path with judgment/);
   assert.match(instructions, /Worker shell is a normal development environment for source, installs, builds, tests, scripts, Git, and code editing/);
   assert.match(instructions, /Use previews when a clean runtime, managed service lifecycle, runtime isolation, or browser proof is useful/);
   assert.doesNotMatch(instructions, /Run every install, build, test, script/);

@@ -896,6 +896,7 @@ test("system prompt advises focused checklist refresh for new work", async () =>
   assert.match(prompt, /Do not answer project inventory questions from supervisor state alone/);
   assert.match(prompt, /ask_operator: Butler-only tool/);
   assert.match(prompt, /Ask 1-3 concise structured questions/);
+  assert.match(prompt, /Whenever any tool posts an operator decision card, end the current turn immediately/);
   assert.match(prompt, /Do not use ask_operator for work-depth selection/);
   assert.match(prompt, /explicit authorization for stop_job/);
   assert.match(prompt, /Call stop_job immediately/);
@@ -937,6 +938,8 @@ test("system prompt biases autonomous domain resolution before job inventory", a
   const prompt = buildSystemPrompt(store, "No callbacks.");
 
   assert.match(prompt, /Default to agency/);
+  assert.match(prompt, /Work from goals, constraints, live capabilities, and evidence/);
+  assert.match(prompt, /exact workflows as requirements only when the operator asked for that method or Manor is enforcing/);
   assert.match(prompt, /Be eager but bounded/);
   assert.match(prompt, /Resolve domain terms before job terms/);
   assert.match(prompt, /call retrieve_memory for prior naming\/context first, then list_projects/);

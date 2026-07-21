@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { assertPiReviewerPromptSucceeded, createPiReviewSubmissionTool, ensureButlerAdversarialReview, validateAdversarialReviewOutput, waitForPiReviewSubmission } from "../../src/server/butler-adversarial-review.js";
+import { assertPiReviewerPromptSucceeded, buildAdversarialReviewPrompt, createPiReviewSubmissionTool, ensureButlerAdversarialReview, validateAdversarialReviewOutput, waitForPiReviewSubmission } from "../../src/server/butler-adversarial-review.js";
 import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
 import { getOrchestrationCloseoutBlocker } from "../../src/server/butler-orchestration.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
@@ -111,6 +111,35 @@ test("isolated adversarial review stores only compact findings and reuses the ex
   });
   assert.deepEqual(stale, []);
   assert.equal(runs, 1);
+});
+
+test("adversarial review chooses evidence by goal instead of assuming a repository change", () => {
+  const thread = {
+    supervisor: { latestUserPrompt: "Confirm the installed skill works in Worker." },
+    executionContract: {
+      requestedTask: "Confirm the installed skill works in Worker.",
+      taskCategory: "unknown",
+      acceptancePoints: ["Worker can invoke the installed capability."],
+      mission: { criticChecks: ["Evidence demonstrates the intended Worker outcome."] }
+    }
+  } as never;
+  const prompt = buildAdversarialReviewPrompt({
+    thread,
+    report: {
+      summary: "Worker invoked the installed capability.",
+      details: "The command returned the expected credential-free diagnostic.",
+      claims: [],
+      evidence: [{ summary: "Invocation completed", details: "Observed expected diagnostic output." }]
+    } as never,
+    workspaceSnapshot: "No repository changes were recorded."
+  });
+
+  assert.match(prompt, /proof shape fits the requested outcome/i);
+  assert.match(prompt, /do not invent a repository-change requirement/i);
+  assert.match(prompt, /Worker.*runtime.*may be unavailable/i);
+  assert.match(prompt, /Do not guess alternate paths/i);
+  assert.match(prompt, /Missing reviewer access is not itself a Worker defect/i);
+  assert.match(prompt, /Workspace evidence snapshot/i);
 });
 
 test("OpenAI review runs through the isolated Pi reviewer", async () => {

@@ -274,13 +274,13 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
     name: "propose_repository_skill_install",
     label: "Publish prepared skill",
-    description: "Verify a Butler-prepared skill from scratch and request operator approval to publish it to the shared registry.",
+    description: "Seal Butler's goal-validated candidate, assign independent Worker verification, and request publication approval.",
     uiEffects: [{ kind: "focusButler", description: "Keeps Butler focused while waiting for skill publication approval." }]
   },
   {
     name: "confirm_worker_skill_operability",
     label: "Confirm Worker skill operability",
-    description: "Confirm a published skill is ready after a fresh Worker loads and exercises it.",
+    description: "Confirm a published skill is ready after Butler accepts a fresh Worker's goal-specific evidence.",
     uiEffects: [{ kind: "focusButler", description: "Returns the verified skill result to Butler." }]
   },
   {

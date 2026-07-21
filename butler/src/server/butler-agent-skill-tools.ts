@@ -78,7 +78,7 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
     const approval = access.skillsService.agentApprovalOptions(proposal.id);
     const action = proposal.operation === "undo" ? "Undo change" : proposal.operation === "install" ? "Publish skill" : proposal.operation === "update" ? "Update skill" : "Create skill";
     const sourceStatus = proposal.sourceVerification === "butler-prepared"
-      ? "prepared and exercised by Butler in scratch; Manor validated this exact candidate"
+      ? "prepared by Butler in scratch; Manor sealed and validated this exact candidate, with operational proof assigned by goal"
       : "agent-reported; Manor did not fetch or verify this source";
     const message = await access.postOperatorQuestion({
       questions: [{
@@ -90,6 +90,8 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
           `Footprint: ${proposal.footprint}`,
           `Conflict check: ${proposal.conflict}`,
           `Verification: ${proposal.verificationPlan}`,
+          `Worker verification goal: ${proposal.workerVerificationGoal ?? "Not required"}`,
+          `Runtime requirements: ${proposal.runtimeRequirements.length ? proposal.runtimeRequirements.join("; ") : "No additional requirements identified"}`,
           `Approved content SHA-256: ${proposal.contentSha256}`,
           `Approved content evidence: ${proposal.contentEvidence}`
         ].join("\n"),
@@ -139,36 +141,64 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "propose_repository_skill_install",
       label: "Publish prepared skill",
-      description: "Run the final verification command against a Butler-prepared skill directory, validate and package it, then ask the operator to approve publication to the shared registry.",
-      promptSnippet: "propose_repository_skill_install: after using bash to clone, inspect, build, and prepare a repository skill under /scratch, provide the final skill directory and a real verification or doctor command. Manor reruns that command, packages the directory itself, validates it, and asks for approval. Any unresolved dependency blocks publication. Worker is used only after publication for fresh-session confirmation.",
+      description: "Seal a Butler-prepared skill, record Butler's goal-led validation, and assign independent Worker verification before requesting publication approval.",
+      promptSnippet: "propose_repository_skill_install: your goal is to prepare a publishable skill that a Worker can use for the capability the repository promises. Work from the repository, its skill instructions, available tooling, and observed results. Clone or fetch into a fresh isolated directory under /scratch for this attempt; never reuse an earlier candidate. Decide the appropriate package shape and preparation method yourself. Skills may be instructions, scripts, binaries, generated assets, remote integrations, or another form, so do not assume a conventional layout. State the candidateValidationGoal and candidateValidationEvidence that support your judgment. Provide candidateValidationCommand only when rerunning a command against the sealed candidate is a meaningful check; do not invent one for a skill with another proof shape, and never mask failure with `|| true`, unconditional success, or discarded exit status. Use localOperationalCommand only when Butler can meaningfully exercise the capability; otherwise omit it and explain the relevant runtime requirements. Give Worker a representative verification goal derived from the skill's intended user outcome, not an installation mechanic such as catalog visibility or invocation loading. Manor seals the exact candidate and preserves safety, approval, and integrity boundaries; Butler and Worker own semantic correctness. After this tool posts the approval card, end the turn immediately. Do not call apply_skill_change or ask another question; the operator answer arrives in a new turn.",
       parameters: Type.Object({
         name: Type.String({ minLength: 1 }),
         source: Type.String({ minLength: 1 }),
         candidatePath: Type.String({ minLength: 1 }),
-        verificationCommand: Type.String({ minLength: 1, maxLength: 32_768 }),
+        candidateValidationGoal: Type.String({ minLength: 1, maxLength: 2_000 }),
+        candidateValidationEvidence: Type.String({ minLength: 1, maxLength: 8_000 }),
+        candidateValidationCommand: Type.Optional(Type.String({ minLength: 1, maxLength: 32_768 })),
+        localOperationalCommand: Type.Optional(Type.String({ minLength: 1, maxLength: 32_768 })),
+        workerVerificationGoal: Type.String({ minLength: 1, maxLength: 2_000 }),
+        runtimeRequirements: Type.Optional(Type.Array(Type.String())),
         setupCommands: Type.Optional(Type.Array(Type.String())),
         dependencies: Type.Optional(Type.Array(Type.String()))
       }),
       uiEffects: access.getToolUiEffects("propose_repository_skill_install"),
       execute: async (_toolCallId, params, signal) => {
         if (!access.butlerExecutorClient) throw new Error("Butler executor is unavailable.");
-        const dependencies = textList(params.dependencies, "Dependencies");
-        if (dependencies.length > 0) throw new Error("The prepared skill still has unresolved runtime dependencies and cannot be published.");
+        const runtimeRequirements = [...new Set([
+          ...textList(params.runtimeRequirements, "Runtime requirements"),
+          ...textList(params.dependencies, "Legacy dependencies")
+        ])];
         const candidatePath = text(params.candidatePath);
-        const verificationCommand = text(params.verificationCommand);
+        const candidateValidationGoal = text(params.candidateValidationGoal);
+        const candidateValidationEvidence = text(params.candidateValidationEvidence);
+        const candidateValidationCommand = text(params.candidateValidationCommand);
+        const localOperationalCommand = text(params.localOperationalCommand);
+        const workerVerificationGoal = text(params.workerVerificationGoal);
         const name = text(params.name);
+        if (!candidateValidationGoal) throw new Error("Candidate validation goal is required.");
+        if (!candidateValidationEvidence) throw new Error("Candidate validation evidence is required.");
+        if (!workerVerificationGoal) throw new Error("Worker operational verification goal is required.");
         const sealed = await access.skillsService.sealButlerSkillCandidate(name, candidatePath);
-        let verification;
+        let candidateValidation = null;
+        let localOperationalVerification = null;
         let proposal;
         try {
-          verification = await access.butlerExecutorClient.execute({
-            script: `cd -- ${shellQuote(sealed.verificationPath)} && ${verificationCommand}`,
-            timeoutMs: 120_000,
-            threadId: access.runtimeThreadId,
-            signal
-          });
-          if (verification.exitCode !== 0 || verification.timedOut) {
-            throw new Error(`Prepared skill verification failed with exit ${verification.exitCode}. ${verification.stderr || verification.stdout}`.trim());
+          if (candidateValidationCommand) {
+            candidateValidation = await access.butlerExecutorClient.execute({
+              script: `cd -- ${shellQuote(sealed.verificationPath)} && ${candidateValidationCommand}`,
+              timeoutMs: 120_000,
+              threadId: access.runtimeThreadId,
+              signal
+            });
+            if (candidateValidation.exitCode !== 0 || candidateValidation.timedOut) {
+              throw new Error(`Prepared skill candidate validation failed with exit ${candidateValidation.exitCode}. ${candidateValidation.stderr || candidateValidation.stdout}`.trim());
+            }
+          }
+          if (localOperationalCommand) {
+            localOperationalVerification = await access.butlerExecutorClient.execute({
+              script: `cd -- ${shellQuote(sealed.verificationPath)} && ${localOperationalCommand}`,
+              timeoutMs: 120_000,
+              threadId: access.runtimeThreadId,
+              signal
+            });
+            if (localOperationalVerification.exitCode !== 0 || localOperationalVerification.timedOut) {
+              throw new Error(`Prepared skill local operational verification failed with exit ${localOperationalVerification.exitCode}. ${localOperationalVerification.stderr || localOperationalVerification.stdout}`.trim());
+            }
           }
           await access.skillsService.assertSealedButlerSkillCandidateUnchanged(name, sealed.verificationPath, sealed.archiveBase64);
           const setupCommands = textList(params.setupCommands, "Setup commands");
@@ -177,24 +207,35 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
             `Source: ${text(params.source)}`,
             `Candidate directory: ${candidatePath}`,
             `Setup commands:\n${setupCommands.length ? setupCommands.map((item) => `- ${item}`).join("\n") : "- none"}`,
-            `Final verification against sealed candidate: ${verificationCommand} (exit ${verification.exitCode})`,
-            verification.stdout ? `Verification output:\n${verification.stdout}` : "",
-            "Remaining dependencies:\n- none"
+            `Butler candidate validation goal: ${candidateValidationGoal}`,
+            `Butler candidate validation evidence:\n${candidateValidationEvidence}`,
+            candidateValidation
+              ? `Repeatable validation against sealed candidate: ${candidateValidationCommand} (exit ${candidateValidation.exitCode})`
+              : "No command was required for Butler's candidate judgment.",
+            candidateValidation?.stdout ? `Repeatable validation output:\n${candidateValidation.stdout}` : "",
+            localOperationalVerification
+              ? `Local operational command against sealed candidate: ${localOperationalCommand} (exit ${localOperationalVerification.exitCode})`
+              : "Local operational exercise deferred to Worker because Butler did not have a meaningful environment-independent check.",
+            localOperationalVerification?.stdout ? `Local operational output:\n${localOperationalVerification.stdout}` : "",
+            `Worker operational verification goal: ${workerVerificationGoal}`,
+            `Worker runtime requirements:\n${runtimeRequirements.length ? runtimeRequirements.map((item) => `- ${item}`).join("\n") : "- none identified"}`
           ].filter(Boolean).join("\n"));
           proposal = await access.skillsService.proposeButlerPreparedInstall(access.runtimeThreadId, {
             name,
             source: redactSensitiveText(text(params.source)),
             candidatePath,
             candidateArchiveBase64: sealed.archiveBase64,
-            evidence
+            evidence,
+            workerVerificationGoal,
+            runtimeRequirements
           });
         } finally {
           await sealed.cleanup();
         }
         const { message } = await presentProposal(proposal);
         return {
-          content: [{ type: "text", text: `Prepared skill ${proposal.id} is awaiting operator approval for the shared registry. After approval, call apply_skill_change with this proposal id.` }],
-          details: { proposal, verification, question: message.question }
+          content: [{ type: "text", text: `Prepared skill ${proposal.id} is awaiting operator approval for the shared registry. End this turn now. Do not call apply_skill_change or another question tool. The operator's decision will arrive in a new turn; apply only after that turn explicitly carries the approval.` }],
+          details: { proposal, candidateValidation, localOperationalVerification, question: message.question }
         };
       }
     }),
@@ -222,7 +263,7 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
         const proposal = await access.skillsService.proposeAgentChange(access.runtimeThreadId, buildChange(params));
         const { message } = await presentProposal(proposal);
         return {
-          content: [{ type: "text", text: `Skill change proposal ${proposal.id} is awaiting operator approval. After approval, call apply_skill_change with this proposal id.` }],
+          content: [{ type: "text", text: `Skill change proposal ${proposal.id} is awaiting operator approval. End this turn now. Do not call apply_skill_change or another question tool. The operator's decision will arrive in a new turn.` }],
           details: { proposal, question: message.question }
         };
       }
@@ -230,8 +271,8 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
     access.defineButlerTool({
       name: "confirm_worker_skill_operability",
       label: "Confirm Worker skill operability",
-      description: "Mark a published shared skill ready only after its bound fresh Worker session loads and exercises it successfully.",
-      promptSnippet: "confirm_worker_skill_operability: use only for the fresh verification job started by apply_skill_change. The latest completed report must name the installed skill invocation and include a successful command. This posts the final ready result to the operator.",
+      description: "Mark a published shared skill ready only after Butler judges that its bound fresh Worker report proves the verification goal.",
+      promptSnippet: "confirm_worker_skill_operability: use only for the fresh verification job started by apply_skill_change, after reviewing the latest completed Worker report and deciding its evidence proves the assigned goal. Judge evidence according to the skill's actual shape and intended outcome; do not require a command, file, binary, or other proof form unless that capability calls for it. This posts the final ready result to the operator.",
       parameters: Type.Object({
         resultId: Type.String({ minLength: 1 }),
         threadId: Type.String({ minLength: 1 })
@@ -253,14 +294,8 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
         if (!latestTurn || latestTurn.startedAt < pending.appliedAt || !report || report.status !== "completed" || report.turnId !== latestTurn.id) {
           throw new Error("The fresh Worker must submit a completed report for its latest verification turn.");
         }
-        const reportText = [report.summary, report.details, ...report.evidence.flatMap((entry) => [entry.summary, entry.details, entry.command])]
-          .filter((entry): entry is string => Boolean(entry))
-          .join("\n");
-        if (!reportText.includes(pending.verification.invocation) || !report.evidence.some((entry) => entry.command && entry.exitCode === 0)) {
-          throw new Error("The fresh Worker report must name the installed invocation and include a successful operational command.");
-        }
         const ready = access.skillsService.confirmAgentResultVerification(access.runtimeThreadId, resultId, threadId);
-        await access.postOperatorJobReply(threadId, `Installed skill ${ready.skill.name} is ready. A fresh Worker loaded ${ready.verification.invocation} and exercised the installed capability successfully.`);
+        await access.postOperatorJobReply(threadId, `Installed skill ${ready.skill.name} is ready. Butler reviewed the fresh Worker's evidence and accepted it against the verification goal.`);
         return {
           content: [{ type: "text", text: `Confirmed ${ready.skill.name} is operational in a fresh Worker session.` }],
           details: { result: ready }
@@ -271,7 +306,7 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
       name: "apply_skill_change",
       label: "Apply skill change",
       description: "Apply one server-approved shared skill proposal, schedule Butler reload, and return undo or fresh Worker verification details.",
-      promptSnippet: "apply_skill_change: call this only after the operator approved the matching proposal card. The server rejects unapproved, rejected, expired, cross-session, or stale proposals.",
+      promptSnippet: "apply_skill_change: call this only in the new turn that carries the operator's answer approving the matching proposal card. Never call it in the turn that created the card. The server rejects unapproved, rejected, expired, cross-session, or stale proposals. If publication succeeded but Worker verification could not start, resume the missing proof without reinstalling: retry the same proposal id while its approval record is available, or inspect the installed skill and delegate its verification goal directly after a Manor restart.",
       parameters: Type.Object({ proposalId: Type.String({ minLength: 1 }) }),
       uiEffects: access.getToolUiEffects("apply_skill_change"),
       execute: async (_toolCallId, params) => {
@@ -282,7 +317,10 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
             try {
               const defaults = access.getWorkerDefaults?.();
               if (!defaults?.model) throw new Error("No connected Worker model is available for skill confirmation.");
-              const instruction = `Fresh-session confirmation for shared skill ${result.skill.name}, change result ${result.id}. Load ${result.verification.invocation}, inspect the installed skill, and exercise its real entrypoint or doctor flow. Do not modify the shared registry. Submit a completed Manor report only if the capability works. The report must include ${result.verification.invocation} and a successful operational command with exit code 0.`;
+              const requirementText = result.verification.runtimeRequirements.length
+                ? ` Runtime facts and requirements to account for: ${result.verification.runtimeRequirements.join("; ")}.`
+                : "";
+              const instruction = `Fresh-session confirmation for shared skill ${result.skill.name}, change result ${result.id}. Load ${result.verification.invocation} and pursue this goal using Worker judgment: ${result.verification.goal ?? "prove the installed capability works for its intended purpose"}.${requirementText} Do not modify the shared registry. Use the skill in a representative way and submit a completed Manor report only when the goal is genuinely proven; otherwise report the concrete blocker. Choose evidence appropriate to the capability, such as observed behavior, a command result, an API response, a produced artifact, or a well-supported advisory outcome. Do not invent a command or file requirement for a skill that has another shape.`;
               let verificationThreadId: string;
               if (defaults.threadId) {
                 await access.createOrUpdateJobPayload({ threadId: defaults.threadId, kind: "steering", instruction });
@@ -326,7 +364,7 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
               }
               result = access.skillsService.bindAgentResultVerification(access.runtimeThreadId, result.id, verificationThreadId);
             } catch (error) {
-              throw new Error(`Published ${result.skill.name}, but fresh Worker verification could not start. The skill remains verification-pending. ${error instanceof Error ? error.message : String(error)}`);
+              throw new Error(`Published ${result.skill.name}, but fresh Worker verification could not start. The skill remains installed and verification-pending. Resume verification without reinstalling: retry apply_skill_change with the same proposal id after the Worker runtime is available, or delegate the installed skill's verification goal directly if Manor has restarted. ${error instanceof Error ? error.message : String(error)}`);
             }
           }
           return {

@@ -535,30 +535,27 @@ test("Butler skill proposal tool posts a decision-complete approval card and rel
   assert.equal((await service.list("butler-pi", cwd))[0]?.name, "agent-installed");
 });
 
-test("Butler verifies and packages a scratch candidate before Worker confirmation", async (t) => {
+test("Butler seals its goal-validated candidate before Worker independently proves it", async (t) => {
   const { service, cwd, scratch } = await fixture(t);
   const candidatePath = path.join(scratch, "prepared-skill");
-  await fs.mkdir(path.join(candidatePath, "bin"), { recursive: true });
-  await fs.writeFile(path.join(candidatePath, "SKILL.md"), "---\nname: prepared-skill\ndescription: Prepared by Butler\n---\n\nRun bin/prepared.\n");
-  await fs.writeFile(path.join(candidatePath, "bin", "prepared"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  await fs.mkdir(candidatePath, { recursive: true });
+  await fs.writeFile(path.join(candidatePath, "SKILL.md"), "---\nname: prepared-skill\ndescription: Prepared advisory workflow\n---\n\nAssess the supplied project context and provide practical guidance.\n");
   const owner = "butler:pair-candidate";
   const threadId = "pi-worker-install";
   const butlerSessionId = "butler-session-candidate";
   const source = "https://github.com/example/prepared-skill";
-  const setupCommand = "./scripts/install.sh";
-  const verificationCommand = "./bin/prepared doctor";
   const verificationThreadId = "pi-worker-verify";
   const verificationReport = {
     threadId: verificationThreadId,
     turnId: "turn-verify",
     status: "completed",
-    summary: "Loaded /skill:prepared-skill and verified the installed capability.",
-    details: "The managed installation is operational.",
+    summary: "Loaded /skill:prepared-skill and applied its advisory workflow to a representative project.",
+    details: "The guidance was coherent, specific, and useful for the assigned outcome.",
     evidence: [{
-      summary: "Installed doctor passed.",
-      details: null,
-      command: "/worker-pi/agent/skills/prepared-skill/bin/prepared doctor",
-      exitCode: 0,
+      summary: "Representative advisory outcome reviewed.",
+      details: "The result addressed the supplied project constraints without requiring an executable artifact.",
+      command: null,
+      exitCode: null,
       proofRunId: null,
       artifactId: null
     }],
@@ -569,15 +566,15 @@ test("Butler verifies and packages a scratch candidate before Worker confirmatio
   let verificationInstruction = "";
   let operatorReply = "";
   let verificationStartedAt = 0;
-  let executedScript = "";
+  const executedScripts: string[] = [];
   const tools = buildButlerSkillTools({
     runtimeThreadId: owner,
     skillsService: service,
     butlerExecutorClient: {
       execute: async (input: { script: string; threadId: string }) => {
-        executedScript = input.script;
+        executedScripts.push(input.script);
         assert.equal(input.threadId, owner);
-        return { stdout: "doctor ok", stderr: "", exitCode: 0, signal: null, timedOut: false, truncated: false };
+        return { stdout: "candidate matches Butler's preparation goal", stderr: "", exitCode: 0, signal: null, timedOut: false, truncated: false };
       }
     },
     store: {
@@ -611,44 +608,46 @@ test("Butler verifies and packages a scratch candidate before Worker confirmatio
       } as never;
     },
     postOperatorJobReply: async (_threadId, text) => { operatorReply = text; }
-  } as unknown as ButlerAgentToolAccess) as Array<{ name: string; execute: (id: string, params: Record<string, unknown>) => Promise<{ details?: Record<string, unknown> }> }>;
+  } as unknown as ButlerAgentToolAccess) as Array<{ name: string; execute: (id: string, params: Record<string, unknown>) => Promise<{ content?: Array<{ text: string }>; details?: Record<string, unknown> }> }>;
 
   const candidateTool = tools.find((tool) => tool.name === "propose_repository_skill_install")!;
-  await assert.rejects(() => candidateTool.execute("call-unresolved-dependency", {
-    name: "prepared-skill",
-    source,
-    candidatePath,
-    verificationCommand,
-    setupCommands: [setupCommand],
-    dependencies: ["missing runtime binary"]
-  }), /unresolved runtime dependencies/i);
-
   const proposed = await candidateTool.execute("call-candidate", {
     name: "prepared-skill",
     source,
     candidatePath,
-    verificationCommand,
-    setupCommands: [setupCommand],
-    dependencies: []
+    candidateValidationGoal: "Confirm the advisory skill is well-formed and ready for independent Worker use.",
+    candidateValidationEvidence: "Butler inspected the instructions and applied them to representative project context in scratch.",
+    workerVerificationGoal: "Apply the advisory workflow to a representative project and judge whether it produces useful guidance.",
+    runtimeRequirements: ["Representative project context available only to Worker"]
   });
 
-  const proposal = proposed.details?.proposal as { id: string; sourceVerification: string; environment: string };
+  const proposal = proposed.details?.proposal as { id: string; sourceVerification: string; environment: string; workerVerificationGoal: string; runtimeRequirements: string[] };
   assert.equal(proposal.sourceVerification, "butler-prepared");
   assert.equal(proposal.environment, "butler-pi");
-  assert.match(executedScript, /prepared-skill/);
+  assert.match(proposal.workerVerificationGoal, /representative project/);
+  assert.deepEqual(proposal.runtimeRequirements, ["Representative project context available only to Worker"]);
+  assert.match(proposed.content?.[0]?.text ?? "", /End this turn now/);
+  assert.match(proposed.content?.[0]?.text ?? "", /operator's decision will arrive in a new turn/);
+  assert.equal(executedScripts.length, 0);
   const context = (posted?.questions as Array<{ context: string }>)[0]!.context;
-  assert.match(context, /prepared and exercised by Butler/i);
-  assert.match(context, /doctor ok/);
+  assert.match(context, /prepared by Butler/i);
+  assert.match(context, /applied them to representative project context in scratch/);
+  assert.match(context, /No command was required for Butler's candidate judgment/);
+  assert.match(context, /Representative project context available only to Worker/);
 
   const optionId = service.agentApprovalOptions(proposal.id).approve;
   service.validateAgentApprovalOption(owner, { messageId: "message-candidate", questionId: "question-candidate", optionId });
   service.recordAgentApprovalOption(owner, { messageId: "message-candidate", questionId: "question-candidate", optionId });
   const applied = await tools.find((tool) => tool.name === "apply_skill_change")!.execute("call-apply", { proposalId: proposal.id });
-  const result = applied.details?.result as { id: string; appliedAt: number; verification: { operability: string; verificationThreadId: string } };
+  const result = applied.details?.result as { id: string; appliedAt: number; verification: { operability: string; verificationThreadId: string; goal: string; runtimeRequirements: string[] } };
   verificationStartedAt = result.appliedAt + 1;
   assert.equal(result.verification.operability, "verification-pending");
   assert.equal(result.verification.verificationThreadId, verificationThreadId);
+  assert.match(result.verification.goal, /representative project/);
   assert.match(verificationInstruction, /Load \/skill:prepared-skill/);
+  assert.match(verificationInstruction, /using Worker judgment/);
+  assert.match(verificationInstruction, /Representative project context available only to Worker/);
+  assert.match(verificationInstruction, /evidence appropriate to the capability/);
 
   const confirmed = await tools.find((tool) => tool.name === "confirm_worker_skill_operability")!.execute("call-confirm", {
     resultId: result.id,
@@ -656,6 +655,125 @@ test("Butler verifies and packages a scratch candidate before Worker confirmatio
   });
   assert.equal((confirmed.details?.result as { verification: { operability: string } }).verification.operability, "ready");
   assert.match(operatorReply, /is ready/);
+});
+
+test("Butler resumes Worker verification without reinstalling an already published skill", async (t) => {
+  const { service, scratch, cwd } = await fixture(t);
+  const candidatePath = path.join(scratch, "retry-verification-skill");
+  await fs.mkdir(candidatePath, { recursive: true });
+  await fs.writeFile(path.join(candidatePath, "SKILL.md"), "---\nname: retry-verification-skill\ndescription: Proves retry behavior\n---\n\nApply this skill to the assigned goal.\n");
+  const owner = "butler:retry-verification";
+  const proposal = await service.proposeButlerPreparedInstall(owner, {
+    name: "retry-verification-skill",
+    source: "https://example.test/retry-verification-skill",
+    candidatePath,
+    evidence: "Butler prepared and inspected the skill.",
+    workerVerificationGoal: "Use the installed skill for a representative outcome."
+  });
+  approve(service, owner, proposal.id);
+
+  let handoffAttempts = 0;
+  const tools = buildButlerSkillTools({
+    runtimeThreadId: owner,
+    skillsService: service,
+    getToolUiEffects: () => [],
+    defineButlerTool: (definition) => definition,
+    scheduleButlerSkillReload: () => {},
+    getWorkerDefaults: () => ({ runtime: "pi-rpc", threadId: "pi-worker-current", harness: "pi", model: "worker-model", effort: "high", cwd }),
+    createOrUpdateJobPayload: async () => ({} as never),
+    handoffWorker: async () => {
+      handoffAttempts += 1;
+      if (handoffAttempts === 1) throw new Error("Worker runtime is temporarily unavailable.");
+      return { threadId: "pi-worker-verification" };
+    },
+    getButlerSessionId: () => "butler-session-retry"
+  } as unknown as ButlerAgentToolAccess) as Array<{ name: string; promptSnippet: string; execute: (id: string, params: Record<string, unknown>) => Promise<{ details?: Record<string, unknown> }> }>;
+
+  const applyTool = tools.find((tool) => tool.name === "apply_skill_change")!;
+  assert.match(applyTool.promptSnippet, /same proposal id/i);
+  await assert.rejects(
+    () => applyTool.execute("call-apply-first", { proposalId: proposal.id }),
+    /resume verification without reinstalling/i
+  );
+  assert.equal((await service.list("butler-pi", cwd)).filter((skill) => skill.name === "retry-verification-skill").length, 1);
+
+  const retried = await applyTool.execute("call-apply-retry", { proposalId: proposal.id });
+  const result = retried.details?.result as { verification: { operability: string; verificationThreadId: string } };
+  assert.equal(handoffAttempts, 2);
+  assert.equal(result.verification.operability, "verification-pending");
+  assert.equal(result.verification.verificationThreadId, "pi-worker-verification");
+  assert.equal((await service.list("butler-pi", cwd)).filter((skill) => skill.name === "retry-verification-skill").length, 1);
+});
+
+test("Butler may choose executable-specific validation when that skill actually has an executable", async (t) => {
+  const { service, scratch } = await fixture(t);
+  const candidatePath = path.join(scratch, "worker-only-skill");
+  await fs.mkdir(path.join(candidatePath, "bin"), { recursive: true });
+  await fs.writeFile(path.join(candidatePath, "SKILL.md"), "---\nname: worker-only-skill\ndescription: Uses Worker credentials\n---\n\nWorker runs bin/worker-only.\n");
+  await fs.writeFile(path.join(candidatePath, "bin", "worker-only"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  let executeCalls = 0;
+  let approvalContext = "";
+  let candidateValidationScript = "";
+  const tools = buildButlerSkillTools({
+    runtimeThreadId: "butler:worker-only-skill",
+    skillsService: service,
+    butlerExecutorClient: { execute: async (input: { script: string }) => {
+      executeCalls += 1;
+      candidateValidationScript = input.script;
+      return { stdout: "candidate matches the repository's executable skill instructions", stderr: "", exitCode: 0, signal: null, timedOut: false, truncated: false };
+    } },
+    getToolUiEffects: () => [],
+    defineButlerTool: (definition) => definition,
+    postOperatorQuestion: async (input) => {
+      approvalContext = input.questions[0]?.context ?? "";
+      return { id: "message-worker-only", question: { id: "question-worker-only", questions: [{ id: "question-worker-only" }] } } as never;
+    }
+  } as unknown as ButlerAgentToolAccess) as Array<{ name: string; execute: (id: string, params: Record<string, unknown>) => Promise<{ details?: Record<string, unknown> }> }>;
+
+  const prepared = await tools.find((tool) => tool.name === "propose_repository_skill_install")!.execute("call-worker-only", {
+    name: "worker-only-skill",
+    source: "https://example.test/worker-only-skill",
+    candidatePath,
+    candidateValidationGoal: "Validate the executable described by this repository is present and runnable.",
+    candidateValidationEvidence: "Butler inspected this executable-shaped skill and found its documented launcher in the prepared candidate.",
+    candidateValidationCommand: "test -f SKILL.md && test -x bin/worker-only",
+    workerVerificationGoal: "Use the Worker credential runtime to exercise the real capability.",
+    runtimeRequirements: ["Credential configuration intentionally available only to Worker"]
+  });
+
+  const proposal = prepared.details?.proposal as { workerVerificationGoal: string; runtimeRequirements: string[] };
+  assert.equal(executeCalls, 1);
+  assert.match(candidateValidationScript, /test -x bin\/worker-only/);
+  assert.match(proposal.workerVerificationGoal, /Worker credential runtime/);
+  assert.deepEqual(proposal.runtimeRequirements, ["Credential configuration intentionally available only to Worker"]);
+  assert.match(approvalContext, /executable skill instructions/i);
+});
+
+test("Butler's failed candidate validation blocks publication approval", async (t) => {
+  const { service, scratch } = await fixture(t);
+  const candidatePath = path.join(scratch, "goal-not-satisfied");
+  await fs.mkdir(candidatePath, { recursive: true });
+  await fs.writeFile(path.join(candidatePath, "SKILL.md"), "---\nname: goal-not-satisfied\ndescription: Candidate awaiting validation\n---\n\nUse the supplied capability.\n");
+  let posted = false;
+  const tools = buildButlerSkillTools({
+    runtimeThreadId: "butler:goal-not-satisfied",
+    skillsService: service,
+    butlerExecutorClient: { execute: async () => ({ stdout: "", stderr: "Butler's preparation goal was not satisfied", exitCode: 1, signal: null, timedOut: false, truncated: false }) },
+    getToolUiEffects: () => [],
+    defineButlerTool: (definition) => definition,
+    postOperatorQuestion: async () => { posted = true; throw new Error("Approval must not be requested."); }
+  } as unknown as ButlerAgentToolAccess) as Array<{ name: string; execute: (id: string, params: Record<string, unknown>) => Promise<unknown> }>;
+
+  await assert.rejects(() => tools.find((tool) => tool.name === "propose_repository_skill_install")!.execute("call-goal-not-satisfied", {
+    name: "goal-not-satisfied",
+    source: "https://example.test/goal-not-satisfied",
+    candidatePath,
+    candidateValidationGoal: "Validate the candidate against the capability Butler intends to publish.",
+    candidateValidationEvidence: "The repository supplies a validation command appropriate to this particular skill.",
+    candidateValidationCommand: "./validate-candidate",
+    workerVerificationGoal: "Use the installed skill to achieve a representative user outcome."
+  }), /candidate validation failed.*preparation goal was not satisfied/i);
+  assert.equal(posted, false);
 });
 
 test("approval targets identify the single Worker Pi environment", async (t) => {

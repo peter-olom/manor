@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 
@@ -38,6 +38,31 @@ function signalProcessGroup(child, signal) {
   }
 }
 
+function assertWorkerWorkspaceWritable(cwd) {
+  const probe = path.join(cwd, `.manor-worker-write-probe-${process.pid}-${Date.now()}`);
+  try {
+    writeFileSync(probe, "manor-worker-readiness\n", { flag: "wx" });
+    const git = (args) => spawnSync("git", ["-c", "safe.directory=*", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", cwd, ...args], { encoding: "utf8" });
+    const repository = git(["rev-parse", "--show-toplevel"]);
+    if (repository.error) throw repository.error;
+    if (repository.status === 0) {
+      const index = git(["rev-parse", "--path-format=absolute", "--git-path", "index"]);
+      if (index.error || index.status !== 0 || !index.stdout.trim()) throw index.error ?? new Error(index.stderr.trim() || "Git index path is unavailable.");
+      const indexProbe = `${index.stdout.trim()}.manor-worker-write-probe-${process.pid}-${Date.now()}`;
+      try { writeFileSync(indexProbe, "manor-worker-readiness\n", { flag: "wx" }); }
+      finally { try { rmSync(indexProbe, { force: true }); } catch { /* The write error above is authoritative. */ } }
+      for (const args of [["hash-object", "-w", probe], ["status", "--short"]]) {
+        const result = git(args);
+        if (result.error || result.status !== 0) throw result.error ?? new Error(result.stderr.trim() || `Git readiness check failed: ${args.join(" ")}`);
+      }
+    }
+  } catch (error) {
+    throw new Error(`Worker workspace ${cwd} is not writable inside the Worker runtime: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    try { rmSync(probe, { force: true }); } catch { /* The write error above is authoritative. */ }
+  }
+}
+
 function decodeStart(frame) {
   if (!frame || frame.type !== "start") throw new Error("Worker Pi bridge expected a start frame.");
   if (!Array.isArray(frame.args) || frame.args.some((arg) => typeof arg !== "string") || frame.args.length > 128) {
@@ -49,6 +74,7 @@ function decodeStart(frame) {
   if (typeof frame.cwd !== "string") throw new Error("Worker Pi bridge requires a working directory.");
   const cwd = realpathSync(frame.cwd);
   if (!isWithinRoot(cwd, reposRoot)) throw new Error("Worker Pi bridge working directory must be inside /repos.");
+  assertWorkerWorkspaceWritable(cwd);
   const sessionDirIndex = frame.args.indexOf("--session-dir");
   const sessionDir = sessionDirIndex >= 0 ? path.resolve(frame.args[sessionDirIndex + 1] ?? "") : null;
   if (!sessionDir || !isWithinRoot(sessionDir, sessionRoot)) {

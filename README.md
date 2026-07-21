@@ -13,6 +13,7 @@ Butler handles supervision, provider-backed Workers handle execution, and Conten
 - [Public Preview](#public-preview)
 - [Screenshot](#screenshot)
 - [Opinionated by Design](#opinionated-by-design)
+- [Agent Judgment](#agent-judgment)
 - [Quick Start](#quick-start)
 - [Source Distribution](#source-distribution)
 - [Core Model](#core-model)
@@ -55,6 +56,14 @@ The project optimizes for a specific way of working:
 - simple primitives before broad orchestration layers
 
 That bias is intentional. Manor is not trying to be neutral infrastructure for every team shape, but with it you can build and run most things.
+
+## Agent Judgment
+
+Manor gives agents goals, runtime facts, constraints, and tools, then expects them to work out a sensible path. Butler and Worker inspect the current state, choose commands, decide who should execute, and adjust when the evidence changes. The operator should not have to explain ordinary routing that the agents can infer themselves.
+
+Deterministic controls cover the places where flexibility would weaken the appliance: permissions, content admission, operator approval, package integrity, actor ownership, destructive actions, concurrency, and proof binding. Those checks stay in code. The work between them remains agent-led.
+
+This matters when environments differ. A skill can still be useful to Butler as guidance while Worker owns its execution. Butler should treat a missing Worker-only credential, tool, or writable surface as part of the execution plan. It can prepare the package, explain what it verified, and leave the environment-dependent proof to Worker.
 
 ## Quick Start
 
@@ -190,14 +199,15 @@ For a repository-backed skill, Butler performs the installation work itself:
 
 - clone through the standard CAR-aware Git path into writable Butler scratch
 - inspect the repository and choose the required build or installation commands
-- run the skill's real verification or doctor command
+- run the strongest meaningful checks available in Butler's environment
+- record Worker-only tools, credentials, configuration, or writable surfaces as runtime requirements
 - ask the operator to approve the exact prepared files
 - publish the validated package to the shared registry
-- start a fresh Worker session to load and independently exercise the installed skill
+- give a fresh Worker the operational goal and let it exercise the installed skill in its real environment
 
 The source repository is not pinned or replaced with a digest-addressed checkout. The approval records a hash of the exact prepared package so the files approved by the operator are the files Manor publishes.
 
-Butler's executor uses the Worker toolchain as an unprivileged account. It can write only its scratch volume. Repositories and installed skills are read-only there. Worker keeps normal write access to repositories and supplies the final execution proof. Existing Butler and Worker user skills are copied into the shared registry on upgrade when their names do not conflict; the old volumes remain intact.
+Butler's executor uses the Worker toolchain as an unprivileged account. It can write only its scratch volume. Repositories and installed skills are read-only there, and Worker-only credentials and persistent configuration stay with Worker. Butler uses those differences to plan verification. They do not automatically block installation. Worker keeps normal write access to repositories and supplies the final execution proof. Existing Butler and Worker user skills are copied into the shared registry on upgrade when their names do not conflict; the old volumes remain intact.
 
 ## Content Admission Review
 

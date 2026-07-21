@@ -75,10 +75,10 @@ export function buildManorSkillRoutingContext(
     "Treat this as one Manor capability request. The operator does not manage agent-environment boundaries.",
     targetHasSkill
       ? `For execution work, delegate to the selected Worker and include its native invocation ${workerInvocation} in the Worker task.`
-      : `Have Butler acquire, prepare, and exercise the skill in Butler scratch, publish it to the shared registry after operator approval, then start a fresh Worker session with ${workerInvocation} for independent confirmation.`,
+      : `Have Butler acquire the repository and prepare a publishable skill in fresh scratch using the repository's instructions and Butler's judgment, publish the exact candidate after operator approval, then start a fresh Worker session with ${workerInvocation} to prove a representative user outcome.`,
     environments.length === 0
-      ? "No Manor environment currently has this skill. Butler must inspect the repository, install or build what is needed in scratch, prove the capability, and publish the prepared candidate to the shared registry."
+      ? "No Manor environment currently has this skill. Butler should inspect the repository, infer the skill's actual shape and preparation needs, prepare and validate a candidate against the intended capability, and publish the exact approved candidate. Worker independently proves the assigned outcome with evidence appropriate to the skill."
       : "Do not ask the operator to choose an environment when the selected Worker target is already known.",
-    "Never claim a worker-only skill is unavailable merely because Butler itself does not have it."
+    "Never claim a worker-only skill is unavailable or blocked merely because Butler cannot execute it locally. Infer advisory and execution roles from the skill and live environment facts."
   ].join("\n");
 }

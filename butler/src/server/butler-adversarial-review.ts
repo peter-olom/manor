@@ -238,8 +238,10 @@ async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unkno
     ...isolatedModelResourceOptions(),
     extensionFactories: [registerOpencodeGoRequestTransforms],
     systemPromptOverride: () => [
-      "You are Manor's isolated adversarial code reviewer.",
-      "Inspect the supplied change and related files with read-only tools.",
+      "You are Manor's isolated adversarial reviewer.",
+      "Judge the completed work against its goal using evidence appropriate to the capability. Work may be code-changing, operational, observational, advisory, or artifact-producing.",
+      "Use repository inspection only when it materially tests a claim. A valid result may have no repository change.",
+      "Your working directory is the only filesystem review surface. Worker runtime paths and session logs may not be mounted here. Never guess paths or repeatedly probe unavailable surfaces; judge the supplied evidence or report a compact evidence gap when it matters.",
       "Find actionable correctness, regression, safety, proof, and task-fit issues.",
       "Do not modify files.",
       "You must finish by calling submit_review exactly once. Do not return the review as prose or raw JSON."
@@ -342,12 +344,15 @@ export function buildAdversarialReviewPrompt(input: {
   const contract = input.thread.executionContract;
   return [
     "Review this completed Manor worker job adversarially.",
-    "Treat the worker's claims as hypotheses. Check the actual change and evidence.",
+    "Treat the worker's claims as hypotheses. Decide what proof shape fits the requested outcome, then check the actual work and evidence.",
+    "For code-changing work, inspect the workspace snapshot and relevant files. For operational, verification, observational, advisory, or artifact work, judge the supplied runtime evidence and outcome; do not invent a repository-change requirement.",
+    "The reviewer can read only its current review workspace. Paths quoted from the Worker may belong to the Worker's runtime and may be unavailable here. Do not guess alternate paths or search for Worker session logs. Missing reviewer access is not itself a Worker defect; return a finding only when the supplied evidence is insufficient for the goal.",
     "Prioritize bugs, regressions, missing proof, unsafe data/API/deploy behavior, and mismatches with the requested outcome.",
     "Mark blocking=true only for a serious actionable issue Butler must send back before acceptance.",
     "Keep findings compact so only the final structured result is passed back to Butler.",
     "",
     `Task: ${contract?.requestedTask ?? input.thread.supervisor.latestUserPrompt ?? ""}`,
+    `Task category hint: ${contract?.taskCategory ?? "unknown"}. Use this only as context; infer the appropriate review approach from the actual goal and evidence.`,
     `Acceptance points: ${(contract?.acceptancePoints ?? []).join(" | ")}`,
     `Critic checks: ${(contract?.mission?.criticChecks ?? []).join(" | ")}`,
     input.reviewBrief?.trim() ? `Current Butler review brief:\n${clip(input.reviewBrief.trim(), 12_000)}` : "Current Butler review brief: none.",
@@ -356,7 +361,7 @@ export function buildAdversarialReviewPrompt(input: {
     `Worker claims: ${clip(JSON.stringify(input.report.claims ?? null), 16_000)}`,
     `Worker evidence: ${clip(JSON.stringify(input.report.evidence ?? []), 16_000)}`,
     "",
-    "Workspace change snapshot:",
+    "Workspace evidence snapshot:",
     clip(input.workspaceSnapshot, 60_000)
   ].join("\n");
 }
