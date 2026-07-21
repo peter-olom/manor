@@ -33,7 +33,7 @@ type SettingsRouteAccess = {
   refreshModelInventories?: () => void;
 };
 
-type ButlerAuthCheckResult = {
+type AuthCheckResult = {
   ok: boolean;
   message: string;
   checkedAt: number;
@@ -205,7 +205,7 @@ async function runValidation(access: SettingsRouteAccess, target: SettingsValida
   }
 }
 
-async function checkButlerAuth(access: SettingsRouteAccess): Promise<ButlerAuthCheckResult> {
+async function checkButlerAuth(access: SettingsRouteAccess): Promise<AuthCheckResult> {
   const checkedAt = Date.now();
   try {
     const compose = access.butlerAgent.getShellSnapshot().compose;
@@ -223,6 +223,18 @@ async function checkButlerAuth(access: SettingsRouteAccess): Promise<ButlerAuthC
     return reply.trim()
       ? { ok: true, message: "Authentication is working.", checkedAt }
       : { ok: false, message: "Butler returned an empty response.", checkedAt };
+  } catch (error) {
+    return { ok: false, message: redactMessage(error), checkedAt };
+  }
+}
+
+async function checkWorkerAuth(access: SettingsRouteAccess): Promise<AuthCheckResult> {
+  const checkedAt = Date.now();
+  try {
+    const reply = await access.piRpcWorkerClient.checkOpenAiAuth(30_000);
+    return reply.trim()
+      ? { ok: true, message: "Authentication is working.", checkedAt }
+      : { ok: false, message: "Worker returned an empty response.", checkedAt };
   } catch (error) {
     return { ok: false, message: redactMessage(error), checkedAt };
   }
@@ -429,7 +441,8 @@ async function streamOllamaLocalPull(access: SettingsRouteAccess, model: string,
 }
 
 export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
-  let activeButlerAuthCheck: Promise<ButlerAuthCheckResult> | null = null;
+  let activeButlerAuthCheck: Promise<AuthCheckResult> | null = null;
+  let activeWorkerAuthCheck: Promise<AuthCheckResult> | null = null;
   access.app.get("/api/settings", async (_request, response) => {
     response.json(await settingsPayload(access));
   });
@@ -491,6 +504,16 @@ export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
       activeButlerAuthCheck = check;
     }
     response.json(await activeButlerAuthCheck);
+  });
+
+  access.app.post("/api/settings/auth/worker/check", async (_request, response) => {
+    if (!activeWorkerAuthCheck) {
+      const check = checkWorkerAuth(access).finally(() => {
+        if (activeWorkerAuthCheck === check) activeWorkerAuthCheck = null;
+      });
+      activeWorkerAuthCheck = check;
+    }
+    response.json(await activeWorkerAuthCheck);
   });
 
   access.app.get("/api/settings/providers/ollama-cloud/models", async (_request, response) => {

@@ -28,7 +28,7 @@ test("OpenAI settings leave refresh to Pi and make real usage the confirmation",
   assert.match(authUsageHint("butler", auth(true)), /Pi refreshes this sign-in automatically/);
   assert.match(authUsageHint("butler", auth(true)), /Use Check auth/);
   assert.match(authUsageHint("butler", auth(true)), /background reply/);
-  assert.match(authUsageHint("worker", auth(true)), /Start a Worker task/);
+  assert.match(authUsageHint("worker", auth(true)), /Use Check auth/);
 });
 
 test("OpenAI settings always offer a clear connection or reconnection action", () => {

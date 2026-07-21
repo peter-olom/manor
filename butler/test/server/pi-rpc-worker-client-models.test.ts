@@ -4,11 +4,26 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { PiRpcWorkerClient } from "../../src/server/pi-rpc-worker-client.js";
+import { PiRpcWorkerClient, selectOpenAiAuthCheckModel } from "../../src/server/pi-rpc-worker-client.js";
+import type { ModelOption } from "../../src/server/types.js";
 
 function jwt(payload: Record<string, unknown>): string {
   return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
 }
+
+function model(id: string, provider: string): ModelOption {
+  return { id, label: id, provider, supportsReasoning: false, supportedThinkingLevels: [], supportedReasoningEfforts: [], defaultReasoningEffort: null };
+}
+
+test("Worker auth check validates the authentication mode shown in settings", () => {
+  const api = model("gpt-5.4", "openai");
+  const chatGpt = model("gpt-5.4", "openai-codex");
+  const models = [api, chatGpt];
+
+  assert.equal(selectOpenAiAuthCheckModel(models, api.provider, api.id, "chatgpt"), chatGpt);
+  assert.equal(selectOpenAiAuthCheckModel(models, chatGpt.provider, chatGpt.id, "api"), api);
+  assert.equal(selectOpenAiAuthCheckModel(models, api.provider, api.id, "none"), api);
+});
 
 test("Worker Pi exposes OpenAI models only from its own authenticated provider", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "manor-worker-models-"));

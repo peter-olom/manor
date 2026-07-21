@@ -27,6 +27,7 @@ import type { WorkerSessionControls } from "../shared/worker-session-controls.js
 import type { ExtensionUiBroker } from "./extension-ui-broker.js";
 import { contentToText, extractMessageTimestamp } from "./butler-agent-helpers.js";
 import { WorkerTransportDeadError, type WorkerThreadRuntimeProbe } from "./worker-thread-runtime-probe.js";
+import { runPiRpcAuthCheck } from "./pi-rpc-auth-check.js";
 
 type PiRpcWorkerClientEvents = {
   change: [];
@@ -115,6 +116,19 @@ export function defaultOpencodeWebToolsExtensionPath(): string {
 export function defaultManorToolsExtensionPath(): string {
   const currentPath = fileURLToPath(import.meta.url);
   return path.join(path.dirname(currentPath), `pi-manor-tools-extension${path.extname(currentPath)}`);
+}
+
+export function selectOpenAiAuthCheckModel(
+  models: ModelOption[],
+  selectedProvider: string | null,
+  selectedModel: string | null,
+  authMode: ButlerAuthStatus["mode"]
+): ModelOption | null {
+  const requiredProvider = authMode === "chatgpt" ? "openai-codex" : authMode === "api" ? "openai" : null;
+  const candidates = models.filter((model) => requiredProvider
+    ? model.provider === requiredProvider
+    : model.provider === "openai-codex" || model.provider === "openai");
+  return candidates.find((model) => model.provider === selectedProvider && model.id === selectedModel) ?? candidates[0] ?? null;
 }
 
 export async function webToolsExtensionArgsForProvider(provider: string | null | undefined, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
@@ -307,6 +321,23 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
 
   async getAuthStatus(): Promise<ButlerAuthStatus> {
     return readButlerAuthStatus(this.options.piAuthPath);
+  }
+
+  async checkOpenAiAuth(timeoutMs = 30_000): Promise<string> {
+    const auth = await readButlerAuthStatus(this.options.piAuthPath);
+    const model = selectOpenAiAuthCheckModel(this.availableModels, this.selectedProvider, this.selectedModel, auth.mode);
+    const provider = model?.provider;
+    if (!model || (provider !== "openai-codex" && provider !== "openai")) {
+      throw new Error("No authenticated OpenAI model is available for Worker.");
+    }
+    return runPiRpcAuthCheck({
+      piAuthPath: this.options.piAuthPath,
+      sessionRootDir: this.options.sessionRootDir,
+      cliPath: this.options.cliPath ?? defaultPiCliPath(),
+      provider,
+      model: model.id,
+      timeoutMs
+    });
   }
 
   getConnectionState(): { connected: boolean; lastError: string | null; compose: { provider: string | null; model: string | null; effort: ReasoningEffort | null; availableModels: ModelOption[] } } {

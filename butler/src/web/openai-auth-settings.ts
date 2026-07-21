@@ -22,7 +22,7 @@ export function authUsageHint(target: AuthTarget, auth: AuthStatusView): string 
       : "Connect ChatGPT for Worker tasks.";
   }
 
-  const confirmation = target === "butler" ? "Use Check auth" : "Start a Worker task";
+  const confirmation = "Use Check auth";
   if (auth.mode === "chatgpt") {
     return `Pi refreshes this sign-in automatically when needed. ${confirmation} to confirm it with a background reply.`;
   }

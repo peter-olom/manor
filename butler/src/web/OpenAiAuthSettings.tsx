@@ -1,7 +1,33 @@
+import { useState } from "react";
+
+import { postJson } from "./api";
 import { authActionLabel, authUsageHint, formatAuthSummary, type AuthStatusView, type AuthTarget } from "./openai-auth-settings";
 import { OpenAiAuthPending } from "./OpenAiAuthPending";
 
-export type ButlerAuthCheckResult = { ok: boolean; message: string; checkedAt: number };
+export type AuthCheckResult = { ok: boolean; message: string; checkedAt: number };
+
+export function useAuthChecks() {
+  const [authCheckingTarget, setAuthCheckingTarget] = useState<AuthTarget | null>(null);
+  const [authChecks, setAuthChecks] = useState<Record<AuthTarget, AuthCheckResult | null>>({ butler: null, worker: null });
+  const clearAuthChecks = () => setAuthChecks({ butler: null, worker: null });
+  const clearAuthCheck = (target: AuthTarget) => setAuthChecks((current) => ({ ...current, [target]: null }));
+  const checkAuth = async (target: AuthTarget) => {
+    setAuthCheckingTarget(target);
+    setAuthChecks((current) => ({ ...current, [target]: null }));
+    try {
+      const result = await postJson<AuthCheckResult>(`/api/settings/auth/${target}/check`, {});
+      setAuthChecks((current) => ({ ...current, [target]: result }));
+    } catch (error) {
+      setAuthChecks((current) => ({
+        ...current,
+        [target]: { ok: false, message: error instanceof Error ? error.message : String(error), checkedAt: Date.now() }
+      }));
+    } finally {
+      setAuthCheckingTarget(null);
+    }
+  };
+  return { authCheckingTarget, authChecks, clearAuthCheck, clearAuthChecks, checkAuth };
+}
 
 function AuthField({ label, target, auth }: { label: string; target: AuthTarget; auth: AuthStatusView }) {
   return (
@@ -13,51 +39,75 @@ function AuthField({ label, target, auth }: { label: string; target: AuthTarget;
   );
 }
 
+function AuthActions({
+  target,
+  auth,
+  authPending,
+  authTarget,
+  authCheckingTarget,
+  authCheck,
+  onStartAuth,
+  onCheckAuth
+}: {
+  target: AuthTarget;
+  auth: AuthStatusView;
+  authPending: boolean;
+  authTarget: AuthTarget | null;
+  authCheckingTarget: AuthTarget | null;
+  authCheck: AuthCheckResult | null;
+  onStartAuth: (target: AuthTarget) => Promise<void>;
+  onCheckAuth: (target: AuthTarget) => Promise<void>;
+}) {
+  const checking = authCheckingTarget === target;
+  const busy = authPending || authCheckingTarget !== null;
+  return (
+    <>
+      <div className="settings-auth-actions">
+        <button className={`button ${auth.loggedIn ? "" : "is-primary"}`} type="button" onClick={() => void onStartAuth(target)} disabled={busy}>
+          {authPending && authTarget === target ? "Starting…" : authActionLabel(target, auth)}
+        </button>
+        <button className="button" type="button" aria-label={`Check ${target === "butler" ? "Butler" : "Worker"} auth`} onClick={() => void onCheckAuth(target)} disabled={busy}>
+          {checking ? "Checking…" : "Check auth"}
+        </button>
+      </div>
+      {authCheck ? <div className={`settings-auth-check is-${authCheck.ok ? "ok" : "failed"}`} role={authCheck.ok ? "status" : "alert"}>{authCheck.message}</div> : null}
+    </>
+  );
+}
+
 export function OpenAiAuthSettings({
   auth,
   authError,
   authUrl,
   authTarget,
   authPending,
-  butlerAuthChecking,
-  butlerAuthCheck,
+  authCheckingTarget,
+  authChecks,
   onStartAuth,
   onCompleteAuth,
   onRefreshAuth,
-  onCheckButlerAuth
+  onCheckAuth
 }: {
   auth: { butler: AuthStatusView; worker: AuthStatusView };
   authError: string | null;
   authUrl: string | null;
   authTarget: AuthTarget | null;
   authPending: boolean;
-  butlerAuthChecking: boolean;
-  butlerAuthCheck: ButlerAuthCheckResult | null;
+  authCheckingTarget: AuthTarget | null;
+  authChecks: Record<AuthTarget, AuthCheckResult | null>;
   onStartAuth: (target: AuthTarget) => Promise<void>;
   onCompleteAuth: (authorizationInput: string) => Promise<void>;
   onRefreshAuth: () => Promise<void>;
-  onCheckButlerAuth: () => Promise<void>;
+  onCheckAuth: (target: AuthTarget) => Promise<void>;
 }) {
   return (
     <>
       {authError ? <div className="settings-auth-error" role="alert">{authError}</div> : null}
       {authUrl && authTarget ? <OpenAiAuthPending authUrl={authUrl} target={authTarget} onComplete={onCompleteAuth} onRefresh={onRefreshAuth} /> : null}
       <AuthField label="Butler" target="butler" auth={auth.butler} />
-      <div className="settings-auth-actions">
-        <button className={`button ${auth.butler.loggedIn ? "" : "is-primary"}`} type="button" onClick={() => void onStartAuth("butler")} disabled={authPending || butlerAuthChecking}>
-          {authPending && authTarget === "butler" ? "Starting…" : authActionLabel("butler", auth.butler)}
-        </button>
-        <button className="button" type="button" onClick={() => void onCheckButlerAuth()} disabled={authPending || butlerAuthChecking}>
-          {butlerAuthChecking ? "Checking…" : "Check auth"}
-        </button>
-      </div>
-      {butlerAuthCheck ? <div className={`settings-auth-check is-${butlerAuthCheck.ok ? "ok" : "failed"}`} role={butlerAuthCheck.ok ? "status" : "alert"}>{butlerAuthCheck.message}</div> : null}
+      <AuthActions target="butler" auth={auth.butler} authPending={authPending} authTarget={authTarget} authCheckingTarget={authCheckingTarget} authCheck={authChecks.butler} onStartAuth={onStartAuth} onCheckAuth={onCheckAuth} />
       <AuthField label="Worker" target="worker" auth={auth.worker} />
-      <div className="settings-auth-actions">
-        <button className={`button ${auth.worker.loggedIn ? "" : "is-primary"}`} type="button" onClick={() => void onStartAuth("worker")} disabled={authPending || butlerAuthChecking}>
-          {authPending && authTarget === "worker" ? "Starting…" : authActionLabel("worker", auth.worker)}
-        </button>
-      </div>
+      <AuthActions target="worker" auth={auth.worker} authPending={authPending} authTarget={authTarget} authCheckingTarget={authCheckingTarget} authCheck={authChecks.worker} onStartAuth={onStartAuth} onCheckAuth={onCheckAuth} />
       <label className="settings-field">
         <span className="settings-field-label">Web tools</span>
         <input readOnly value="Built into ChatGPT" />

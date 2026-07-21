@@ -8,7 +8,7 @@ import { SkillsDashboard } from "./SkillsDashboard";
 import { RuntimeEgressDashboard } from "./RuntimeEgressDashboard";
 import { UsageDashboard } from "./UsageDashboard";
 import type { AuthStatusView, AuthTarget } from "./openai-auth-settings";
-import { OpenAiAuthSettings, type ButlerAuthCheckResult } from "./OpenAiAuthSettings";
+import { OpenAiAuthSettings, useAuthChecks } from "./OpenAiAuthSettings";
 import {
   workerModelForRoute,
   workerModelForSelection,
@@ -578,8 +578,7 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
   const [authUrl, setAuthUrl] = useState<string | null>(null);
   const [authTarget, setAuthTarget] = useState<"butler" | "worker" | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [butlerAuthChecking, setButlerAuthChecking] = useState(false);
-  const [butlerAuthCheck, setButlerAuthCheck] = useState<ButlerAuthCheckResult | null>(null);
+  const { authCheckingTarget, authChecks, clearAuthCheck, clearAuthChecks, checkAuth } = useAuthChecks();
   const [ollamaLocalModels, setOllamaLocalModels] = useState<{ id: string; contextWindow: number | null; capabilities?: string[] }[] | null>(null);
   const [ollamaLocalModelsLoading, setOllamaLocalModelsLoading] = useState(false);
   const [ollamaLocalModelsError, setOllamaLocalModelsError] = useState<string | null>(null);
@@ -725,7 +724,7 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
     setAuthTarget(target);
     setAuthError(null);
     setAuthUrl(null);
-    if (target === "butler") setButlerAuthCheck(null);
+    clearAuthCheck(target);
     try {
       const result = await postJson<{ authUrl: string; startedAt: number }>(`/api/auth/${target}/device`, {});
       setAuthUrl(result.authUrl);
@@ -749,7 +748,7 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
       setDraft(cloneSettings(next.settings));
       setAuthUrl(null);
       setAuthTarget(null);
-      setButlerAuthCheck(null);
+      clearAuthChecks();
       setFeedback({ kind: "success", text: `${authTarget === "worker" ? "Worker" : "Butler"} signed in.` });
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : String(error));
@@ -764,24 +763,12 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
       setAuthUrl(null);
       setAuthTarget(null);
       setAuthError(null);
-      setButlerAuthCheck(null);
+      clearAuthChecks();
       setFeedback({ kind: "success", text: "Auth status refreshed." });
     } catch (error) {
       setFeedback({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     }
   }
-  async function checkButlerAuth() {
-    setButlerAuthChecking(true);
-    setButlerAuthCheck(null);
-    try {
-      setButlerAuthCheck(await postJson<ButlerAuthCheckResult>("/api/settings/auth/butler/check", {}));
-    } catch (error) {
-      setButlerAuthCheck({ ok: false, message: error instanceof Error ? error.message : String(error), checkedAt: Date.now() });
-    } finally {
-      setButlerAuthChecking(false);
-    }
-  }
-
   async function fetchOllamaModels() {
     setOllamaModelsLoading(true);
     setOllamaModelsError(null);
@@ -1051,8 +1038,8 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
             <SubGroup title="OpenAI">
               <OpenAiAuthSettings
                 auth={payload.openaiAuth} authError={authError} authUrl={authUrl} authTarget={authTarget} authPending={authPending}
-                butlerAuthChecking={butlerAuthChecking} butlerAuthCheck={butlerAuthCheck} onStartAuth={startAuth}
-                onCompleteAuth={completeAuth} onRefreshAuth={refreshAuth} onCheckButlerAuth={checkButlerAuth}
+                authCheckingTarget={authCheckingTarget} authChecks={authChecks} onStartAuth={startAuth}
+                onCompleteAuth={completeAuth} onRefreshAuth={refreshAuth} onCheckAuth={checkAuth}
               />
             </SubGroup>
           ) : null}

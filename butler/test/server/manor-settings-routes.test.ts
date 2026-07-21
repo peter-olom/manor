@@ -188,6 +188,54 @@ test("Butler auth check trusts a working API-key OpenAI transport over stale sig
   }
 });
 
+test("Worker auth check sends an isolated probe and redacts failures", async () => {
+  const settings = getActiveManorSettings();
+  const app = express();
+  app.use(express.json());
+  let calls = 0;
+  let fail = false;
+  registerManorSettingsRoutes({
+    app,
+    settingsService: { getSettings: () => settings, getProvenance: () => ({}), getValidation: () => ({}) },
+    store: {},
+    piRpcWorkerClient: {
+      getConnectionState: () => ({ lastError: null, compose: { availableModels: [] } }),
+      checkOpenAiAuth: async (timeoutMs: number) => {
+        calls += 1;
+        assert.equal(timeoutMs, 30_000);
+        if (fail) throw new Error("401 unauthorized Bearer supersecretcredential");
+        return "Hello";
+      }
+    },
+    butlerAgent: {
+      getButlerAuthStatus: () => ({ loggedIn: true }),
+      getShellSnapshot: () => ({ compose: { availableModels: [] } })
+    },
+    modelTasks: {},
+    onSettingsChanged: async () => undefined
+  } as never);
+
+  const server = await listen(app);
+  try {
+    const successResponse = await fetch(`${server.url}/api/settings/auth/worker/check`, { method: "POST" });
+    const success = await successResponse.json() as { ok: boolean; message: string; checkedAt: number };
+    assert.equal(success.ok, true);
+    assert.equal(success.message, "Authentication is working.");
+    assert.equal(typeof success.checkedAt, "number");
+    assert.equal(calls, 1);
+
+    fail = true;
+    const failureResponse = await fetch(`${server.url}/api/settings/auth/worker/check`, { method: "POST" });
+    const failure = await failureResponse.json() as { ok: boolean; message: string };
+    assert.equal(failure.ok, false);
+    assert.match(failure.message, /unauthorized/i);
+    assert.doesNotMatch(failure.message, /supersecretcredential/);
+    assert.equal(calls, 2);
+  } finally {
+    await server.close();
+  }
+});
+
 test("settings diagnostics validates Ollama Cloud using discovered models", async (t) => {
   clearOllamaCloudModelsCache();
   const settings = getActiveManorSettings({
