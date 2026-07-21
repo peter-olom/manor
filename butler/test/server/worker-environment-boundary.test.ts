@@ -36,7 +36,7 @@ test("the Pi Worker uses the shared Worker environment", async () => {
   assert.match(workerDockerfile, /COPY --from=worker-runtime-deps \/opt\/manor\/worker\/node_modules/);
   assert.match(workerDockerfile, /COPY --from=worker-build \/opt\/manor\/worker\/dist\/server/);
   assert.match(workerDockerfile, /worker-pi-rpc-bridge\.mjs/);
-  assert.match(workerDockerfile, /useradd --create-home --shell \/bin\/bash worker/);
+  assert.match(workerDockerfile, /useradd --uid 1001 --gid worker --create-home --shell \/bin\/bash worker/);
   assert.match(workerDockerfile, /^USER worker$/m);
   assert.match(workerStart, /node \/opt\/manor\/worker\/worker-pi-rpc-bridge\.mjs/);
   assert.match(index, /workerPiRpcCliPath/);

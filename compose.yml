@@ -1,8 +1,54 @@
 services:
+  ownership-init:
+    image: manor-worker:local
+    user: "0:0"
+    entrypoint: ["/usr/local/bin/manor-ownership-init"]
+    command:
+      - /managed/butler-state
+      - /managed/butler-pi
+      - /managed/worker-pi
+      - /managed/worker-runtime
+      - /managed/worker-tools
+      - /managed/worker-config
+      - /managed/harness-state
+      - /managed/skill-registry
+      - /managed/butler-scratch
+      - /managed/butler-executor-runtime
+      - /managed/repos
+      - /managed/artifacts
+      - /managed/inputs
+      - /managed/outputs
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
+    restart: "no"
+    volumes:
+      - butler-state:/managed/butler-state
+      - butler-pi:/managed/butler-pi
+      - worker-pi:/managed/worker-pi
+      - worker-runtime:/managed/worker-runtime
+      - worker-tools:/managed/worker-tools
+      - worker-config:/managed/worker-config
+      - harness-state:/managed/harness-state
+      - skill-registry:/managed/skill-registry
+      - butler-scratch:/managed/butler-scratch
+      - butler-executor-runtime:/managed/butler-executor-runtime
+      - repos:/managed/repos
+      - artifacts:/managed/artifacts
+      - inputs:/managed/inputs
+      - outputs:/managed/outputs
+
   butler:
     image: manor-butler:local
     container_name: manor-butler
     hostname: manor-butler
+    user: butler
     command: ["/usr/local/bin/start-butler"]
     working_dir: /opt/manor/butler
     environment:
@@ -136,6 +182,8 @@ services:
       - inputs:/inputs
       - outputs:/outputs:ro
     depends_on:
+      ownership-init:
+        condition: service_completed_successfully
       worker:
         condition: service_healthy
       butler-executor:
@@ -164,6 +212,7 @@ services:
     image: manor-worker:local
     container_name: manor-butler-executor
     hostname: manor-butler-executor
+    user: worker
     command: ["/usr/local/bin/node", "/opt/manor/worker/butler-executor.mjs"]
     working_dir: /scratch
     read_only: true
@@ -200,6 +249,8 @@ services:
     mem_limit: 2g
     cpus: 2.0
     depends_on:
+      ownership-init:
+        condition: service_completed_successfully
       egress:
         condition: service_healthy
     restart: unless-stopped
@@ -249,6 +300,7 @@ services:
     image: manor-worker:local
     container_name: manor-worker
     hostname: manor-worker
+    user: worker
     command: ["/usr/local/bin/start-worker"]
     working_dir: /repos
     environment:
@@ -311,6 +363,8 @@ services:
       NO_PROXY: localhost,127.0.0.1,ollama,worker,manor-worker,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
       no_proxy: localhost,127.0.0.1,ollama,worker,manor-worker,butler,egress,preview-egress,runtime-broker,host-controller,playwright,desktop-proof
     depends_on:
+      ownership-init:
+        condition: service_completed_successfully
       egress:
         condition: service_healthy
     volumes:

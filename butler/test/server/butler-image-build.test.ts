@@ -20,7 +20,7 @@ test('Butler image contains locked development dependencies and never installs t
   assert.match(dockerfile, /FROM --platform=\$BUILDPLATFORM \$\{NODE_BUILD_IMAGE\} AS build/);
   assert.match(dockerfile, /FROM \$\{NODE_BUILD_IMAGE\} AS runtime-deps/);
   assert.match(dockerfile, /RUN --mount=type=cache,target=\/root\/\.npm \\\n\s+npm ci/);
-  assert.match(dockerfile, /COPY --from=runtime-deps \/opt\/manor\/butler\/node_modules \.\/node_modules/);
+  assert.match(dockerfile, /COPY --chown=butler:butler --from=runtime-deps \/opt\/manor\/butler\/node_modules \.\/node_modules/);
   assert.doesNotMatch(dockerfile, /npm install\s+"@mariozechner\/pi-ai/);
   assert.doesNotMatch(dockerfile, /npm install\s+.*"@mariozechner\/pi-coding-agent/);
   assert.doesNotMatch(startScript, /npm install/);
@@ -32,5 +32,5 @@ test('Manor appliance images are local source builds', async () => {
 
   assert.doesNotMatch(compose, /ghcr\.io\/peter-olom\/manor-/);
   assert.doesNotMatch(compose, /MANOR_IMAGE_(?:REGISTRY|TAG)/);
-  assert.equal((compose.match(/image: manor-[a-z-]+:local/g) ?? []).length, 9);
+  assert.equal((compose.match(/image: manor-[a-z-]+:local/g) ?? []).length, 10);
 });

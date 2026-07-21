@@ -73,7 +73,8 @@ RUN apt-get update \
       zsh-syntax-highlighting \
       zip \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --shell /bin/bash worker \
+    && groupadd --gid 1001 worker \
+    && useradd --uid 1001 --gid worker --create-home --shell /bin/bash worker \
     && mkdir -p /state /repos /artifacts /worker-pi/agent /worker-pi/sessions /worker-runtime /home/worker/.config/gh /home/worker/.config/manor /opt/manor/worker \
     && mkdir -p /home/worker/.oh-my-zsh/custom \
     && chown -R worker:worker /state /repos /artifacts /worker-pi /worker-runtime /home/worker /opt/manor
@@ -87,6 +88,7 @@ COPY docker/worker/start.sh /usr/local/bin/start-worker
 COPY docker/worker/gh-auth-headless.sh /usr/local/bin/gh-auth-headless
 COPY docker/worker/gh-headless-browser.sh /usr/local/bin/gh-headless-browser
 COPY docker/worker/bootstrap-tools.sh /usr/local/bin/worker-bootstrap-tools
+COPY docker/worker/ownership-init.sh /usr/local/bin/manor-ownership-init
 COPY docker/worker/manor-harness.mjs /usr/local/bin/manor-harness
 COPY docker/worker/git-admission.sh /usr/local/bin/git
 COPY docker/worker/healthcheck.mjs /opt/manor/worker/healthcheck.mjs
@@ -108,7 +110,7 @@ RUN mkdir -p /scratch /butler-executor-runtime \
     && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
     && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && sed -i 's/\r$//' /usr/local/bin/start-worker /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/worker-bootstrap-tools /usr/local/bin/manor-harness /usr/local/bin/git /opt/manor/worker/worker-pi-rpc-bridge.mjs /opt/manor/worker/butler-executor.mjs /home/worker/.zshrc /home/worker/.zprofile \
-    && chmod 755 /usr/local/bin/start-worker /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/worker-bootstrap-tools /usr/local/bin/manor-harness /usr/local/bin/git /opt/manor/worker/worker-pi-rpc-bridge.mjs /opt/manor/worker/butler-executor.mjs \
+    && chmod 755 /usr/local/bin/start-worker /usr/local/bin/gh-auth-headless /usr/local/bin/gh-headless-browser /usr/local/bin/worker-bootstrap-tools /usr/local/bin/manor-ownership-init /usr/local/bin/manor-harness /usr/local/bin/git /opt/manor/worker/worker-pi-rpc-bridge.mjs /opt/manor/worker/butler-executor.mjs \
     && chown -R worker:worker /home/worker/.oh-my-zsh /home/worker/.zshrc /home/worker/.zprofile \
     && rm -rf /tmp/* /var/tmp/*
 

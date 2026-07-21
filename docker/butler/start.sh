@@ -2,7 +2,28 @@
 
 set -euo pipefail
 
-mkdir -p "${PI_AGENT_DIR:-$HOME/.pi/agent}" /state /repos /artifacts
+ensure_writable_dir() {
+  local dir="$1"
+
+  if ! mkdir -p "${dir}" 2>/dev/null || [[ ! -w "${dir}" ]]; then
+    echo "Required directory is not writable by the Butler user: ${dir}" >&2
+    echo "Restart Manor so its managed volume ownership can be repaired." >&2
+    exit 70
+  fi
+}
+
+for dir in \
+  "${PI_AGENT_DIR:-$HOME/.pi/agent}" \
+  /state \
+  /artifacts \
+  "${WORKER_PI_AGENT_DIR:-/worker-pi/agent}" \
+  "${WORKER_PI_SESSION_ROOT:-/worker-pi/sessions}" \
+  "${MANOR_HARNESS_HOME:-/harness-state}" \
+  "${MANOR_SHARED_SKILLS_DIR:-/skills}" \
+  "${MANOR_BUTLER_SCRATCH_ROOT:-/scratch}" \
+  /inputs; do
+  ensure_writable_dir "${dir}"
+done
 
 /usr/local/bin/butler-auth bootstrap
 

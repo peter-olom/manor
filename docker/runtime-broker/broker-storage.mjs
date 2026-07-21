@@ -27,8 +27,7 @@ async function prepareWorkspaceOutputSubpath(outputSubpath) {
   const outputExec = await workspaceContainer.exec({
     AttachStdout: true,
     AttachStderr: true,
-    Cmd: ["sh", "-c", `mkdir -p /outputs/${outputSubpath} && chmod 0777 /outputs/${outputSubpath}`],
-    User: "0",
+    Cmd: ["mkdir", "-p", `/outputs/${outputSubpath}`],
     Tty: false
   });
   const outputResult = await collectExecOutput(workspaceContainer, outputExec);

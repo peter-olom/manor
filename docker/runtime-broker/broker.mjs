@@ -165,6 +165,7 @@ const {
   persistArtifactFiles,
   persistVerificationArtifacts,
   resolveWorkspaceMounts,
+  resolveWorkspaceUser,
   previewEgressProfiles,
   reconcileManagedRuntimeState,
   rejectIfLeaseRetainedFailed,
@@ -920,6 +921,7 @@ app.post("/leases", async (request, response) => {
       readOnly: true,
       outputSubpath: lease.threadId || lease.id
     });
+    const workspaceUser = await resolveWorkspaceUser();
     const sourceWorktreePath = lease.worktreePath;
     const runtimeWorktreePath = `/tmp/manor-preview-workspaces/${lease.id}`;
     const runtimeCommand = buildSnapshotWorkspaceCommand(sourceWorktreePath, runtimeWorktreePath, lease.command);
@@ -927,6 +929,7 @@ app.post("/leases", async (request, response) => {
     const runtimeContainer = await docker.createContainer({
       Image: lease.image,
       name: lease.containerName,
+      User: workspaceUser,
       Cmd: buildShellCommand(runtimeCommand),
       WorkingDir: runtimeWorktreePath,
       Env: envVars,
@@ -944,7 +947,7 @@ app.post("/leases", async (request, response) => {
         "manor.worktree-source-path": sourceWorktreePath,
         "manor.worktree-runtime-path": runtimeWorktreePath,
         "manor.workspace-mode": "snapshot",
-        "manor.workspace-user": "",
+        "manor.workspace-user": workspaceUser,
         "manor.target-port": String(lease.targetPort),
         "manor.public-port": "",
         "manor.public-url": "",

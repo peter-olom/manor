@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "Worker must run as the non-root worker user." >&2
+  exit 70
+fi
+
 ensure_writable_dir() {
   local dir="$1"
 
