@@ -426,9 +426,9 @@ app.get("/api/shell", (_request, response) => {
 registerDeviceAuthRoutes(app, {
   butlerPiAgentDir: piAgentDir,
   workerPiAgentDir,
-  onAuthChanged: (target) => {
-    if (target === "worker") void piRpcWorkerClient.refreshModels();
-    else void butlerAgent.refreshModelSettings();
+  onAuthChanged: async (target) => {
+    if (target === "worker") { await piRpcWorkerClient.refreshAuth(); return; }
+    await Promise.all([butlerAgent.refreshModelSettings(), pairSessions.refreshModelSettings()]);
   }
 }); registerSkillsRoutes(app, skillsService, { onMutation: () => { void butlerAgent.reloadResources().catch((error) => console.error("Butler skill reload failed", error)); pairSessions.scheduleButlerSkillsReload(); } });
 
@@ -484,7 +484,7 @@ registerPreviewAnnotationRoutes({
 });
 registerPairRoutes({ app, pairSessions });
 registerExtensionUiRoutes({ app, pairStore, broker: extensionUiBroker }); registerWorkerSessionControlRoutes({ app, pairStore, piRpcWorkerClient, compactions: workerCompactions }); registerButlerSessionControlRoutes({ app, pairSessions });
-registerManorSettingsRoutes({ app, settingsService, store, piRpcWorkerClient, butlerAgent, onSettingsChanged: applyManagedSettingsChange, refreshModelInventories: () => modelInventoryRefresh.request() });
+registerManorSettingsRoutes({ app, settingsService, store, piRpcWorkerClient, butlerAgent, modelTasks, onSettingsChanged: applyManagedSettingsChange, refreshModelInventories: () => modelInventoryRefresh.request() });
 registerRuntimeEgressRoutes({ app, client: runtimeEgress, operatorGatewayHost: process.env.MANOR_OPERATOR_GATEWAY_HOST ?? "butler-gateway" });
 registerModelUsageRoutes(app, modelUsageStore);
 registerSelfImprovementRoutes({

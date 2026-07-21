@@ -130,6 +130,53 @@ test("Butler and Worker device auth cannot compete for the shared callback port"
   assert.match((await workerResponse.json() as { error: string }).error, /active Butler sign-in/);
 });
 
+test("remote device auth accepts the final localhost callback through the API", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-device-auth-complete-"));
+  const butlerPiAgentDir = path.join(root, "butler");
+  const loginScript = path.join(root, "login.mjs");
+  const receivedPath = path.join(root, "received.txt");
+  await writeFile(loginScript, `
+    import { writeFile } from "node:fs/promises";
+    import { createInterface } from "node:readline/promises";
+    console.log("https://auth.openai.com/oauth/authorize?state=remote-test");
+    const input = createInterface({ input: process.stdin, output: process.stdout });
+    const callback = await input.question("> ");
+    input.close();
+    await writeFile(${JSON.stringify(receivedPath)}, callback, "utf8");
+  `, "utf8");
+
+  const changed: string[] = [];
+  const app = express();
+  app.use(express.json());
+  registerDeviceAuthRoutes(app, {
+    butlerPiAgentDir,
+    workerPiAgentDir: path.join(root, "worker"),
+    authCommand: process.execPath,
+    authCommandArgs: [loginScript],
+    authCompletionTimeoutMs: 25,
+    onAuthChanged: async (target) => {
+      changed.push(target);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  t.after(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const port = (server.address() as AddressInfo).port;
+
+  const startResponse = await fetch(`http://127.0.0.1:${port}/api/auth/butler/device`, { method: "POST" });
+  assert.equal(startResponse.status, 200);
+  const callbackUrl = "http://localhost:1455/auth/callback?code=remote-code&state=remote-test";
+  const completionResponse = await fetch(`http://127.0.0.1:${port}/api/auth/butler/device/complete`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ authorizationInput: callbackUrl })
+  });
+  assert.equal(completionResponse.status, 200);
+  assert.equal(await readFile(receivedPath, "utf8"), callbackUrl);
+  assert.deepEqual(changed, ["butler"]);
+});
+
 test("a device auth URL timeout terminates and clears the login process", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "manor-device-auth-timeout-"));
   const loginScript = path.join(root, "login.mjs");
@@ -150,4 +197,44 @@ test("a device auth URL timeout terminates and clears the login process", async 
   assert.equal((await fetch(`http://127.0.0.1:${port}/api/auth/butler/device`, { method: "POST" })).status, 500);
   await new Promise((resolve) => setTimeout(resolve, 25));
   assert.equal((await fetch(`http://127.0.0.1:${port}/api/auth/worker/device`, { method: "POST" })).status, 500);
+});
+
+test("a remote auth completion timeout clears the process so sign-in can restart", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-device-auth-completion-timeout-"));
+  const loginScript = path.join(root, "login.mjs");
+  await writeFile(loginScript, `
+    import { createInterface } from "node:readline/promises";
+    console.log("https://auth.openai.com/oauth/authorize?state=timeout-test");
+    const input = createInterface({ input: process.stdin, output: process.stdout });
+    await input.question("> ");
+    await new Promise(() => {});
+  `, "utf8");
+  const app = express();
+  app.use(express.json());
+  registerDeviceAuthRoutes(app, {
+    butlerPiAgentDir: path.join(root, "butler"),
+    workerPiAgentDir: path.join(root, "worker"),
+    authCommand: process.execPath,
+    authCommandArgs: [loginScript],
+    authCompletionTimeoutMs: 25
+  });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  t.after(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const port = (server.address() as AddressInfo).port;
+
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/auth/butler/device`, { method: "POST" })).status, 200);
+  const completion = await fetch(`http://127.0.0.1:${port}/api/auth/butler/device/complete`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ authorizationInput: "http://localhost:1455/auth/callback?code=timeout" })
+  });
+  assert.equal(completion.status, 500);
+  assert.match((await completion.json() as { error: string }).error, /Timed out completing sign-in/);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/auth/butler/device`, { method: "POST" })).status, 200);
+  await fetch(`http://127.0.0.1:${port}/api/auth/butler/device/complete`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ authorizationInput: "cleanup" })
+  });
 });

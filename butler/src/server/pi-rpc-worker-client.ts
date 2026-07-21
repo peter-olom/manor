@@ -136,6 +136,8 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
   private readonly startingSessions = new Set<string>();
   private readonly lastRuntimeActivityAt = new Map<string, number>();
   private readonly transportDeadThreadIds = new Set<string>();
+  private readonly authRefreshPendingThreadIds = new Set<string>();
+  private readonly authRefreshes = new Map<string, Promise<boolean>>();
   private readonly retryWaits = new Map<string, string>();
   private pendingTransportStateSave: Promise<void> = Promise.resolve();
   private availableModels: ModelOption[] = [];
@@ -222,6 +224,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     session.pendingPromptGenerations = [];
     session.unsubscribe?.();
     this.sessions.delete(session.threadId);
+    this.authRefreshPendingThreadIds.delete(session.threadId);
     let stopError: unknown;
     try {
       await session.client.stop();
@@ -269,6 +272,37 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
 
   async refreshModels(): Promise<void> {
     await this.loadModels();
+  }
+
+  async refreshAuth(): Promise<void> {
+    await this.loadModels();
+    const sessions = [...this.sessions.values()];
+    for (const session of sessions) this.authRefreshPendingThreadIds.add(session.threadId);
+    await Promise.all(sessions.map((session) => this.refreshSessionAuth(session.threadId, false)));
+  }
+
+  private refreshSessionAuth(threadId: string, requireIdle: boolean): Promise<boolean> {
+    const existing = this.authRefreshes.get(threadId);
+    if (existing) return existing;
+    const refresh = (async () => {
+      const session = this.sessions.get(threadId);
+      if (!session) {
+        this.authRefreshPendingThreadIds.delete(threadId);
+        return true;
+      }
+      const state = await session.client.getState().catch(() => null);
+      if (!state || state.isStreaming || state.isCompacting) {
+        if (requireIdle) throw new Error("Worker authentication changed while this job is busy. Wait for the current operation to finish, then try again.");
+        return false;
+      }
+      await this.restartSessionForModelContext(session);
+      this.authRefreshPendingThreadIds.delete(threadId);
+      return true;
+    })().finally(() => {
+      if (this.authRefreshes.get(threadId) === refresh) this.authRefreshes.delete(threadId);
+    });
+    this.authRefreshes.set(threadId, refresh);
+    return refresh;
   }
 
   async getAuthStatus(): Promise<ButlerAuthStatus> {
@@ -592,6 +626,12 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     this.assertSendNotAborted(threadId, options.signal);
     let session = this.sessions.get(threadId);
     if (!session) throw new Error("Pi RPC worker thread is not loaded");
+    if (this.authRefreshPendingThreadIds.has(threadId)) {
+      const refreshed = await this.refreshSessionAuth(threadId, true);
+      if (!refreshed) await this.refreshSessionAuth(threadId, true);
+      session = this.sessions.get(threadId);
+      if (!session) throw new Error("Pi RPC worker thread is not loaded after its authentication refresh");
+    }
     let preflightGeneration = session.activityVersion;
     const resolvedInput = await resolvePiWorkerInput(input);
     this.assertSendNotAborted(threadId, options.signal);
@@ -690,6 +730,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     if (this.deletingSessions.has(threadId)) {
       session.unsubscribe?.();
       this.sessions.delete(threadId);
+      this.authRefreshPendingThreadIds.delete(threadId);
       await session.client.stop().catch(() => undefined);
       throw new Error(`Pi RPC worker job ${threadId} was deleted while it was resuming`);
     }
@@ -781,6 +822,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
       session.unsubscribe?.();
       await session.client.stop().catch(() => undefined);
       this.sessions.delete(threadId);
+      this.authRefreshPendingThreadIds.delete(threadId);
       await this.removeSessionDirectory(threadId);
       this.emit("change");
       return true;
@@ -948,6 +990,7 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     };
     session.unsubscribe = client.onEvent(listener);
     this.sessions.set(threadId, session);
+    this.authRefreshPendingThreadIds.delete(threadId);
     this.transportDeadThreadIds.delete(threadId);
     this.retryWaits.delete(threadId);
     return session;

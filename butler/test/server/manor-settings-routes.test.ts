@@ -94,6 +94,100 @@ test("settings exposes only authenticated provider models for background tasks, 
   }
 });
 
+test("Butler auth check sends hi through the explicit OpenAI Pi model without using chat history", async () => {
+  const settings = getActiveManorSettings();
+  const openAiModel = model("openai-codex/gpt-5.4", "openai-codex");
+  const otherModel = model("ollama-cloud/glm-5.2", "ollama-cloud");
+  const calls: Array<Record<string, unknown>> = [];
+  let fail = false;
+  const app = express();
+  app.use(express.json());
+  registerManorSettingsRoutes({
+    app,
+    settingsService: {
+      getSettings: () => settings,
+      getProvenance: () => ({}),
+      getValidation: () => ({})
+    },
+    store: {},
+    piRpcWorkerClient: { getConnectionState: () => ({ lastError: null, compose: { availableModels: [] } }) },
+    butlerAgent: {
+      getButlerAuthStatus: () => ({ loggedIn: true }),
+      getShellSnapshot: () => ({
+        compose: {
+          provider: "ollama-cloud",
+          model: otherModel.id,
+          availableModels: [otherModel, openAiModel]
+        }
+      })
+    },
+    modelTasks: {
+      runText: async (input: Record<string, unknown>) => {
+        calls.push(input);
+        if (fail) throw new Error("401 unauthorized Bearer supersecretcredential");
+        return "Hello";
+      }
+    },
+    onSettingsChanged: async () => undefined
+  } as never);
+
+  const server = await listen(app);
+  try {
+    const successResponse = await fetch(`${server.url}/api/settings/auth/butler/check`, { method: "POST" });
+    const success = await successResponse.json() as { ok: boolean; message: string; checkedAt: number };
+    assert.equal(success.ok, true);
+    assert.equal(success.message, "Authentication is working.");
+    assert.equal(typeof success.checkedAt, "number");
+    assert.deepEqual(calls[0], {
+      purpose: "Butler authentication check",
+      prompt: "hi",
+      systemPrompt: "Reply briefly. This is an authentication check.",
+      timeoutMs: 30_000,
+      model: openAiModel.id,
+      allowWebTools: false
+    });
+
+    fail = true;
+    const failureResponse = await fetch(`${server.url}/api/settings/auth/butler/check`, { method: "POST" });
+    const failure = await failureResponse.json() as { ok: boolean; message: string };
+    assert.equal(failure.ok, false);
+    assert.match(failure.message, /unauthorized/i);
+    assert.doesNotMatch(failure.message, /supersecretcredential/);
+  } finally {
+    await server.close();
+  }
+});
+
+test("Butler auth check trusts a working API-key OpenAI transport over stale sign-in status", async () => {
+  const settings = getActiveManorSettings();
+  const openAiModel = model("openai/gpt-5.4", "openai");
+  const calls: Array<Record<string, unknown>> = [];
+  const app = express();
+  app.use(express.json());
+  registerManorSettingsRoutes({
+    app,
+    settingsService: { getSettings: () => settings, getProvenance: () => ({}), getValidation: () => ({}) },
+    store: {},
+    piRpcWorkerClient: { getConnectionState: () => ({ lastError: null, compose: { availableModels: [] } }) },
+    butlerAgent: {
+      getButlerAuthStatus: () => ({ loggedIn: false }),
+      getShellSnapshot: () => ({ compose: { provider: "openai", model: openAiModel.id, availableModels: [openAiModel] } })
+    },
+    modelTasks: { runText: async (input: Record<string, unknown>) => { calls.push(input); return "Hello"; } },
+    onSettingsChanged: async () => undefined
+  } as never);
+
+  const server = await listen(app);
+  try {
+    const response = await fetch(`${server.url}/api/settings/auth/butler/check`, { method: "POST" });
+    const result = await response.json() as { ok: boolean };
+    assert.equal(result.ok, true);
+    assert.equal(calls[0]?.model, openAiModel.id);
+  } finally {
+    await server.close();
+  }
+});
+
 test("settings diagnostics validates Ollama Cloud using discovered models", async (t) => {
   clearOllamaCloudModelsCache();
   const settings = getActiveManorSettings({

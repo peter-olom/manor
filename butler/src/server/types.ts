@@ -1320,6 +1320,7 @@ export interface ButlerAuthStatus {
   loggedIn: boolean;
   validationError: string | null;
   lastValidatedAt: number | null;
+  credentialRevision?: string | null;
 }
 
 export interface ButlerContextUsageView {

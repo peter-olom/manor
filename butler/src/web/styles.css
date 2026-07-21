@@ -7712,6 +7712,12 @@ a:hover {
   color: var(--danger);
 }
 
+.settings-error svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
 /* Capability status cards */
 .settings-capability-grid {
   display: grid;
@@ -7805,6 +7811,20 @@ a:hover {
   margin-bottom: 8px;
 }
 
+.settings-auth-check {
+  margin: -2px 0 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.settings-auth-check.is-ok {
+  color: var(--success);
+}
+
+.settings-auth-check.is-failed {
+  color: var(--danger);
+}
+
 .settings-auth-pending {
   display: flex;
   align-items: center;
@@ -7821,6 +7841,23 @@ a:hover {
 .settings-auth-pending a {
   color: var(--accent);
   text-decoration: underline;
+}
+
+.settings-auth-completion {
+  display: flex;
+  flex: 1 1 100%;
+  gap: 8px;
+}
+
+.settings-auth-completion input {
+  min-width: 0;
+  flex: 1;
+}
+
+@media (max-width: 640px) {
+  .settings-auth-completion {
+    flex-direction: column;
+  }
 }
 
 .settings-model-list {

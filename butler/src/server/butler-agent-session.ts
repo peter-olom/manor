@@ -1028,7 +1028,11 @@ async function queueButlerPrompt(
     let ok = true;
     try {
       const nextAuth = await readButlerAuthStatus(access.piAuthPath);
-      if (nextAuth.mode !== access.auth.mode || nextAuth.loggedIn !== access.auth.loggedIn) {
+      if (
+        nextAuth.mode !== access.auth.mode ||
+        nextAuth.loggedIn !== access.auth.loggedIn ||
+        nextAuth.credentialRevision !== access.auth.credentialRevision
+      ) {
         access.auth = nextAuth;
         access.modelRegistry = await createManorModelRegistry(access.piAuthPath, process.env, {
           preferredModelRef: access.getButlerDefaults?.()?.model

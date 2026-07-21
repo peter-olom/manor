@@ -20,6 +20,7 @@ import { assertOllamaLocalBaseUrl, fetchOllamaLocalModels, nativeOllamaBaseUrl, 
 import { fetchOllamaCloudModelsCached } from "./ollama-cloud-models.js";
 import { fetchOpencodeGoModelsCached } from "./opencode-go-models.js";
 import { formatProviderModelRef } from "./model-provider-config.js";
+import type { ModelTaskRunner } from "./model-task-runner.js";
 
 type SettingsRouteAccess = {
   app: Express;
@@ -27,8 +28,15 @@ type SettingsRouteAccess = {
   store: ButlerStateStore;
   piRpcWorkerClient: PiRpcWorkerClient;
   butlerAgent: ButlerAgentService;
+  modelTasks: ModelTaskRunner;
   onSettingsChanged: () => Promise<void>;
   refreshModelInventories?: () => void;
+};
+
+type ButlerAuthCheckResult = {
+  ok: boolean;
+  message: string;
+  checkedAt: number;
 };
 
 const VALIDATION_KEYS: SettingsValidationKey[] = [
@@ -194,6 +202,29 @@ async function runValidation(access: SettingsRouteAccess, target: SettingsValida
     return await validateEmbeddingHost(settings);
   } catch (error) {
     return result("failed", redactMessage(error));
+  }
+}
+
+async function checkButlerAuth(access: SettingsRouteAccess): Promise<ButlerAuthCheckResult> {
+  const checkedAt = Date.now();
+  try {
+    const compose = access.butlerAgent.getShellSnapshot().compose;
+    const current = compose.availableModels.find((model) => model.id === compose.model);
+    const model = [current, ...compose.availableModels].find((entry) => entry && (entry.provider === "openai-codex" || entry.provider === "openai"));
+    if (!model) return { ok: false, message: "No authenticated OpenAI model is available for Butler.", checkedAt };
+    const reply = await access.modelTasks.runText({
+      purpose: "Butler authentication check",
+      prompt: "hi",
+      systemPrompt: "Reply briefly. This is an authentication check.",
+      timeoutMs: 30_000,
+      model: model.id,
+      allowWebTools: false
+    });
+    return reply.trim()
+      ? { ok: true, message: "Authentication is working.", checkedAt }
+      : { ok: false, message: "Butler returned an empty response.", checkedAt };
+  } catch (error) {
+    return { ok: false, message: redactMessage(error), checkedAt };
   }
 }
 
@@ -398,6 +429,7 @@ async function streamOllamaLocalPull(access: SettingsRouteAccess, model: string,
 }
 
 export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
+  let activeButlerAuthCheck: Promise<ButlerAuthCheckResult> | null = null;
   access.app.get("/api/settings", async (_request, response) => {
     response.json(await settingsPayload(access));
   });
@@ -449,6 +481,16 @@ export function registerManorSettingsRoutes(access: SettingsRouteAccess): void {
     }
     if (shouldRefreshModels) access.refreshModelInventories?.();
     response.json(await settingsPayload(access));
+  });
+
+  access.app.post("/api/settings/auth/butler/check", async (_request, response) => {
+    if (!activeButlerAuthCheck) {
+      const check = checkButlerAuth(access).finally(() => {
+        if (activeButlerAuthCheck === check) activeButlerAuthCheck = null;
+      });
+      activeButlerAuthCheck = check;
+    }
+    response.json(await activeButlerAuthCheck);
   });
 
   access.app.get("/api/settings/providers/ollama-cloud/models", async (_request, response) => {

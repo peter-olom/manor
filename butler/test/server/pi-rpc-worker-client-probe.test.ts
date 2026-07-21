@@ -20,11 +20,85 @@ type ProbeClient = {
   handleSessionEvent: (session: never, event: Record<string, unknown>) => void;
 };
 
+type AuthRefreshSession = {
+  threadId: string;
+  client: { getState: () => Promise<{ isStreaming: boolean; isCompacting: boolean }> };
+};
+
+type AuthRefreshClient = {
+  sessions: Map<string, AuthRefreshSession>;
+  authRefreshPendingThreadIds: Set<string>;
+  loadModels: () => Promise<void>;
+  restartSessionForModelContext: (session: AuthRefreshSession) => Promise<AuthRefreshSession>;
+  refreshSessionAuth: (threadId: string, requireIdle: boolean) => Promise<boolean>;
+  refreshAuth: () => Promise<void>;
+};
+
 async function createStore(dir: string): Promise<ButlerStateStore> {
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   await store.load();
   return store;
 }
+
+test("Worker authentication refresh restarts idle sessions and defers busy sessions", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-auth-refresh-"));
+  try {
+    const implementation = new PiRpcWorkerClient({
+      store: await createStore(dir),
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions")
+    }) as unknown as AuthRefreshClient;
+    const idle = { threadId: "idle", client: { getState: async () => ({ isStreaming: false, isCompacting: false }) } };
+    const busy = { threadId: "busy", client: { getState: async () => ({ isStreaming: true, isCompacting: false }) } };
+    implementation.sessions.set(idle.threadId, idle);
+    implementation.sessions.set(busy.threadId, busy);
+    implementation.loadModels = async () => undefined;
+    const restarted: string[] = [];
+    implementation.restartSessionForModelContext = async (session) => {
+      restarted.push(session.threadId);
+      return session;
+    };
+
+    await implementation.refreshAuth();
+
+    assert.deepEqual(restarted, ["idle"]);
+    assert.equal(implementation.authRefreshPendingThreadIds.has("idle"), false);
+    assert.equal(implementation.authRefreshPendingThreadIds.has("busy"), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("concurrent Worker authentication refreshes share one session restart", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-auth-refresh-race-"));
+  try {
+    const implementation = new PiRpcWorkerClient({
+      store: await createStore(dir),
+      piAuthPath: path.join(dir, "auth.json"),
+      sessionRootDir: path.join(dir, "sessions")
+    }) as unknown as AuthRefreshClient;
+    const session = { threadId: "thread", client: { getState: async () => ({ isStreaming: false, isCompacting: false }) } };
+    implementation.sessions.set(session.threadId, session);
+    implementation.authRefreshPendingThreadIds.add(session.threadId);
+    let releaseRestart = (): void => {};
+    const restartGate = new Promise<void>((resolve) => { releaseRestart = resolve; });
+    let restarts = 0;
+    implementation.restartSessionForModelContext = async (current) => {
+      restarts += 1;
+      await restartGate;
+      return current;
+    };
+
+    const first = implementation.refreshSessionAuth(session.threadId, false);
+    const second = implementation.refreshSessionAuth(session.threadId, true);
+    assert.equal(first, second);
+    releaseRestart();
+    assert.deepEqual(await Promise.all([first, second]), [true, true]);
+    assert.equal(restarts, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("Pi Worker probes live RPC state without manufacturing runtime activity", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "manor-pi-probe-"));

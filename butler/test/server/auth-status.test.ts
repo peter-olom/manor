@@ -92,6 +92,25 @@ test("ChatGPT re-login writes through Pi auth storage without losing other provi
   assert.equal(saved["openai-codex"]?.refresh, "refresh-token");
 });
 
+test("auth status revision changes when stored credentials are replaced", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-auth-revision-"));
+  const authPath = path.join(root, "auth.json");
+  await writeFile(authPath, JSON.stringify(expiredOauthAuth()), "utf8");
+  const before = await readButlerAuthStatus(authPath);
+
+  await writeFile(authPath, JSON.stringify({
+    "openai-codex": {
+      ...expiredOauthAuth()["openai-codex"],
+      refresh: "replacement-refresh-token"
+    }
+  }), "utf8");
+  const after = await readButlerAuthStatus(authPath);
+
+  assert.ok(before.credentialRevision);
+  assert.ok(after.credentialRevision);
+  assert.notEqual(after.credentialRevision, before.credentialRevision);
+});
+
 test("butler-auth device pins the installed app directory from any working directory", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "manor-auth-device-"));
   const binDir = path.join(root, "bin");

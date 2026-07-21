@@ -631,6 +631,7 @@ export class ButlerAgentService extends EventEmitter {
     if (this.modelRefreshPromise) return this.modelRefreshPromise;
     if (this.pending || this.session?.isStreaming || this.session?.isCompacting) return false;
     const refresh = (async () => {
+      this.auth = await readButlerAuthStatus(this.piAuthPath);
       const registry = await createManorModelRegistry(this.piAuthPath, process.env, { preferredModelRef: this.getButlerDefaults()?.model }); if (this.quiescing) return false;
       this.modelRegistry = registry; this.toolCatalog = this.buildToolCatalog();
       await this.createOrRefreshSession(); if (this.quiescing) return false;

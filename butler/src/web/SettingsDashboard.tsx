@@ -7,7 +7,8 @@ import { WarningIcon } from "./icons";
 import { SkillsDashboard } from "./SkillsDashboard";
 import { RuntimeEgressDashboard } from "./RuntimeEgressDashboard";
 import { UsageDashboard } from "./UsageDashboard";
-import { authActionLabel, authUsageHint, formatAuthSummary, type AuthStatusView, type AuthTarget } from "./openai-auth-settings";
+import type { AuthStatusView, AuthTarget } from "./openai-auth-settings";
+import { OpenAiAuthSettings, type ButlerAuthCheckResult } from "./OpenAiAuthSettings";
 import {
   workerModelForRoute,
   workerModelForSelection,
@@ -24,7 +25,6 @@ import type {
   SettingsValidationMap
 } from "../shared/settings";
 import type { ActivityWatchdogDiagnostics, ActivityWatchdogSnapshot } from "../shared/activity-watchdog";
-
 type ModelOption = {
   id: string;
   label: string;
@@ -565,7 +565,7 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState<SettingsValidationKey | null>(null);
   const [validatingAll, setValidatingAll] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [watchdogDiagnostics, setWatchdogDiagnostics] = useState<ActivityWatchdogDiagnostics | null>(null);
   const [watchdogError, setWatchdogError] = useState<string | null>(null);
   const [providerTab, setProviderTab] = useState<"openai" | "ollamaLocal" | "ollama" | "opencode">(() => {
@@ -578,6 +578,8 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
   const [authUrl, setAuthUrl] = useState<string | null>(null);
   const [authTarget, setAuthTarget] = useState<"butler" | "worker" | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [butlerAuthChecking, setButlerAuthChecking] = useState(false);
+  const [butlerAuthCheck, setButlerAuthCheck] = useState<ButlerAuthCheckResult | null>(null);
   const [ollamaLocalModels, setOllamaLocalModels] = useState<{ id: string; contextWindow: number | null; capabilities?: string[] }[] | null>(null);
   const [ollamaLocalModelsLoading, setOllamaLocalModelsLoading] = useState(false);
   const [ollamaLocalModelsError, setOllamaLocalModelsError] = useState<string | null>(null);
@@ -608,7 +610,7 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
   }, []);
 
   useEffect(() => {
-    void load().catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
+    void load().catch((error) => setFeedback({ kind: "error", text: error instanceof Error ? error.message : String(error) }));
   }, [load]);
 
   useEffect(() => {
@@ -673,7 +675,7 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
   }, [payload, opencodeModels, opencodeModelsLoading]);
 
   const update = useCallback((mutate: (settings: ManorSettings) => void) => {
-    setMessage(null);
+    setFeedback(null);
     setDraft((current) => {
       if (!current) return current;
       const next = cloneSettings(current);
@@ -685,18 +687,18 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
   async function save() {
     if (!draft) return;
     if (!timezoneInputIsValid(draft.overview.operatorTimezone)) {
-      setMessage("Choose a valid operator timezone before saving.");
+      setFeedback({ kind: "error", text: "Choose a valid operator timezone before saving." });
       return;
     }
     setSaving(true);
-    setMessage(null);
+    setFeedback(null);
     try {
       const next = await patchJson<SettingsResponse>("/api/settings", draft);
       setPayload(next);
       setDraft(cloneSettings(next.settings));
-      setMessage("Saved");
+      setFeedback({ kind: "success", text: "Saved" });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      setFeedback({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       setSaving(false);
     }
@@ -705,14 +707,14 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
   async function reseed() {
     if (!window.confirm("Reset all Manor settings to their environment and built-in defaults?")) return;
     setSaving(true);
-    setMessage(null);
+    setFeedback(null);
     try {
       const next = await postJson<SettingsResponse>("/api/settings/reseed", {});
       setPayload(next);
       setDraft(cloneSettings(next.settings));
-      setMessage("Reset complete");
+      setFeedback({ kind: "success", text: "Reset complete" });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      setFeedback({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       setSaving(false);
     }
@@ -723,6 +725,7 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
     setAuthTarget(target);
     setAuthError(null);
     setAuthUrl(null);
+    if (target === "butler") setButlerAuthCheck(null);
     try {
       const result = await postJson<{ authUrl: string; startedAt: number }>(`/api/auth/${target}/device`, {});
       setAuthUrl(result.authUrl);
@@ -734,8 +737,26 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
     }
   }
 
+  async function completeAuth(authorizationInput: string) {
+    if (!authTarget) return;
+    setAuthError(null);
+    try {
+      await postJson<{ ok: true }>(`/api/auth/${authTarget}/device/complete`, {
+        authorizationInput
+      });
+      const next = await getJson<SettingsResponse>("/api/settings");
+      setPayload(next);
+      setDraft(cloneSettings(next.settings));
+      setAuthUrl(null);
+      setAuthTarget(null);
+      setButlerAuthCheck(null);
+      setFeedback({ kind: "success", text: `${authTarget === "worker" ? "Worker" : "Butler"} signed in.` });
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : String(error));
+    }
+  }
   async function refreshAuth() {
-    setMessage(null);
+    setFeedback(null);
     try {
       const next = await getJson<SettingsResponse>("/api/settings");
       setPayload(next);
@@ -743,9 +764,21 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
       setAuthUrl(null);
       setAuthTarget(null);
       setAuthError(null);
-      setMessage("Auth status refreshed.");
+      setButlerAuthCheck(null);
+      setFeedback({ kind: "success", text: "Auth status refreshed." });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      setFeedback({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  async function checkButlerAuth() {
+    setButlerAuthChecking(true);
+    setButlerAuthCheck(null);
+    try {
+      setButlerAuthCheck(await postJson<ButlerAuthCheckResult>("/api/settings/auth/butler/check", {}));
+    } catch (error) {
+      setButlerAuthCheck({ ok: false, message: error instanceof Error ? error.message : String(error), checkedAt: Date.now() });
+    } finally {
+      setButlerAuthChecking(false);
     }
   }
 
@@ -872,12 +905,12 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
 
   async function validate(target: SettingsValidationKey) {
     setValidating(target);
-    setMessage(null);
+    setFeedback(null);
     try {
       const next = await postJson<SettingsResponse>("/api/settings/validate", { target });
       setPayload(next);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      setFeedback({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       setValidating(null);
     }
@@ -885,14 +918,14 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
 
   async function validateAll() {
     setValidatingAll(true);
-    setMessage(null);
+    setFeedback(null);
     try {
       for (const target of VALIDATION_TARGETS) {
         const next = await postJson<SettingsResponse>("/api/settings/validate", { target });
         setPayload(next);
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      setFeedback({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       setValidatingAll(false);
     }
@@ -900,14 +933,14 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
 
   async function restoreGroup(group: SettingsGroupKey) {
     setSaving(true);
-    setMessage(null);
+    setFeedback(null);
     try {
       const next = await postJson<SettingsResponse>("/api/settings/restore-group", { group });
       setPayload(next);
       setDraft(cloneSettings(next.settings));
-      setMessage("Restored defaults");
+      setFeedback({ kind: "success", text: "Restored defaults" });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      setFeedback({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
       setSaving(false);
     }
@@ -920,13 +953,17 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
   const failingCount = validationEntries.filter((entry) => entry.result?.status === "failed").length;
   const okCount = validationEntries.filter((entry) => entry.result?.status === "ok").length;
   const unconfiguredCount = validationEntries.filter((entry) => entry.result?.status === "not_configured").length;
+  const successMessage = feedback?.kind === "success" ? feedback.text : null;
+  const errorMessage = feedback?.kind === "error" ? feedback.text : null;
 
   if (activeSection === "skills") return <SkillsDashboard active={active} />;
   if (activeSection === "usage") return <UsageDashboard active={active} />;
   if (!draft || !payload) {
     return (
       <div className="settings-page">
-        <div className="settings-empty">Loading settings...</div>
+        {errorMessage
+          ? <div className="settings-error settings-feedback" role="alert"><WarningIcon />{errorMessage}</div>
+          : <div className="settings-empty">Loading settings...</div>}
       </div>
     );
   }
@@ -941,8 +978,6 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
     return Boolean(availability?.enabled && availability.secretAvailable);
   }) ?? null;
 
-  const savedMessage = message === "Saved" || message === "Reset complete" ? message : null;
-  const errorMessage = message && !savedMessage ? message : null;
   const testing = validatingAll || Boolean(validating);
   const pullPercent = ollamaPullProgress ? Math.max(0, Math.min(100, (ollamaPullProgress.completed / ollamaPullProgress.total) * 100)) : null;
   const ollamaLocalPullEnabled = payload.settings.providers.ollamaLocal.enabled;
@@ -951,7 +986,7 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
     <>
       {extra}
       <span className="settings-save-status" aria-live="polite">
-        {dirty ? "Unsaved changes" : savedMessage ?? "All changes saved"}
+        {dirty ? "Unsaved changes" : successMessage ?? "All changes saved"}
       </span>
       <button className="button is-primary" type="button" onClick={save} disabled={saving || testing || !dirty || operatorTimezoneInvalid}>
         {saving ? "Saving..." : "Save changes"}
@@ -962,7 +997,7 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
   return (
     <div className="settings-page">
       <div className="settings-content">
-        {errorMessage ? <div className="settings-error settings-feedback"><WarningIcon />{errorMessage}</div> : null}
+        {errorMessage ? <div className="settings-error settings-feedback" role="alert"><WarningIcon />{errorMessage}</div> : null}
         {activeSection === "security" ? <Section id="security" title="Security" actions={settingsActions()}>
           <SubGroup
             title={GROUP_LABELS.security}
@@ -1014,33 +1049,11 @@ export function SettingsDashboard({ active, activeSection, pairId }: { active: b
 
           {providerTab === "openai" ? (
             <SubGroup title="OpenAI">
-              {authError ? <div className="settings-auth-error">{authError}</div> : null}
-              {authUrl ? (
-                <div className="settings-auth-pending">
-                  <span>Waiting for {authTarget === "worker" ? "Worker" : "Butler"} ChatGPT sign-in to complete…</span>
-                  <a href={authUrl} target="_blank" rel="noopener noreferrer">Open auth page again</a>
-                  <button className="button" type="button" onClick={() => void refreshAuth()}>I've signed in — refresh</button>
-                </div>
-              ) : null}
-              <Field label="Butler" hint={authUsageHint("butler", payload.openaiAuth.butler)}>
-                <input readOnly value={formatAuthSummary(payload.openaiAuth.butler)} />
-              </Field>
-              <div className="settings-auth-actions">
-                <button className={`button ${payload.openaiAuth.butler.loggedIn ? "" : "is-primary"}`} type="button" onClick={() => void startAuth("butler")} disabled={authPending}>
-                  {authPending && authTarget === "butler" ? "Starting…" : authActionLabel("butler", payload.openaiAuth.butler)}
-                </button>
-              </div>
-              <Field label="Worker" hint={authUsageHint("worker", payload.openaiAuth.worker)}>
-                <input readOnly value={formatAuthSummary(payload.openaiAuth.worker)} />
-              </Field>
-              <div className="settings-auth-actions">
-                <button className={`button ${payload.openaiAuth.worker.loggedIn ? "" : "is-primary"}`} type="button" onClick={() => void startAuth("worker")} disabled={authPending}>
-                  {authPending && authTarget === "worker" ? "Starting…" : authActionLabel("worker", payload.openaiAuth.worker)}
-                </button>
-              </div>
-              <Field label="Web tools" hint="Web search/fetch is built into ChatGPT — no separate config needed.">
-                <input readOnly value="Built into ChatGPT" />
-              </Field>
+              <OpenAiAuthSettings
+                auth={payload.openaiAuth} authError={authError} authUrl={authUrl} authTarget={authTarget} authPending={authPending}
+                butlerAuthChecking={butlerAuthChecking} butlerAuthCheck={butlerAuthCheck} onStartAuth={startAuth}
+                onCompleteAuth={completeAuth} onRefreshAuth={refreshAuth} onCheckButlerAuth={checkButlerAuth}
+              />
             </SubGroup>
           ) : null}
 

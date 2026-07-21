@@ -11,7 +11,14 @@ type AuthLoginSession = {
   authUrl: string | null;
   startedAt: number;
   output: string;
+  completion: Promise<AuthLoginCompletion>;
+  finishCompletion: (result: AuthLoginCompletion) => void;
+  manualInputSubmitted: boolean;
 };
+
+type AuthLoginCompletion =
+  | { ok: true }
+  | { ok: false; error: string };
 
 type AuthTarget = "butler" | "worker";
 
@@ -21,6 +28,8 @@ type AuthProcessIdentity = {
 };
 
 const defaultAuthLoginTimeoutMs = 15_000;
+const authCompletionTimeoutMs = 120_000;
+const maxAuthorizationInputLength = 8_192;
 
 class AuthLoginConflictError extends Error {}
 
@@ -53,6 +62,7 @@ export function registerDeviceAuthRoutes(
     authCommand?: string;
     authCommandArgs?: string[];
     authLoginTimeoutMs?: number;
+    authCompletionTimeoutMs?: number;
     onAuthChanged?: (target: AuthTarget) => void | Promise<void>;
   }
 ): void {
@@ -90,11 +100,24 @@ export function registerDeviceAuthRoutes(
       }
     });
 
+    let finishCompletion = (_result: AuthLoginCompletion): void => {};
+    const completion = new Promise<AuthLoginCompletion>((resolve) => {
+      let finished = false;
+      finishCompletion = (result) => {
+        if (finished) return;
+        finished = true;
+        resolve(result);
+      };
+    });
+
     const authSession: AuthLoginSession = {
       child,
       authUrl: null,
       startedAt: Date.now(),
-      output: ""
+      output: "",
+      completion,
+      finishCompletion,
+      manualInputSubmitted: false
     };
     setSession(target, authSession);
 
@@ -122,18 +145,22 @@ export function registerDeviceAuthRoutes(
       child.on("error", (error) => {
         clearTimeout(timeout);
         setSession(target, clearAuthLoginSession(sessionFor(target), child));
+        authSession.finishCompletion({ ok: false, error: error.message });
         reject(error);
       });
       child.on("exit", (code) => {
         clearTimeout(timeout);
         setSession(target, clearAuthLoginSession(sessionFor(target), child));
         if (code === 0) {
+          authSession.finishCompletion({ ok: true });
           void Promise.resolve(options.onAuthChanged?.(target)).catch((error) => {
             console.error(`${label} auth refresh failed`, error);
           });
           return;
         }
-        reject(new Error(`${label} auth exited with code ${code ?? "unknown"}. Open the ${label} terminal and run butler-auth device.`));
+        const error = new Error(`${label} auth exited with code ${code ?? "unknown"}. Start the sign-in again and use the latest callback URL.`);
+        authSession.finishCompletion({ ok: false, error: error.message });
+        reject(error);
       });
     });
   }
@@ -155,6 +182,59 @@ export function registerDeviceAuthRoutes(
           error: error instanceof Error ? error.message : String(error)
         });
       }
+    });
+
+    app.post(`/api/auth/${target}/device/complete`, async (request, response) => {
+      const authorizationInput = typeof request.body?.authorizationInput === "string"
+        ? request.body.authorizationInput.trim()
+        : "";
+      if (!authorizationInput || authorizationInput.length > maxAuthorizationInputLength) {
+        response.status(400).json({ error: "Paste the final localhost callback URL or authorization code from the current sign-in." });
+        return;
+      }
+
+      const session = sessionFor(target);
+      if (!session || !session.authUrl || !session.child.stdin.writable) {
+        response.status(409).json({ error: "No active sign-in is waiting for a callback. Start the sign-in again." });
+        return;
+      }
+      if (session.manualInputSubmitted) {
+        response.status(409).json({ error: "This sign-in callback has already been submitted." });
+        return;
+      }
+
+      session.manualInputSubmitted = true;
+      const writeError = await new Promise<Error | null>((resolve) => {
+        try {
+          session.child.stdin.write(`${authorizationInput}\n`, (error) => resolve(error ?? null));
+        } catch (error) {
+          resolve(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+      if (writeError) {
+        session.child.kill();
+        setSession(target, clearAuthLoginSession(sessionFor(target), session.child));
+        response.status(500).json({ error: `The sign-in process closed before it received the callback: ${writeError.message}` });
+        return;
+      }
+      let completionTimeout: ReturnType<typeof setTimeout> | null = null;
+      const completionTimeoutMessage = "Timed out completing sign-in. Start again and use the latest callback URL.";
+      const completion = await Promise.race<AuthLoginCompletion>([
+        session.completion,
+        new Promise((resolve) => {
+          completionTimeout = setTimeout(() => resolve({ ok: false, error: completionTimeoutMessage }), options.authCompletionTimeoutMs ?? authCompletionTimeoutMs);
+        })
+      ]);
+      if (completionTimeout) clearTimeout(completionTimeout);
+      if (!completion.ok) {
+        if (completion.error === completionTimeoutMessage) {
+          session.child.kill();
+          setSession(target, clearAuthLoginSession(sessionFor(target), session.child));
+        }
+        response.status(500).json({ error: completion.error });
+        return;
+      }
+      response.json({ ok: true });
     });
   }
 

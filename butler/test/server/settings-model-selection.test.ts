@@ -26,7 +26,8 @@ function auth(loggedIn: boolean): AuthStatusView {
 test("OpenAI settings leave refresh to Pi and make real usage the confirmation", () => {
   assert.equal(formatAuthSummary(auth(true)), "Signed in with ChatGPT");
   assert.match(authUsageHint("butler", auth(true)), /Pi refreshes this sign-in automatically/);
-  assert.match(authUsageHint("butler", auth(true)), /Send Butler a message/);
+  assert.match(authUsageHint("butler", auth(true)), /Use Check auth/);
+  assert.match(authUsageHint("butler", auth(true)), /background reply/);
   assert.match(authUsageHint("worker", auth(true)), /Start a Worker task/);
 });
 
