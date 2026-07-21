@@ -42,7 +42,7 @@ export const ADVERSARIAL_REVIEW_OUTPUT_SCHEMA = {
         required: ["severity", "findingSummary", "blocking", "linkedClaimIds"],
         properties: {
           severity: { type: "string", enum: ["info", "low", "medium", "high", "critical"] },
-          findingSummary: { type: "string", minLength: 1, maxLength: 600 },
+          findingSummary: { type: "string", minLength: 1 },
           blocking: { type: "boolean" },
           linkedClaimIds: { type: "array", maxItems: 20, items: { type: "string", maxLength: 100 } }
         }
@@ -55,7 +55,7 @@ const REVIEW_SEVERITIES = new Set(["info", "low", "medium", "high", "critical"])
 const PI_REVIEW_SUBMISSION_SCHEMA = Type.Object({
   findings: Type.Array(Type.Object({
     severity: Type.Union([Type.Literal("info"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
-    findingSummary: Type.String({ minLength: 1, maxLength: 600 }),
+    findingSummary: Type.String({ minLength: 1 }),
     blocking: Type.Boolean(),
     linkedClaimIds: Type.Array(Type.String({ maxLength: 100 }), { maxItems: 20 })
   }, { additionalProperties: false }), { maxItems: 12 })
@@ -142,7 +142,7 @@ export function validateAdversarialReviewOutput(raw: unknown): { findings: Array
     const keys = Object.keys(entry);
     if (keys.some((key) => !["severity", "findingSummary", "blocking", "linkedClaimIds"].includes(key))) throw new Error("Adversarial reviewer returned unsupported finding fields.");
     if (typeof entry.severity !== "string" || !REVIEW_SEVERITIES.has(entry.severity)) throw new Error("Adversarial reviewer returned an invalid finding severity.");
-    if (typeof entry.findingSummary !== "string" || !entry.findingSummary.trim() || entry.findingSummary.length > 600) throw new Error("Adversarial reviewer returned an invalid finding summary.");
+    if (typeof entry.findingSummary !== "string" || !entry.findingSummary.trim()) throw new Error("Adversarial reviewer returned an invalid finding summary.");
     if (typeof entry.blocking !== "boolean") throw new Error("Adversarial reviewer returned an invalid blocking value.");
     if (!Array.isArray(entry.linkedClaimIds) || entry.linkedClaimIds.length > 20 || entry.linkedClaimIds.some((id) => typeof id !== "string" || id.length > 100)) throw new Error("Adversarial reviewer returned invalid linked claim ids.");
   }

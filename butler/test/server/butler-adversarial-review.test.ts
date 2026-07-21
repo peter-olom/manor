@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { assertPiReviewerPromptSucceeded, buildAdversarialReviewPrompt, createPiReviewSubmissionTool, ensureButlerAdversarialReview, validateAdversarialReviewOutput, waitForPiReviewSubmission } from "../../src/server/butler-adversarial-review.js";
+import { ADVERSARIAL_REVIEW_OUTPUT_SCHEMA, assertPiReviewerPromptSucceeded, buildAdversarialReviewPrompt, createPiReviewSubmissionTool, ensureButlerAdversarialReview, validateAdversarialReviewOutput, waitForPiReviewSubmission } from "../../src/server/butler-adversarial-review.js";
 import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
-import { getOrchestrationCloseoutBlocker } from "../../src/server/butler-orchestration.js";
+import { getOrchestrationCloseoutBlocker, normalizeWorkerReviewResults } from "../../src/server/butler-orchestration.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
 
@@ -179,6 +179,28 @@ test("adversarial review rejects malformed clean-looking output", () => {
   assert.throws(() => validateAdversarialReviewOutput({ findings: [], error: "review failed" }), /unsupported root fields/);
   assert.throws(() => validateAdversarialReviewOutput({ findings: [{ severity: "high", findingSummary: "Missing proof", blocking: true }] }), /linked claim ids/);
   assert.deepEqual(validateAdversarialReviewOutput({ findings: [] }), { findings: [] });
+});
+
+test("adversarial review accepts findings without an arbitrary character cap", async () => {
+  const findingSummary = "Detailed actionable review evidence. ".repeat(40).trim();
+  const finding = { severity: "high", findingSummary, blocking: true, linkedClaimIds: ["claim-1"] };
+  const outputSchemaFinding = ADVERSARIAL_REVIEW_OUTPUT_SCHEMA.properties.findings.items.properties.findingSummary;
+  assert.equal("maxLength" in outputSchemaFinding, false);
+
+  let submitted: ReturnType<typeof validateAdversarialReviewOutput> | null = null;
+  const tool = createPiReviewSubmissionTool((review) => { submitted = review; });
+  const piFindingSchema = tool.parameters.properties.findings.items.properties.findingSummary;
+  assert.equal("maxLength" in piFindingSchema, false);
+  await tool.execute("call-long", { findings: [finding] });
+
+  assert.equal(submitted?.findings[0]?.findingSummary, findingSummary);
+  assert.equal(validateAdversarialReviewOutput({ findings: [finding] }).findings[0]?.findingSummary, findingSummary);
+  assert.equal(normalizeWorkerReviewResults({
+    raw: { findings: [finding] },
+    threadId: "thread-long",
+    turnId: "turn-long",
+    reportUpdatedAt: 1
+  })[0]?.findingSummary, findingSummary);
 });
 
 test("Pi adversarial review submission tool captures only schema-valid findings", async () => {

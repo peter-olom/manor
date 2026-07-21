@@ -35,8 +35,13 @@ const RISK_LEVELS = new Set<string>(["low", "medium", "high", "critical"]);
 const CLAIM_STATUSES = new Set<string>(["completed", "partial", "blocked"]);
 const REVIEW_SEVERITIES = new Set<string>(["info", "low", "medium", "high", "critical"]);
 
-function text(value: unknown, maxLength: number): string | null {
+function normalizedText(value: unknown): string | null {
   const normalized = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  return normalized || null;
+}
+
+function text(value: unknown, maxLength: number): string | null {
+  const normalized = normalizedText(value);
   if (!normalized) return null;
   return normalized.length > maxLength ? normalized.slice(0, maxLength - 1).trimEnd() : normalized;
 }
@@ -51,6 +56,14 @@ function stringList(value: unknown, maxItems: number, maxLength: number): string
 function readRecordString(record: Record<string, unknown>, ...keys: string[]): string | null {
   for (const key of keys) {
     const value = text(record[key], 1200);
+    if (value) return value;
+  }
+  return null;
+}
+
+function readRecordStringWithoutLimit(record: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = normalizedText(record[key]);
     if (value) return value;
   }
   return null;
@@ -229,7 +242,7 @@ export function normalizeWorkerReviewResults(input: {
     .map((entry, index): WorkerReviewResultRecordView | null => {
       if (!entry || typeof entry !== "object") return null;
       const item = entry as Record<string, unknown>;
-      const summary = readRecordString(item, "findingSummary", "finding_summary", "summary");
+      const summary = readRecordStringWithoutLimit(item, "findingSummary", "finding_summary", "summary");
       if (!summary) return null;
       const rawSeverity = text(item.severity, 40) ?? "medium";
       const severity = REVIEW_SEVERITIES.has(rawSeverity) ? (rawSeverity as WorkerReviewSeverity) : "medium";
