@@ -34,7 +34,7 @@ import { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import { registerScratchPadRoutes } from "./scratch-pad-routes.js"; import { registerSkillsRoutes } from "./skills-routes.js"; import { SkillsService } from "./skills-service.js"; import { ExtensionUiBroker } from "./extension-ui-broker.js"; import { registerExtensionUiRoutes } from "./extension-ui-routes.js"; import { registerWorkerSessionControlRoutes } from "./worker-session-control-routes.js"; import { registerButlerSessionControlRoutes } from "./butler-session-control-routes.js";
 import { WorkerCompactionSupervisor } from "./worker-compaction-supervisor.js";
 import { registerRuntimeResourceRoutes } from "./runtime-resource-routes.js";
-import { RuntimeEgressClient } from "./runtime-egress-client.js"; import { registerRuntimeEgressRoutes } from "./runtime-egress-routes.js";
+import { RuntimeEgressClient } from "./runtime-egress-client.js"; import { registerRuntimeEgressRoutes } from "./runtime-egress-routes.js"; import { buildManorSystemAwareness, type ManorSystemAwarenessReader } from "./manor-system-awareness.js";
 import { ScratchPadStore } from "./scratch-pad-store.js";
 import { registerServerAssetRoutes } from "./server-asset-routes.js";
 import { isBinaryUploadRequest, shouldParseJsonRequest } from "./upload-request.js";
@@ -133,8 +133,7 @@ await serviceTemplateRegistry.load();
 const { imageStore, fileStore, referenceMutations } = await loadReferenceStores({ artifactsDir, imageReferenceDir, fileReferenceDir });
 const runtimeBroker = new RuntimeBrokerClient(runtimeBrokerUrl, runtimeBrokerToken); const runtimeEgress = new RuntimeEgressClient(runtimeEgressAdminUrl, runtimeBrokerToken);
 const hostController = new HostControllerClient(hostControllerUrl, hostControllerToken);
-let runtimeAccess!: RuntimeServerAccess;
-let sseHub!: ButlerSseHub;
+let runtimeAccess!: RuntimeServerAccess; let sseHub!: ButlerSseHub;
 const selfImprovementRequests = new SelfImprovementRequestState(path.join(stateDir, "self-improvement-requests.json"), () => sseHub?.schedule(), (error) => console.error("Self-improvement queue save failed", error));
 await selfImprovementRequests.load();
 configureSelfImprovementRequestState(selfImprovementRequests);
@@ -142,8 +141,7 @@ const piAuthPath = path.join(piAgentDir, "auth.json"); const workerPiAuthPath = 
 const modelUsageStore = createModelUsageStore({ stateDir, butlerSessionRoots: [sessionDir, pairSessionDir], workerPiSessionRoot, piAuthPath });
 const modelTasks = new ManorModelTaskRunner({ stateDir, piAuthPath }); const visionInspection = new VisionInspectionService({ imageStore, piAuthPath });
 const contentAdmission = new ContentAdmissionReviewService(path.join(stateDir, "content-admission-reviews.json"), modelTasks, undefined, path.join(path.dirname(harnessRegistryPath), "content-admission-policy.json"));
-await contentAdmission.load();
-setActiveContentAdmissionReviewService(contentAdmission);
+await contentAdmission.load(); setActiveContentAdmissionReviewService(contentAdmission);
 const sessionTitleGenerator = new ManorSessionTitleGenerator({
   ...readSessionTitleConfig(),
   runner: async (input) => modelTasks.runText({ purpose: "session title", ...input })
@@ -163,7 +161,7 @@ store.setMemoryUpdateObserver(memoryScheduler); const harnessService = new Harne
   serviceTemplateRegistry,
   memoryReview,
   memoryScheduler,
-  visionInspection, contentAdmission, inputActionAccess: { fileStore, imageStore, referenceMutations, outputsDir: process.env.MANOR_OUTPUTS_DIR ?? "/outputs" }
+  visionInspection, contentAdmission, inputActionAccess: { fileStore, imageStore, referenceMutations, outputsDir: process.env.MANOR_OUTPUTS_DIR ?? "/outputs" }, readSystemAwareness: (section, context) => readSystemAwareness(section, context)
 });
 memoryReview.reviewPendingReportsAsync();
 memoryScheduler.start();
@@ -201,7 +199,8 @@ const skillsService = new SkillsService({
   return name ? `Refer to the operator as ${name}.` : null;
 }
 
-const butlerAgent = new ButlerAgentService({
+let butlerAgent!: ButlerAgentService; let pairSessions!: PairSessionManager; const readSystemAwareness: ManorSystemAwarenessReader = async (section, context) => { const pairContext = context?.butler === undefined && context?.workerThreadId ? await pairSessions?.getSystemAwarenessContextForWorker(context.workerThreadId) : null; return buildManorSystemAwareness({ settingsService, butlerAgent, piRpcWorkerClient, runtimeEgress, hostController, runtimeBroker, env: process.env }, section, pairContext ? { ...context, ...pairContext } : context); };
+butlerAgent = new ButlerAgentService({
   store,
   memoryScheduler,
   piRpcWorkerClient,
@@ -228,7 +227,8 @@ const butlerAgent = new ButlerAgentService({
     };
   },
   getWorkerAffinity: () => pairStore.getWorkerAffinity(),
-  recordSuccessfulWorkerSelection: (selection) => pairStore.recordSuccessfulWorkerSelection(selection)
+  recordSuccessfulWorkerSelection: (selection) => pairStore.recordSuccessfulWorkerSelection(selection),
+  readSystemAwareness
 });
 const workerCompactions = new WorkerCompactionSupervisor({
   client: piRpcWorkerClient,
@@ -236,7 +236,7 @@ const workerCompactions = new WorkerCompactionSupervisor({
   onChange: () => sseHub?.schedule()
 });
 piRpcWorkerClient.on("workerCompaction", (event) => workerCompactions.handleRuntimeEvent(event));
-const pairSessions = new PairSessionManager({
+pairSessions = new PairSessionManager({
   pairStore,
   store,
   piRpcWorkerClient,
@@ -254,8 +254,7 @@ const pairSessions = new PairSessionManager({
   sessionRootDir: pairSessionDir,
   artifactsDir,
   refreshRuntimeInventory: syncRuntimeInventory,
-  memoryScheduler,
-  sessionTitleGenerator,
+  memoryScheduler, readSystemAwareness, sessionTitleGenerator,
   ensureButlerExecutorCapability: async (threadId) => { await harnessService.ensureThreadCapability(threadId, process.env.MANOR_BUTLER_SCRATCH_ROOT ?? "/scratch"); },
   revokeButlerExecutorCapability: async (threadId) => { await harnessService.revokeThreadCapability(threadId); },
   onButlerPatch: (payload) => sseHub?.broadcastButlerPatch(payload), onWorkerThreadRefreshed: (threadId) => sseHub?.broadcastWorkerThreadRefreshed(threadId)

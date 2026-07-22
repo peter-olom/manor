@@ -709,6 +709,14 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     return this.availableModels.find((entry) => entry.id === session.model && entry.provider === session.provider) ?? null;
   }
 
+  getThreadModelIdentity(threadId: string): { provider: string | null; model: string | null } | null {
+    const session = this.sessions.get(threadId);
+    if (session) return { provider: session.provider, model: session.model };
+    const thread = this.options.store.getThread(threadId);
+    if (!thread) return null;
+    return { provider: thread.modelProvider, model: thread.modelId ?? null };
+  }
+
   async stopThread(threadId: string): Promise<boolean> {
     const session = this.sessions.get(threadId);
     if (!session) return false;

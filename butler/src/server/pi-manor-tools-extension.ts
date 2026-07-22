@@ -24,6 +24,28 @@ function callHarness(action: string, params: Record<string, unknown>, signal?: A
   return callManorHarness(action, params, process.env, fetch, signal);
 }
 
+const manorSystemInspectTool = defineTool({
+  name: "manor_system_inspect",
+  label: "Inspect Manor System",
+  description: "Read Manor's current secret-free system awareness without refreshing registries, validating credentials, changing settings, or mutating runtime state.",
+  parameters: Type.Object({
+    section: Type.Optional(piStringEnumSchema([
+      "overview",
+      "agents",
+      "providers",
+      "models",
+      "capabilities",
+      "security",
+      "services",
+      "configuration",
+      "all"
+    ] as const))
+  }),
+  async execute(_toolCallId, params, signal) {
+    return resultContent(await callHarness("system.awareness", { section: params.section ?? "overview" }, signal));
+  }
+});
+
 const previewStartTool = defineTool({
   name: "manor_preview_start",
   label: "Start Preview",
@@ -349,6 +371,7 @@ const reportTool = defineTool({
 });
 
 export const manorWorkerTools = [
+  manorSystemInspectTool,
   previewStartTool,
   previewWaitTool,
   previewInspectTool,

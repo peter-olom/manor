@@ -12,6 +12,7 @@ import type { ExtensionUiBroker } from "./extension-ui-broker.js";
 import type { SkillsService } from "./skills-service.js";
 import type { PairAutomation } from "../shared/pairing.js";
 import type { ButlerExecutorClient } from "./butler-executor-client.js";
+import type { ManorSystemAwarenessReader } from "./manor-system-awareness.js";
 
 export type ButlerDelegationAttachmentAcknowledgement = {
   attached: boolean;
@@ -87,4 +88,5 @@ export type ButlerAgentServiceOptions = {
   recordSuccessfulWorkerSelection?: (input: { harness: string; provider: string; model: string; effort?: string | null }) => unknown;
   extensionUiBroker?: ExtensionUiBroker | null;
   skillsService?: SkillsService | null;
+  readSystemAwareness?: ManorSystemAwarenessReader;
 };

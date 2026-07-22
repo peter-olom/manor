@@ -27,6 +27,42 @@ function createHarness(root: string, store: ButlerStateStore, harnessRegistryPat
   });
 }
 
+test("Worker system awareness uses the capability-authenticated read-only collector", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-awareness-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const stateDir = path.join(root, "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }), "utf8");
+  const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
+  await store.load();
+  store.upsertThreadSummary({ id: "worker-awareness", cwd: "/workspace", status: "active", source: "pi" });
+  let requestedSection: string | null = null;
+  let requestedThreadId: string | null = null;
+  const harness = new HarnessService({
+    stateDir,
+    artifactsDir: path.join(root, "artifacts"),
+    store,
+    runtimeBroker: { listStacks: async () => [] } as unknown as RuntimeBrokerClient,
+    serviceTemplateRegistry: { list: () => [], get: () => undefined } as unknown as ServiceTemplateRegistry,
+    readSystemAwareness: async (section = "overview", context) => {
+      requestedSection = section;
+      requestedThreadId = context?.workerThreadId ?? null;
+      return { schemaVersion: 1, generatedAt: 1_700_000_000_000, section, readOnly: true, providers: [], provenance: [], errors: [] };
+    }
+  });
+  await harness.load();
+  const capability = await harness.ensureThreadCapability("worker-awareness", "/workspace");
+  assert.ok(capability);
+
+  const result = await harness.handleAction({ token: capability.token, action: "system.awareness", params: { section: "providers" } });
+  assert.equal(requestedSection, "providers");
+  assert.equal(requestedThreadId, "worker-awareness");
+  assert.equal((result.data?.snapshot as { readOnly?: boolean }).readOnly, true);
+  assert.match(result.text, /Mode: read-only/);
+  await assert.rejects(() => harness.handleAction({ token: "invalid-token", action: "system.awareness" }), /Invalid harness token/);
+  await assert.rejects(() => harness.handleAction({ token: capability.token, action: "system.awareness", params: { section: "secrets" } }), /Unsupported Manor awareness section/);
+});
+
 test("harness replaces a malformed capability registry and preserves it for diagnosis", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-corrupt-"));
   t.after(() => rm(root, { recursive: true, force: true }));

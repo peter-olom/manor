@@ -4,6 +4,7 @@ import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-too
 import { stringEnumSchema } from "./butler-agent-tool-schemas.js";
 import type { ManorRestartRun, ManorSourceState } from "./host-controller-client.js";
 import { formatElapsedTaskTime } from "./task-timing.js";
+import { formatManorSystemAwareness, MANOR_AWARENESS_SECTIONS, type ManorAwarenessSection } from "./manor-system-awareness.js";
 
 function formatRestartRequestTarget(request: {
   target: string | null;
@@ -52,6 +53,24 @@ function formatSourceState(state: ManorSourceState): string {
 
 export function buildButlerManorTools(access: ButlerAgentToolAccess): ButlerCustomTool[] {
   return [
+    access.defineButlerTool({
+      name: "inspect_manor_system",
+      label: "Inspect Manor system",
+      description: "Read Manor's current secret-free system awareness without refreshing registries, validating credentials, changing settings, or mutating runtime state.",
+      promptSnippet: "inspect_manor_system: use this as the authoritative source whenever the operator asks what Manor is running, supports, has configured, can access, or currently exposes. Choose providers or models for inventory questions, agents for current Butler/Worker selections, capabilities for tools, security for CAR and egress, services for health/source state, configuration for safe runtime defaults, or all for a complete audit. Preserve the distinction between credential presence, local usability, and last-known reachability.",
+      parameters: Type.Object({
+        section: Type.Optional(stringEnumSchema(MANOR_AWARENESS_SECTIONS))
+      }),
+      uiEffects: access.getToolUiEffects("inspect_manor_system"),
+      execute: async (_toolCallId, params) => {
+        const section = ((params as { section?: ManorAwarenessSection }).section ?? "overview");
+        const snapshot = await access.readSystemAwareness(section);
+        return {
+          content: [{ type: "text", text: formatManorSystemAwareness(snapshot) }],
+          details: { snapshot, mutationPerformed: false }
+        };
+      }
+    }),
     access.defineButlerTool({
       name: "request_manor_restart",
       label: "Request Manor restart",

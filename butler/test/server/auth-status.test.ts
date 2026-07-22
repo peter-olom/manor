@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { readButlerAuthStatus } from "../../src/server/auth-status.js";
+import { providerCredentialsChanged, readButlerAuthStatus } from "../../src/server/auth-status.js";
 import { saveChatGptAuth } from "../../../docker/butler/chatgpt-login.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -44,6 +44,29 @@ test("expired ChatGPT credentials stay configured so Pi can refresh them on use"
     validationError: null
   });
   assert.equal(await readFile(authPath, "utf8"), raw);
+});
+
+test("auth status preserves provider credential availability when OAuth and API keys coexist", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-auth-mixed-"));
+  const authPath = path.join(root, "auth.json");
+  await writeFile(authPath, JSON.stringify({
+    ...expiredOauthAuth(),
+    openai: { type: "api_key", key: "api-key-value" }
+  }), "utf8");
+
+  const status = await readButlerAuthStatus(authPath);
+
+  assert.equal(status.mode, "chatgpt");
+  assert.deepEqual(status.providerCredentials, { openai: true, openaiCodex: true });
+});
+
+test("provider credential changes are detected even when the primary auth mode is unchanged", () => {
+  const oauth = { mode: "chatgpt" as const, loggedIn: true, validationError: null, lastValidatedAt: 1, providerCredentials: { openai: false, openaiCodex: true } };
+  const oauthAndApi = { ...oauth, providerCredentials: { openai: true, openaiCodex: true } };
+
+  assert.equal(providerCredentialsChanged(oauth, oauthAndApi), true);
+  assert.equal(providerCredentialsChanged(oauthAndApi, oauth), true);
+  assert.equal(providerCredentialsChanged(oauth, { ...oauth }), false);
 });
 
 test("ChatGPT status rejects incomplete stored credentials", async () => {

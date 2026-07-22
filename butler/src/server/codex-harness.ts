@@ -46,7 +46,7 @@ import { assertProjectStackStorageLineage, formatStackStorageSummary, normalizeS
 import { applyWorkspacePreviewDefaults, formatWorkspaceBootstrapLines, inspectWorkspaceBootstrap } from "./workspace-bootstrap.js";
 import type { CodexThreadRecord, CodexWorkerEvidenceView, PreviewLeaseView, PreviewVerificationView, WorkerClaimsReportView } from "./types.js";
 import type { VisionInspectionService } from "./vision-inspection.js"; import { formatContentAdmissionForAgent, type ContentAdmissionReviewService, type ContentAdmissionSource } from "./content-admission-review.js";
-import { handleHarnessVisionAction } from "./codex-harness-vision.js";
+import { handleHarnessVisionAction } from "./codex-harness-vision.js"; import type { ManorSystemAwarenessReader } from "./manor-system-awareness.js"; import { handleHarnessSystemAwareness } from "./codex-harness-system-awareness.js";
 function mentionsNativeDesktopTarget(thread: CodexThreadRecord): boolean {
   const contract = thread.executionContract;
   const text = [
@@ -72,10 +72,10 @@ export class HarnessService {
   private readonly memoryReview: CodexExecMemoryReviewService | null;
   private readonly memoryScheduler: MemoryUpdateScheduler | null;
   private readonly visionInspection: VisionInspectionService;
-  private readonly inputActionAccess: HarnessInputActionAccess | null; private readonly contentAdmission: ContentAdmissionReviewService | null;
+  private readonly inputActionAccess: HarnessInputActionAccess | null; private readonly contentAdmission: ContentAdmissionReviewService | null; private readonly readSystemAwareness: ManorSystemAwarenessReader | null;
   private readonly capabilities = new Map<string, HarnessCapability>();
   private saveQueue: Promise<void> = Promise.resolve();
-  constructor(options: { harnessRegistryPath?: string | null; harnessAccessPath?: string | null; stateDir: string; artifactsDir: string; store: ButlerStateStore; runtimeBroker: RuntimeBrokerClient; serviceTemplateRegistry: ServiceTemplateRegistry; memoryReview?: CodexExecMemoryReviewService | null; memoryScheduler?: MemoryUpdateScheduler | null; visionInspection: VisionInspectionService; inputActionAccess?: HarnessInputActionAccess; contentAdmission?: ContentAdmissionReviewService | null }) {
+  constructor(options: { harnessRegistryPath?: string | null; harnessAccessPath?: string | null; stateDir: string; artifactsDir: string; store: ButlerStateStore; runtimeBroker: RuntimeBrokerClient; serviceTemplateRegistry: ServiceTemplateRegistry; memoryReview?: CodexExecMemoryReviewService | null; memoryScheduler?: MemoryUpdateScheduler | null; visionInspection: VisionInspectionService; inputActionAccess?: HarnessInputActionAccess; contentAdmission?: ContentAdmissionReviewService | null; readSystemAwareness?: ManorSystemAwarenessReader }) {
     const storagePaths = resolveHarnessStoragePaths(options);
     this.registryPath = storagePaths.registryPath;
     this.brokerAccessPath = storagePaths.brokerAccessPath;
@@ -87,7 +87,7 @@ export class HarnessService {
     this.memoryScheduler = options.memoryScheduler ?? null;
     this.visionInspection = options.visionInspection;
     this.inputActionAccess = options.inputActionAccess ?? null;
-    this.contentAdmission = options.contentAdmission ?? null;
+    this.contentAdmission = options.contentAdmission ?? null; this.readSystemAwareness = options.readSystemAwareness ?? null;
   }
   private getRuntimeAccess() {
     return {
@@ -431,6 +431,7 @@ export class HarnessService {
     }
     const capability = this.requireCapability(input.token);
     const thread = this.getThreadContext(capability);
+    const awareness = await handleHarnessSystemAwareness({ action, section: normalizeString(params.section), workerThreadId: capability.threadId, workerEffort: thread.requestedReasoningEffort, read: this.readSystemAwareness }); if (awareness) return awareness;
     if (action === "context" || action.startsWith("stack.") || action.startsWith("preview.") || action.startsWith("service.") || action.startsWith("assist.")) {
       await this.maybeAdoptWorkspaceStack(capability);
     }

@@ -31,6 +31,7 @@ function schemaAllowedValues(schema: unknown): unknown[] {
 
 test("Manor Worker tools expose bounded preview, browser, and report operations", () => {
   assert.deepEqual(workerTools.map((tool) => tool.name), [
+    "manor_system_inspect",
     "manor_preview_start",
     "manor_preview_wait",
     "manor_preview_inspect",
@@ -43,9 +44,12 @@ test("Manor Worker tools expose bounded preview, browser, and report operations"
     "manor_report"
   ]);
   const previewStart = workerTools.find((tool) => tool.name === "manor_preview_start")!;
+  const systemInspect = workerTools.find((tool) => tool.name === "manor_system_inspect")!;
   const previewWait = workerTools.find((tool) => tool.name === "manor_preview_wait")!;
   const browserStart = workerTools.find((tool) => tool.name === "manor_browser_start")!;
   assert.ok(previewStart.parameters.properties.env);
+  assert.deepEqual(schemaAllowedValues(systemInspect.parameters.properties.section), ["overview", "agents", "providers", "models", "capabilities", "security", "services", "configuration", "all"]);
+  assert.match(systemInspect.description, /without refreshing registries.*mutating runtime state/i);
   assert.ok(previewStart.parameters.properties.stack_id);
   assert.ok(previewStart.parameters.properties.egress_profile);
   assert.match(previewStart.description, /omit bootstrap_wait_seconds.*runtime default/i);

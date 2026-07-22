@@ -43,8 +43,7 @@ import { clearButlerSessionChat, deleteButlerSessionChatFromLocated, keepOperato
 import { buildButlerDelegationContract } from "./butler-agent-delegation-contract-builder.js";
 import { buildDelegationDeveloperInstructions } from "./butler-agent-delegation-instructions.js";
 import { buildButlerFilesystemTools } from "./butler-agent-filesystem-tools.js"; import { buildButlerBashTools } from "./butler-agent-bash-tools.js";
-import { buildButlerServiceTools } from "./butler-agent-service-tools.js";
-import { buildButlerManorTools } from "./butler-agent-manor-tools.js";
+import { buildButlerServiceTools } from "./butler-agent-service-tools.js"; import { buildButlerManorTools } from "./butler-agent-manor-tools.js"; import type { ManorAwarenessSection, ManorSystemAwarenessSnapshot } from "./manor-system-awareness.js";
 import { buildButlerOperatorTools } from "./butler-agent-operator-tools.js"; import { buildButlerSkillTools } from "./butler-agent-skill-tools.js"; import type { SkillsService } from "./skills-service.js"; import { buildButlerAutomationTools } from "./butler-agent-automation-tools.js"; import { answerOperatorQuestionMessage, postOperatorQuestionMessage, recordOperatorQuestionTasteMemory, recoverInterruptedOperatorQuestionDeliveries, settleOperatorQuestionDelivery } from "./butler-agent-operator-question.js";
 import { buildButlerProjectTools } from "./butler-agent-project-tools.js";
 import { buildButlerDelegationTools, buildButlerStackPreviewTools } from "./butler-agent-stack-preview-tools.js";
@@ -57,7 +56,7 @@ import { applyCallbackReviewFailure, beginCallbackReviewAttempt, CallbackReviewS
 import { blockCloseoutReview, getOperatorCloseoutBlocker as getCloseoutBlocker, idleCloseoutReview, isSameBlockedCloseout, queueCloseoutReview, recordGatedCloseout, relevantTerminalWorkerReport } from "./butler-closeout-gate.js";
 import { backfillOperatorMessagesFromSessionFiles, normalizeOperatorMessages, normalizeOperatorQuestion, readPersistedMessageAttachments, removeOperatorMessage, upsertOperatorMessage } from "./butler-operator-messages.js";
 import { postOperatorJobReply as deliverOperatorJobReply, type OperatorJobReplyAccess } from "./butler-operator-closeout.js";
-import { readButlerAuthStatus } from "./auth-status.js";
+import { providerCredentialsChanged, readButlerAuthStatus } from "./auth-status.js";
 import { buildDirectCodexMessagePingSummary, notifyDirectCodexMessage, planDirectMessageRollback, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
 import { type FileReferenceStore } from "./file-store.js"; import { HostControllerClient } from "./host-controller-client.js";
 import { ManorRestartRequestState } from "./manor-restart-state.js";
@@ -647,15 +646,15 @@ export class ButlerAgentService extends EventEmitter {
     const authChanged =
       nextAuth.mode !== this.auth.mode ||
       nextAuth.loggedIn !== this.auth.loggedIn ||
-      nextAuth.validationError !== this.auth.validationError ||
+      nextAuth.validationError !== this.auth.validationError || providerCredentialsChanged(nextAuth, this.auth) ||
       nextCodexAuth.mode !== this.workerAuth.mode ||
       nextCodexAuth.loggedIn !== this.workerAuth.loggedIn ||
-      nextCodexAuth.validationError !== this.workerAuth.validationError;
+      nextCodexAuth.validationError !== this.workerAuth.validationError || providerCredentialsChanged(nextCodexAuth, this.workerAuth);
 
     const butlerAuthChanged =
       nextAuth.mode !== this.auth.mode ||
       nextAuth.loggedIn !== this.auth.loggedIn ||
-      nextAuth.validationError !== this.auth.validationError;
+      nextAuth.validationError !== this.auth.validationError || providerCredentialsChanged(nextAuth, this.auth);
 
     if (butlerAuthChanged) {
       this.auth = nextAuth;
@@ -1420,6 +1419,8 @@ export class ButlerAgentService extends EventEmitter {
   getShellSnapshot(): AppShellSnapshot["butler"] { return getButlerShellSnapshot(this.getSessionAccess()); }
 
   getSnapshot(): AppSnapshot["butler"] { return getButlerSnapshot(this.getSessionAccess()); }
+
+  async readSystemAwareness(section: ManorAwarenessSection = "overview"): Promise<ManorSystemAwarenessSnapshot> { if (!this.options.readSystemAwareness) throw new Error("Manor system awareness is unavailable."); return await this.options.readSystemAwareness(section, { butler: { shell: this.getShellSnapshot(), auth: this.getButlerAuthStatus() }, workerThreadId: this.options.getWorkerDefaults?.()?.threadId ?? null, workerEffort: this.options.getWorkerDefaults?.()?.effort ?? null }); }
 
   setThinkingLevel(level: ButlerThinkingLevel): void {
     const access = this.getSessionAccess();

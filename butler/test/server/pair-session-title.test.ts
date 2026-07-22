@@ -11,6 +11,7 @@ import { ButlerStateStore } from "../../src/server/state-store.js";
 import type { ButlerMessagePageView, ButlerMessageView, ModelOption, ReasoningEffort } from "../../src/server/types.js";
 import type { ManorRestartRequestView } from "../../src/shared/manor-restart.js";
 import type { SessionTitleGenerator } from "../../src/server/session-title-generator.js";
+import type { ManorSystemAwarenessReader } from "../../src/server/manor-system-awareness.js";
 
 class FakeButlerService extends EventEmitter {
   messages: ButlerMessageView[] = [];
@@ -180,6 +181,10 @@ class FakeButlerService extends EventEmitter {
       supervision: { callbacks: this.callbacks }
     };
   }
+
+  getButlerAuthStatus() {
+    return { mode: "chatgpt" as const, loggedIn: true, validationError: null, lastValidatedAt: 123 };
+  }
 }
 
 function makeRestartRequest(id = "restart-request-1"): ManorRestartRequestView {
@@ -198,7 +203,7 @@ function makeRestartRequest(id = "restart-request-1"): ManorRestartRequestView {
   };
 }
 
-async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { workerModels?: ModelOption[]; butlerSkills?: Array<{ id: string; name: string; description: string; invocation: string }>; skillsByEnvironment?: Partial<Record<"butler-pi" | "worker-pi", Array<{ id: string; name: string; description: string; invocation: string }>>>; validateWorkspace?: (cwd: string) => Promise<string> }): Promise<{
+async function createManager(generator: SessionTitleGenerator | null = null, onCreateService?: (options: unknown) => void, runtime?: { workerModels?: ModelOption[]; butlerSkills?: Array<{ id: string; name: string; description: string; invocation: string }>; skillsByEnvironment?: Partial<Record<"butler-pi" | "worker-pi", Array<{ id: string; name: string; description: string; invocation: string }>>>; validateWorkspace?: (cwd: string) => Promise<string>; readSystemAwareness?: ManorSystemAwarenessReader }): Promise<{
   manager: PairSessionManager;
   pairStore: PairStore;
   service: FakeButlerService;
@@ -255,6 +260,7 @@ async function createManager(generator: SessionTitleGenerator | null = null, onC
     sessionRootDir,
     artifactsDir: path.join(dir, "artifacts"),
     sessionTitleGenerator: generator,
+    readSystemAwareness: runtime?.readSystemAwareness,
     ensureButlerExecutorCapability: async (threadId: string) => { capabilitiesEnsured.push(threadId); },
     revokeButlerExecutorCapability: async (threadId: string) => { capabilitiesRevoked.push(threadId); },
     validateWorkspace: runtime?.validateWorkspace ?? (async (cwd: string) => cwd),
@@ -277,6 +283,43 @@ test("pair Butler services receive a pair-scoped runtime thread id", async () =>
   const second = await manager.createPair();
 
   assert.deepEqual(runtimeThreadIds, [`butler:${first.id}`, `butler:${second.id}`]);
+});
+
+test("pair Butler services receive the shared system-awareness reader", async () => {
+  const reader: ManorSystemAwarenessReader = async () => ({ schemaVersion: 1, generatedAt: 1, section: "overview", readOnly: true, provenance: [], errors: [] });
+  let received: ManorSystemAwarenessReader | undefined;
+  const { manager } = await createManager(null, (options) => {
+    received = (options as { readSystemAwareness?: ManorSystemAwarenessReader }).readSystemAwareness;
+  }, { readSystemAwareness: reader });
+
+  await manager.createPair();
+
+  assert.equal(received, reader);
+});
+
+test("Worker awareness resolves the Butler attached to its pair", async () => {
+  const { manager, pairStore, service } = await createManager();
+  const pair = await manager.createPair();
+  pairStore.attachWorker(pair.id, { threadId: "worker-awareness", runtime: "pi-rpc" });
+
+  const context = await manager.getSystemAwarenessContextForWorker("worker-awareness");
+
+  assert.deepEqual(context?.butler && context.butler.shell, service.getShellSnapshot());
+  assert.deepEqual(context?.butler && context.butler.auth, service.getButlerAuthStatus());
+  assert.equal(await manager.getSystemAwarenessContextForWorker("missing-worker"), null);
+});
+
+test("Worker awareness does not start an unloaded paired Butler", async () => {
+  let serviceCreations = 0;
+  const { manager, pairStore, capabilitiesEnsured } = await createManager(null, () => { serviceCreations += 1; });
+  const pair = pairStore.createPair();
+  pairStore.attachWorker(pair.id, { threadId: "worker-unloaded-awareness", runtime: "pi-rpc" });
+
+  const context = await manager.getSystemAwarenessContextForWorker("worker-unloaded-awareness");
+
+  assert.deepEqual(context, { butler: null, workerThreadId: "worker-unloaded-awareness" });
+  assert.equal(serviceCreations, 0);
+  assert.deepEqual(capabilitiesEnsured, []);
 });
 
 test("pair Butler executor capabilities follow the pair lifecycle", async () => {

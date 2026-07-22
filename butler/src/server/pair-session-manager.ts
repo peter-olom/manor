@@ -36,10 +36,11 @@ import type { AutomationDispatchResult } from "./session-automation-scheduler.js
 import { automationDispatchEndsAt } from "./session-automation.js";
 import type { ActivityWatchdogDiagnostics } from "../shared/activity-watchdog.js";
 import { listComposerFileSuggestions } from "./composer-file-suggestions.js";
+import type { ManorSystemAwarenessContext, ManorSystemAwarenessReader } from "./manor-system-awareness.js";
 
 type PairButlerService = Pick<
   ButlerAgentService,
-  "acknowledgeTrackedManorRestart" | "answerOperatorQuestion" | "authorizeManorRestartRequest" | "cancelCallbackReview" | "dismissManorRestartRequest" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "getTrackedManorRestartProgress" | "handoffWorker" | "listComposerCommands" | "on" | "postAutomationNotice" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "removeExternalWorkerDelegation" | "retryBlockedCallbackReviews" | "runAutomationPrompt" | "runSessionControl" | "setThinkingLevel" | "start" | "startAuthorizedManorRestart" | "stopPrompt" | "updateComposeSettings" | "watchdogs"
+  "acknowledgeTrackedManorRestart" | "answerOperatorQuestion" | "authorizeManorRestartRequest" | "cancelCallbackReview" | "dismissManorRestartRequest" | "dispose" | "ensureExternalWorkerDelegation" | "exportSession" | "getButlerAuthStatus" | "getLiveSnapshot" | "getMessagePage" | "getSessionControls" | "getShellSnapshot" | "getTrackedManorRestartProgress" | "handoffWorker" | "listComposerCommands" | "on" | "postAutomationNotice" | "prompt" | "quiesceCallbackReviews" | "refreshModelSettings" | "reloadResources" | "removeExternalWorkerDelegation" | "retryBlockedCallbackReviews" | "runAutomationPrompt" | "runSessionControl" | "setThinkingLevel" | "start" | "startAuthorizedManorRestart" | "stopPrompt" | "updateComposeSettings" | "watchdogs"
 >;
 
 type PairSessionManagerOptions = {
@@ -60,6 +61,7 @@ type PairSessionManagerOptions = {
   artifactsDir: string;
   refreshRuntimeInventory?: () => Promise<void>;
   memoryScheduler?: MemoryUpdateScheduler | null;
+  readSystemAwareness?: ManorSystemAwarenessReader;
   onButlerPatch?: (payload: ButlerLivePatchView) => void;
   onWorkerThreadRefreshed?: (threadId: string) => void;
   ensureButlerExecutorCapability?: (threadId: string) => Promise<void>;
@@ -1116,6 +1118,15 @@ export class PairSessionManager {
     return (await this.ensureService(pairId)).getSessionControls();
   }
 
+  async getSystemAwarenessContextForWorker(threadId: string): Promise<ManorSystemAwarenessContext | null> {
+    const pair = this.options.pairStore.findPairByWorkerThread(threadId);
+    if (!pair) return null;
+    const loaded = this.services.get(pair.id);
+    if (!loaded) return { butler: null, workerThreadId: threadId };
+    await loaded.started;
+    return { butler: { shell: loaded.service.getShellSnapshot(), auth: loaded.service.getButlerAuthStatus() }, workerThreadId: threadId };
+  }
+
   async runButlerSessionControl(
     pairId: string,
     action: WorkerSessionControlAction,
@@ -1168,6 +1179,7 @@ export class PairSessionManager {
       skillsService: this.options.skillsService,
       refreshRuntimeInventory: this.options.refreshRuntimeInventory,
       memoryScheduler: this.options.memoryScheduler,
+      readSystemAwareness: this.options.readSystemAwareness,
       systemPromptSuffix: pairSystemPrompt(pair.id),
       automationAccess: {
         get: () => this.options.pairStore.getPair(pair.id)?.automation ?? null,

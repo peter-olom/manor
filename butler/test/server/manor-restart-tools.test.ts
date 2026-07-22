@@ -63,6 +63,7 @@ test("Butler manor tools expose restart and authoritative source state surfaces"
 
   buildButlerManorTools(access);
   assert.deepEqual(definitions.map((definition) => definition.name), [
+    "inspect_manor_system",
     "request_manor_restart",
     "read_manor_restart_status",
     "read_manor_source_state"

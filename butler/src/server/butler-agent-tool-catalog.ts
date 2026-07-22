@@ -2,6 +2,12 @@ import type { ButlerToolView } from "./types.js";
 
 export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
   {
+    name: "inspect_manor_system",
+    label: "Inspect Manor system",
+    description: "Read Manor's live, secret-free runtime awareness snapshot: agents, providers, models, capabilities, security, services, and configuration.",
+    uiEffects: []
+  },
+  {
     name: "bash",
     label: "Butler shell",
     description: "Run a bounded command as the unprivileged Butler executor. The live repository and shared skills are read-only; /scratch is writable.",

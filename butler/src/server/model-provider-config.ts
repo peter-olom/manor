@@ -143,6 +143,8 @@ export function modelToModelOption(model: Model<Api>): ModelOption {
     id: model.id,
     label: model.name || model.id,
     provider: model.provider,
+    contextWindow: typeof model.contextWindow === "number" && Number.isFinite(model.contextWindow) ? model.contextWindow : null,
+    maxTokens: typeof model.maxTokens === "number" && Number.isFinite(model.maxTokens) ? model.maxTokens : null,
     inputCapabilities: registeredInputCapabilities ?? resolveModelInputCapabilities({
       modelId: model.id,
       provider: model.provider,

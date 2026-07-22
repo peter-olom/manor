@@ -1196,6 +1196,8 @@ export interface ModelOption {
   id: string;
   label: string;
   provider: string | null; harness?: "pi" | null;
+  contextWindow?: number | null;
+  maxTokens?: number | null;
   inputCapabilities: { image: "supported" | "unsupported" | "unknown"; source: "override" | "provider" | "manifest" | "unknown" };
   supportsReasoning: boolean;
   supportedThinkingLevels: ButlerThinkingLevel[];
@@ -1321,6 +1323,7 @@ export interface ButlerAuthStatus {
   validationError: string | null;
   lastValidatedAt: number | null;
   credentialRevision?: string | null;
+  providerCredentials?: { openai: boolean; openaiCodex: boolean };
 }
 
 export interface ButlerContextUsageView {

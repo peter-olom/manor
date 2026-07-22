@@ -39,6 +39,7 @@ import type { ButlerOperatorThreadGuard, ProofScreenshotReview, ResolvedPreviewP
 import type { ExtensionUiBroker } from "./extension-ui-broker.js";
 import type { SkillsService } from "./skills-service.js";
 import type { ButlerExecutorClient } from "./butler-executor-client.js";
+import type { ManorAwarenessSection, ManorSystemAwarenessSnapshot } from "./manor-system-awareness.js";
 
 export type ButlerCustomTool = ReturnType<typeof defineTool>;
 export type ButlerCallbackReservation = {
@@ -257,6 +258,7 @@ export type ButlerAgentToolAccess = {
   } | null;
   getAutomationAccess(): ButlerAutomationAccess | null;
   getSnapshot(): AppSnapshot["butler"];
+  readSystemAwareness(section?: ManorAwarenessSection): Promise<ManorSystemAwarenessSnapshot>;
 };
 
 export type ButlerAgentSessionAccess = {
