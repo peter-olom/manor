@@ -1,6 +1,7 @@
 import { Type } from "@sinclair/typebox";
 
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { stringEnumSchema } from "./butler-agent-tool-schemas.js";
 import type { ManorRestartRun, ManorSourceState } from "./host-controller-client.js";
 import { formatElapsedTaskTime } from "./task-timing.js";
 
@@ -63,7 +64,7 @@ export function buildButlerManorTools(access: ButlerAgentToolAccess): ButlerCust
           minLength: 1,
           description: "Plain-language reason shown to the operator before they authorize the restart or update."
         }),
-        target: Type.Optional(Type.Union([Type.Literal("current"), Type.Literal("latest")])),
+        target: Type.Optional(stringEnumSchema(["current", "latest"] as const)),
         gitRef: Type.Optional(Type.String({ minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9][A-Za-z0-9._/@+-]*$", description: "Local or remote source ref. Use the exact local commit SHA when the operator asks to restart from a local commit." })),
         includeDesktop: Type.Optional(Type.Boolean()),
         build: Type.Optional(Type.Boolean()),

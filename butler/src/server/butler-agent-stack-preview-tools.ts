@@ -10,7 +10,7 @@ import { observeStartedPreview } from "./butler-preview-bootstrap-observer.js";
 import { buildButlerStackTools } from "./butler-agent-stack-tools.js";
 import { normalizeBrowserSessionCookies } from "./butler-browser-tool-input.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
-import { reviewPreviewProofSchema, startPreviewSchema, stringMapSchema } from "./butler-agent-tool-schemas.js";
+import { reviewPreviewProofSchema, startPreviewSchema, stringEnumSchema, stringMapSchema } from "./butler-agent-tool-schemas.js";
 import { formatButlerToolOutput } from "./butler-tool-output.js";
 import {
   assertRuntimeAttachedThreadsOwned,
@@ -280,8 +280,8 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         "start_preview_browser_session: open a live browser session only for preview work Butler is handling directly. If the operator explicitly asked for delegation or Worker, call delegate_to_worker instead. The timer and recording begin immediately; stop the session later to persist proof.",
       parameters: Type.Object({
         leaseId: Type.String({ minLength: 1 }),
-        mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")])),
-        resolution: Type.Optional(Type.Union([Type.Literal("1080p"), Type.Literal("2k"), Type.Literal("1440p")])),
+        mode: Type.Optional(stringEnumSchema(["headless", "headful"] as const)),
+        resolution: Type.Optional(stringEnumSchema(["1080p", "2k", "1440p"] as const)),
         path: Type.Optional(Type.String()),
         targetUrl: Type.Optional(Type.String()),
         waitForSelector: Type.Optional(Type.String()),
@@ -347,8 +347,8 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         threadId: Type.Optional(Type.String()),
         targetUrl: Type.String({ minLength: 1 }),
         title: Type.Optional(Type.String()),
-        mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")])),
-        resolution: Type.Optional(Type.Union([Type.Literal("1080p"), Type.Literal("2k"), Type.Literal("1440p")])),
+        mode: Type.Optional(stringEnumSchema(["headless", "headful"] as const)),
+        resolution: Type.Optional(stringEnumSchema(["1080p", "2k", "1440p"] as const)),
         headers: Type.Optional(stringMapSchema()),
         cookies: Type.Optional(stringMapSchema()),
         sessionCookie: Type.Optional(Type.String()),
@@ -440,21 +440,21 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         "browser_session_action: use this for stepwise browser control. Always provide a specific evidence label and .png fileName; set autoCapture=false only when no screenshot should be stored.",
       parameters: Type.Object({
         sessionId: Type.String({ minLength: 1 }),
-        actionType: Type.Union([
-          Type.Literal("click"),
-          Type.Literal("fill"),
-          Type.Literal("type"),
-          Type.Literal("press"),
-          Type.Literal("hover"),
-          Type.Literal("select"),
-          Type.Literal("check"),
-          Type.Literal("uncheck"),
-          Type.Literal("scroll"),
-          Type.Literal("wait_for"),
-          Type.Literal("navigate"),
-          Type.Literal("evaluate"),
-          Type.Literal("screenshot")
-        ]),
+        actionType: stringEnumSchema([
+          "click",
+          "fill",
+          "type",
+          "press",
+          "hover",
+          "select",
+          "check",
+          "uncheck",
+          "scroll",
+          "wait_for",
+          "navigate",
+          "evaluate",
+          "screenshot"
+        ] as const),
         selector: Type.Optional(Type.String()),
         value: Type.Optional(Type.String()),
         values: Type.Optional(Type.Array(Type.String())),
@@ -837,26 +837,26 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         "desktop_session_action: use screenshot checkpoints, window listing/focus, clipboard, and simple desktop input while native Electron proof is running. Always provide a specific evidence label and .png fileName.",
       parameters: Type.Object({
         sessionId: Type.String({ minLength: 1 }),
-        actionType: Type.Union([
-          Type.Literal("lock"),
-          Type.Literal("unlock"),
-          Type.Literal("screenshot"),
-          Type.Literal("current_screen"),
-          Type.Literal("calibrate"),
-          Type.Literal("wait"),
-          Type.Literal("click"),
-          Type.Literal("click_text"),
-          Type.Literal("drag"),
-          Type.Literal("key"),
-          Type.Literal("type"),
-          Type.Literal("window_list"),
-          Type.Literal("focus_window"),
-          Type.Literal("close_window"),
-          Type.Literal("clipboard_set"),
-          Type.Literal("clipboard_get"),
-          Type.Literal("cdp_targets"),
-          Type.Literal("cdp_accessibility")
-        ]),
+        actionType: stringEnumSchema([
+          "lock",
+          "unlock",
+          "screenshot",
+          "current_screen",
+          "calibrate",
+          "wait",
+          "click",
+          "click_text",
+          "drag",
+          "key",
+          "type",
+          "window_list",
+          "focus_window",
+          "close_window",
+          "clipboard_set",
+          "clipboard_get",
+          "cdp_targets",
+          "cdp_accessibility"
+        ] as const),
         actor: Type.Optional(Type.String()),
         force: Type.Optional(Type.Boolean()),
         label: Type.String({ minLength: 1, description: "Evidence label for this action." }),
@@ -872,7 +872,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         key: Type.Optional(Type.String()),
         text: Type.Optional(Type.String()),
         targetText: Type.Optional(Type.String()),
-        matchMode: Type.Optional(Type.Union([Type.Literal("contains"), Type.Literal("exact")])),
+        matchMode: Type.Optional(stringEnumSchema(["contains", "exact"] as const)),
         cdpUrl: Type.Optional(Type.String()),
         cdpPort: Type.Optional(Type.Number({ minimum: 1, maximum: 65535 })),
         delayMs: Type.Optional(Type.Number({ minimum: 0 }))
@@ -1390,18 +1390,8 @@ export function buildButlerDelegationTools(access: ButlerAgentToolAccess): Butle
       promptSnippet:
         "run_supervision_smoke_test: intentionally test Butler's own supervision loop. Use only when you decide the operator is asking to verify Butler supervision itself, not for ordinary implementation tasks that need tests or smoke verification.",
       parameters: Type.Object({
-        totalFollowUps: Type.Optional(Type.Union([
-          Type.Literal(2),
-          Type.Literal(3),
-          Type.Literal(4),
-          Type.Literal(5)
-        ])),
-        thinkingBudget: Type.Optional(Type.Union([
-          Type.Literal("low"),
-          Type.Literal("medium"),
-          Type.Literal("high"),
-          Type.Literal("xhigh")
-        ]))
+        totalFollowUps: Type.Optional(Type.Integer({ minimum: 2, maximum: 5 })),
+        thinkingBudget: Type.Optional(stringEnumSchema(["low", "medium", "high", "xhigh"] as const))
       }),
       uiEffects: access.getToolUiEffects("run_supervision_smoke_test"),
       execute: async (_toolCallId, params) => {

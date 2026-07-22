@@ -18,13 +18,14 @@ type WorkerTool = {
 
 const workerTools = manorWorkerTools as unknown as WorkerTool[];
 
-function schemaLiterals(schema: unknown): unknown[] {
+function schemaAllowedValues(schema: unknown): unknown[] {
   if (!schema || typeof schema !== "object") return [];
   const record = schema as Record<string, unknown>;
   if (Object.prototype.hasOwnProperty.call(record, "const")) return [record.const];
+  if (Array.isArray(record.enum)) return record.enum;
   return Object.values(record).flatMap((value) => {
-    if (Array.isArray(value)) return value.flatMap(schemaLiterals);
-    return schemaLiterals(value);
+    if (Array.isArray(value)) return value.flatMap(schemaAllowedValues);
+    return schemaAllowedValues(value);
   });
 }
 
@@ -70,15 +71,15 @@ test("Manor Worker extension registers manor_report", async () => {
 
 test("manor_browser_start documents and enforces supported mode and resolution values", () => {
   const browserStart = workerTools.find((tool) => tool.name === "manor_browser_start")!;
-  assert.deepEqual(schemaLiterals(browserStart.parameters.properties?.mode), ["headless", "headful"]);
-  assert.deepEqual(schemaLiterals(browserStart.parameters.properties?.resolution), ["1080p", "2k"]);
+  assert.deepEqual(schemaAllowedValues(browserStart.parameters.properties?.mode), ["headless", "headful"]);
+  assert.deepEqual(schemaAllowedValues(browserStart.parameters.properties?.resolution), ["1080p", "2k"]);
   assert.match(browserStart.parameters.properties?.mode?.description ?? "", /headless or headful.*screenshot is an action type, not a mode/i);
   assert.match(browserStart.parameters.properties?.resolution?.description ?? "", /1080p or 2k.*1280x720 are unsupported/i);
 });
 
 test("manor_browser_action exposes only sidecar-supported action names", () => {
   const browserAction = workerTools.find((tool) => tool.name === "manor_browser_action")!;
-  assert.deepEqual(schemaLiterals(browserAction.parameters.properties?.type), [
+  assert.deepEqual(schemaAllowedValues(browserAction.parameters.properties?.type), [
     "click", "fill", "type", "press", "hover", "select", "check", "uncheck",
     "scroll", "wait_for", "navigate", "evaluate", "screenshot"
   ]);
@@ -96,9 +97,9 @@ test("manor_report exposes validator-supported evidence kinds and UI guidance", 
     description?: string;
     items?: { properties?: Record<string, unknown> };
   };
-  assert.ok(schemaLiterals(evidenceSchema.items?.properties?.kind).includes("browser_flow"));
-  assert.ok(schemaLiterals(evidenceSchema.items?.properties?.kind).includes("screenshot"));
-  assert.equal(schemaLiterals(evidenceSchema.items?.properties?.kind).includes("browser"), false);
+  assert.ok(schemaAllowedValues(evidenceSchema.items?.properties?.kind).includes("browser_flow"));
+  assert.ok(schemaAllowedValues(evidenceSchema.items?.properties?.kind).includes("screenshot"));
+  assert.equal(schemaAllowedValues(evidenceSchema.items?.properties?.kind).includes("browser"), false);
   assert.match(report.description, /browser_flow or screenshot.*proof_run_id/i);
   assert.match(evidenceSchema.description ?? "", /browser_flow or screenshot.*proof_run_id/i);
 });

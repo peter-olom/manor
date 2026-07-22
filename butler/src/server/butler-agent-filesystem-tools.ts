@@ -5,6 +5,7 @@ import path from "node:path";
 import { Type } from "@sinclair/typebox";
 
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { stringEnumSchema } from "./butler-agent-tool-schemas.js";
 import { MAX_TEXT_PREVIEW_BYTES, readTextPreviewHandle } from "./text-preview.js";
 
 type FilesystemInspectionOperation = "list" | "stat" | "find" | "read";
@@ -242,11 +243,11 @@ export function buildButlerFilesystemTools(access: ButlerAgentToolAccess): Butle
       promptSnippet:
         "inspect_filesystem: read selected text files and answer local filesystem questions directly with read-only read/list/stat/find under approved roots like /repos; reads reject binary data and are size-bounded; never use it for writes, deletes, shell execution, or unrestricted traversal.",
       parameters: Type.Object({
-        operation: Type.Union([Type.Literal("list"), Type.Literal("stat"), Type.Literal("find"), Type.Literal("read")]),
+        operation: stringEnumSchema(["list", "stat", "find", "read"] as const),
         path: Type.String({ minLength: 1 }),
         maxDepth: Type.Optional(Type.Number({ minimum: 0, maximum: MAX_DEPTH })),
         nameContains: Type.Optional(Type.String()),
-        type: Type.Optional(Type.Union([Type.Literal("any"), Type.Literal("file"), Type.Literal("directory"), Type.Literal("symlink")])),
+        type: Type.Optional(stringEnumSchema(["any", "file", "directory", "symlink"] as const)),
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: MAX_LIMIT })),
         maxBytes: Type.Optional(Type.Number({ minimum: 1, maximum: MAX_TEXT_PREVIEW_BYTES }))
       }),

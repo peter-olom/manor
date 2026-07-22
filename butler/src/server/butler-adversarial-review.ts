@@ -27,6 +27,7 @@ import { workerFileChangeAttribution, workerFileChangePaths } from "./worker-rev
 import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { assertIsolatedPromptSucceeded } from "./isolated-prompt-outcome.js";
 import type { ActivityWatchdogService } from "./activity-watchdog.js";
+import { assertProviderPortableToolSchema } from "./butler-agent-tool-schemas.js";
 
 export const ADVERSARIAL_REVIEW_OUTPUT_SCHEMA = {
   type: "object",
@@ -54,7 +55,10 @@ export const ADVERSARIAL_REVIEW_OUTPUT_SCHEMA = {
 const REVIEW_SEVERITIES = new Set(["info", "low", "medium", "high", "critical"]);
 const PI_REVIEW_SUBMISSION_SCHEMA = Type.Object({
   findings: Type.Array(Type.Object({
-    severity: Type.Union([Type.Literal("info"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
+    severity: Type.String({
+      enum: ["info", "low", "medium", "high", "critical"],
+      pattern: "^(?:info|low|medium|high|critical)$"
+    }),
     findingSummary: Type.String({ minLength: 1 }),
     blocking: Type.Boolean(),
     linkedClaimIds: Type.Array(Type.String({ maxLength: 100 }), { maxItems: 20 })
@@ -63,6 +67,7 @@ const PI_REVIEW_SUBMISSION_SCHEMA = Type.Object({
 
 export function createPiReviewSubmissionTool(onSubmit: (review: ReturnType<typeof validateAdversarialReviewOutput>) => void) {
   let accepted = false;
+  assertProviderPortableToolSchema("submit_review", PI_REVIEW_SUBMISSION_SCHEMA);
   return defineTool({
     name: "submit_review",
     label: "Submit review",

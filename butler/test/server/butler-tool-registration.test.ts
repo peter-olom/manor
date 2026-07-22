@@ -12,6 +12,7 @@ import { buildButlerDelegationTools, buildButlerStackPreviewTools, workerProvide
 import { buildButlerFilesystemTools } from "../../src/server/butler-agent-filesystem-tools.js";
 import { buildButlerBashTools } from "../../src/server/butler-agent-bash-tools.js";
 import { buildButlerSkillTools } from "../../src/server/butler-agent-skill-tools.js";
+import { assertProviderPortableToolSchema } from "../../src/server/butler-agent-tool-schemas.js";
 import { BUTLER_TOOL_CATALOG } from "../../src/server/butler-agent-tool-catalog.js";
 import { OLLAMA_WEB_FETCH_TOOL, OLLAMA_WEB_SEARCH_TOOL } from "../../src/server/ollama-web-tools.js";
 import { OPENCODE_WEB_FETCH_TOOL, OPENCODE_WEB_SEARCH_TOOL } from "../../src/server/opencode-web-tools.js";
@@ -109,6 +110,9 @@ test("Butler custom tool registration has unique tool names and provider-portabl
     .filter((name, index, names) => names.indexOf(name) !== index);
 
   assert.deepEqual([...new Set(duplicates)].sort(), []);
+  for (const definition of definitions) {
+    assertProviderPortableToolSchema(definition.name, definition.parameters);
+  }
   assert.equal(definitions.filter((definition) => definition.name === "request_manor_restart").length, 1);
   assert.equal(definitions.filter((definition) => definition.name === "read_manor_restart_status").length, 1);
   assert.equal(definitions.filter((definition) => definition.name === "request_self_improvement").length, 1);

@@ -9,6 +9,7 @@ import {
 } from "./ollama-web-tools.js";
 import { admitContentThroughButler } from "./content-admission-client.js";
 import { formatContentAdmissionForAgent } from "./content-admission-review.js";
+import { assertProviderPortableToolSchema } from "./butler-agent-tool-schemas.js";
 
 const webSearchTool = defineTool({
   name: "web_search",
@@ -58,6 +59,10 @@ const webFetchTool = defineTool({
   }
 });
 
+export const ollamaPiWebTools = [webSearchTool, webFetchTool];
+
+for (const tool of ollamaPiWebTools) assertProviderPortableToolSchema(tool.name, tool.parameters);
+
 export const ollamaWebSearchTool = webSearchTool;
 export const ollamaWebFetchTool = webFetchTool;
 
@@ -66,6 +71,5 @@ export default async function ollamaWebToolsExtension(pi: ExtensionAPI): Promise
   if (!config.enabled) {
     return;
   }
-  pi.registerTool(webSearchTool);
-  pi.registerTool(webFetchTool);
+  for (const tool of ollamaPiWebTools) pi.registerTool(tool);
 }

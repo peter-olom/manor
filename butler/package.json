@@ -5,10 +5,11 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "build": "npm run check:max-loc && npm run build:web && npm run build:server",
+    "build": "npm run check:max-loc && npm run lint:model-tool-schemas && npm run build:web && npm run build:server",
     "build:server": "tsc -p tsconfig.server.json",
     "build:web": "vite build",
     "check:max-loc": "node ./scripts/check-max-loc.mjs",
+    "lint:model-tool-schemas": "tsx --test test/server/model-tool-schema-portability.test.ts",
     "dev:start": "tsx watch src/server/index.ts",
     "release:check": "node ./scripts/check-release-version.mjs",
     "smoke:memory-hybrid": "tsx scripts/memory-hybrid-graph-prod-smoke.ts",

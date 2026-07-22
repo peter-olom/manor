@@ -9,6 +9,7 @@ import {
   shouldAllowLocalThreadFallback
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { stringEnumSchema } from "./butler-agent-tool-schemas.js";
 import { directWorkerDispatchMarker } from "./butler-callback-state.js";
 import { settleFailedDirectWorkerDispatch } from "./direct-codex-message.js";
 import { formatJobPayloadMessage } from "./job-instruction-artifacts.js";
@@ -624,7 +625,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       parameters: Type.Object({
         threadId: Type.String({ minLength: 1 }),
         pointId: Type.String({ minLength: 1 }),
-        status: Type.Union([Type.Literal("accepted"), Type.Literal("rejected"), Type.Literal("waived")]),
+        status: stringEnumSchema(["accepted", "rejected", "waived"] as const),
         note: Type.Optional(Type.String()),
         nextInstruction: Type.Optional(Type.String())
       }),
@@ -663,7 +664,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
         threadId: Type.String({ minLength: 1 }),
         decisions: Type.Array(Type.Object({
           pointId: Type.String({ minLength: 1 }),
-          status: Type.Union([Type.Literal("accepted"), Type.Literal("rejected"), Type.Literal("waived")]),
+          status: stringEnumSchema(["accepted", "rejected", "waived"] as const),
           note: Type.Optional(Type.String()),
           nextInstruction: Type.Optional(Type.String())
         }), { minItems: 2, maxItems: 100 })
@@ -843,7 +844,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
         imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
         fileReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
         refreshChecklist: Type.Optional(Type.Boolean({ description: "Replace the current review contract for a genuine new work slice or material scope/acceptance change, including when existing points are pending or rejected. When true, text must state the complete resulting scope, including every criterion that should remain." })),
-        nextWorkerReportAction: Type.Optional(Type.Union([Type.Literal("review"), Type.Literal("reply_to_operator")]))
+        nextWorkerReportAction: Type.Optional(stringEnumSchema(["review", "reply_to_operator"] as const))
       }),
       uiEffects: access.getToolUiEffects("message_job"),
       execute: async (_toolCallId, params) => {

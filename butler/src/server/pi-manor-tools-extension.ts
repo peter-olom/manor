@@ -1,7 +1,20 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { assertProviderPortableToolSchema } from "./butler-agent-tool-schemas.js";
 import { callManorHarness, formatManorHarnessResult } from "./pi-manor-harness-client.js";
+
+function piStringEnumSchema<const Values extends readonly string[]>(
+  values: Values,
+  options: { description?: string } = {}
+) {
+  const escaped = values.map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return Type.String({
+    enum: [...values],
+    pattern: `^(?:${escaped.join("|")})$`,
+    ...options
+  });
+}
 
 function resultContent(result: Awaited<ReturnType<typeof callManorHarness>>) {
   return { content: [{ type: "text" as const, text: formatManorHarnessResult(result) }], details: result };
@@ -149,10 +162,10 @@ const browserStartTool = defineTool({
     headers: Type.Optional(Type.Array(Type.Object({ name: Type.String({ minLength: 1 }), value: Type.String() }))),
     cookies: Type.Optional(Type.Array(Type.Object({ name: Type.String({ minLength: 1 }), value: Type.String() }))),
     session_cookie: Type.Optional(Type.String()),
-    resolution: Type.Optional(Type.Union([Type.Literal("1080p"), Type.Literal("2k")], {
+    resolution: Type.Optional(piStringEnumSchema(["1080p", "2k"] as const, {
       description: "Named capture resolution. Use 1080p or 2k; pixel dimensions such as 1280x720 are unsupported."
     })),
-    mode: Type.Optional(Type.Union([Type.Literal("headless"), Type.Literal("headful")], {
+    mode: Type.Optional(piStringEnumSchema(["headless", "headful"] as const, {
       description: "Browser execution mode. Use headless or headful; screenshot is an action type, not a mode."
     }))
   }),
@@ -178,21 +191,21 @@ const browserActionTool = defineTool({
   description: "Run one tracked browser action. Visible page and action output use a structured Content Admission Review envelope and may be warned or withheld. Use wait_for (not wait) for selector, URL, or elapsed-time waits, and evaluate (not exec) for Playwright scripting. evaluate runs an async Node body with page available; read DOM with `return await page.evaluate(() => ...)`. Set auto_capture=false for nonvisual actions. Captured actions require a descriptive label and unique .png filename.",
   parameters: Type.Object({
     session_id: Type.String({ minLength: 1 }),
-    type: Type.Union([
-      Type.Literal("click"),
-      Type.Literal("fill"),
-      Type.Literal("type"),
-      Type.Literal("press"),
-      Type.Literal("hover"),
-      Type.Literal("select"),
-      Type.Literal("check"),
-      Type.Literal("uncheck"),
-      Type.Literal("scroll"),
-      Type.Literal("wait_for"),
-      Type.Literal("navigate"),
-      Type.Literal("evaluate"),
-      Type.Literal("screenshot")
-    ], { description: "Tracked browser action. Use wait_for, not wait, with ms for an elapsed-time wait. Use evaluate, not exec, for Playwright scripting." }),
+    type: piStringEnumSchema([
+      "click",
+      "fill",
+      "type",
+      "press",
+      "hover",
+      "select",
+      "check",
+      "uncheck",
+      "scroll",
+      "wait_for",
+      "navigate",
+      "evaluate",
+      "screenshot"
+    ] as const, { description: "Tracked browser action. Use wait_for, not wait, with ms for an elapsed-time wait. Use evaluate, not exec, for Playwright scripting." }),
     selector: Type.Optional(Type.String()),
     value: Type.Optional(Type.String()),
     values: Type.Optional(Type.Array(Type.String())),
@@ -259,31 +272,31 @@ const browserStopTool = defineTool({
   }
 });
 
-const reportEvidenceKindSchema = Type.Union([
-  Type.Literal("unit_test"),
-  Type.Literal("integration_test"),
-  Type.Literal("api_smoke"),
-  Type.Literal("browser_flow"),
-  Type.Literal("visual_review"),
-  Type.Literal("responsive_review"),
-  Type.Literal("accessibility_review"),
-  Type.Literal("log_review"),
-  Type.Literal("data_check"),
-  Type.Literal("negative_case"),
-  Type.Literal("build"),
-  Type.Literal("deploy_health"),
-  Type.Literal("taste_review"),
-  Type.Literal("intent_review"),
-  Type.Literal("manual_waiver"),
-  Type.Literal("proof"),
-  Type.Literal("screenshot"),
-  Type.Literal("video"),
-  Type.Literal("trace"),
-  Type.Literal("log"),
-  Type.Literal("command"),
-  Type.Literal("file"),
-  Type.Literal("manual")
-], { description: "Evidence category. Use browser_flow or screenshot for browser UI proof." });
+const reportEvidenceKindSchema = piStringEnumSchema([
+  "unit_test",
+  "integration_test",
+  "api_smoke",
+  "browser_flow",
+  "visual_review",
+  "responsive_review",
+  "accessibility_review",
+  "log_review",
+  "data_check",
+  "negative_case",
+  "build",
+  "deploy_health",
+  "taste_review",
+  "intent_review",
+  "manual_waiver",
+  "proof",
+  "screenshot",
+  "video",
+  "trace",
+  "log",
+  "command",
+  "file",
+  "manual"
+] as const, { description: "Evidence category. Use browser_flow or screenshot for browser UI proof." });
 
 const reportEvidenceSchema = Type.Object({
   point_id: Type.Optional(Type.String()),
@@ -305,7 +318,7 @@ const reportTool = defineTool({
   label: "Report To Butler",
   description: "Record the single structured supervisor report after work and verification finish. For UI work, include at least one browser_flow or screenshot evidence item with the exact proof_run_id returned by manor_browser_stop.",
   parameters: Type.Object({
-    status: Type.Union([Type.Literal("completed"), Type.Literal("blocked")]),
+    status: piStringEnumSchema(["completed", "blocked"] as const),
     summary: Type.String({ minLength: 1 }),
     details: Type.Optional(Type.String()),
     evidence: Type.Optional(Type.Array(reportEvidenceSchema, {
@@ -347,6 +360,8 @@ export const manorWorkerTools = [
   browserStopTool,
   reportTool
 ];
+
+for (const tool of manorWorkerTools) assertProviderPortableToolSchema(tool.name, tool.parameters);
 
 export default async function manorToolsExtension(pi: ExtensionAPI): Promise<void> {
   for (const tool of manorWorkerTools) pi.registerTool(tool);

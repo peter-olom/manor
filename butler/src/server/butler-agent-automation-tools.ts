@@ -2,12 +2,13 @@ import { Type } from "@sinclair/typebox";
 
 import type { PairAutomation } from "../shared/pairing.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { stringEnumSchema } from "./butler-agent-tool-schemas.js";
 import { formatTimezoneLabel, resolveOperatorTimezone } from "./operator-timezone.js";
 import { formatButlerDateTime, upcomingAutomationRuns } from "./session-automation.js";
 
 const CLOCK_TIME = Type.String({ minLength: 1, pattern: "^(?:[01]\\d|2[0-3]):[0-5]\\d$" });
 const LOCAL_DATE = Type.String({ minLength: 1, pattern: "^\\d{4}-\\d{2}-\\d{2}$" });
-const WEEKDAY = Type.Union(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].map((day) => Type.Literal(day)));
+const WEEKDAY = stringEnumSchema(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const);
 
 function configurationResult(configured: PairAutomation) {
   const timezone = resolveOperatorTimezone();

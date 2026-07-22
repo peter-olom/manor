@@ -9,6 +9,7 @@ import {
 } from "./opencode-web-tools.js";
 import { admitContentThroughButler } from "./content-admission-client.js";
 import { formatContentAdmissionForAgent } from "./content-admission-review.js";
+import { assertProviderPortableToolSchema } from "./butler-agent-tool-schemas.js";
 
 const webSearchTool = defineTool({
   name: "web_search",
@@ -58,6 +59,10 @@ const webFetchTool = defineTool({
   }
 });
 
+export const opencodePiWebTools = [webSearchTool, webFetchTool];
+
+for (const tool of opencodePiWebTools) assertProviderPortableToolSchema(tool.name, tool.parameters);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -93,7 +98,6 @@ export default async function opencodeWebToolsExtension(pi: ExtensionAPI): Promi
   const config = readOpencodeWebToolsConfig();
   pi.on("before_provider_request", (event) => applyOpencodeGoNativeThinkingPayload(event.payload));
   if (config.enabled) {
-    pi.registerTool(webSearchTool);
-    pi.registerTool(webFetchTool);
+    for (const tool of opencodePiWebTools) pi.registerTool(tool);
   }
 }

@@ -21,7 +21,7 @@ import {
   readProjectArtifactContent
 } from "./project-artifacts-policies.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
-import { stringMapSchema } from "./butler-agent-tool-schemas.js";
+import { stringEnumSchema, stringMapSchema } from "./butler-agent-tool-schemas.js";
 import { formatMemoryDebugTrace, formatMemoryDebugTraceList, getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
 import { buildMemoryDiagnostics, formatMemoryDiagnostics } from "./memory-diagnostics.js";
 import { formatButlerMemoryRetrieval, retrieveButlerMemoryWithEmbeddings } from "./memory-retrieval.js";
@@ -187,8 +187,8 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       parameters: Type.Object({
         projectId: Type.Optional(Type.String()),
         threadId: Type.Optional(Type.String()),
-        from: Type.Optional(Type.Union([Type.String(), Type.Number()])),
-        to: Type.Optional(Type.Union([Type.String(), Type.Number()])),
+        from: Type.Optional(Type.String({ description: "ISO date/time or epoch milliseconds as decimal text." })),
+        to: Type.Optional(Type.String({ description: "ISO date/time or epoch milliseconds as decimal text." })),
         includeSamples: Type.Optional(Type.Boolean()),
         sampleLimit: Type.Optional(Type.Number({ minimum: 1, maximum: 50 }))
       }),
@@ -216,12 +216,12 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
         "memory_debug_trace: use this for full memory debugging when counts are not enough. Pass traceId to inspect one run; otherwise filter by kind, status, projectId, threadId, from, or to.",
       parameters: Type.Object({
         traceId: Type.Optional(Type.String()),
-        kind: Type.Optional(Type.Union([Type.Literal("review"), Type.Literal("synthesis")])),
-        status: Type.Optional(Type.Union([Type.Literal("completed"), Type.Literal("failed"), Type.Literal("skipped")])),
+        kind: Type.Optional(stringEnumSchema(["review", "synthesis"] as const)),
+        status: Type.Optional(stringEnumSchema(["completed", "failed", "skipped"] as const)),
         projectId: Type.Optional(Type.String()),
         threadId: Type.Optional(Type.String()),
-        from: Type.Optional(Type.Union([Type.String(), Type.Number()])),
-        to: Type.Optional(Type.Union([Type.String(), Type.Number()])),
+        from: Type.Optional(Type.String({ description: "ISO date/time or epoch milliseconds as decimal text." })),
+        to: Type.Optional(Type.String({ description: "ISO date/time or epoch milliseconds as decimal text." })),
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 }))
       }),
       uiEffects: access.getToolUiEffects("memory_debug_trace"),
@@ -256,16 +256,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       parameters: Type.Object({
         projectId: Type.Optional(Type.String()),
         query: Type.Optional(Type.String()),
-        kind: Type.Optional(
-          Type.Union([
-            Type.Literal("seed"),
-            Type.Literal("reference"),
-            Type.Literal("download"),
-            Type.Literal("research"),
-            Type.Literal("report"),
-            Type.Literal("other")
-          ])
-        ),
+        kind: Type.Optional(stringEnumSchema(["seed", "reference", "download", "research", "report", "other"] as const)),
         tags: Type.Optional(Type.Array(Type.String())),
         limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 }))
       }),
@@ -315,16 +306,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       parameters: Type.Object({
         title: Type.String({ minLength: 1 }),
         text: Type.String({ minLength: 1 }),
-        kind: Type.Optional(
-          Type.Union([
-            Type.Literal("seed"),
-            Type.Literal("reference"),
-            Type.Literal("download"),
-            Type.Literal("research"),
-            Type.Literal("report"),
-            Type.Literal("other")
-          ])
-        ),
+        kind: Type.Optional(stringEnumSchema(["seed", "reference", "download", "research", "report", "other"] as const)),
         projectId: Type.Optional(Type.String()),
         projectLabel: Type.Optional(Type.String()),
         threadId: Type.Optional(Type.String()),
@@ -383,18 +365,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       parameters: Type.Object({
         sourceFilePath: Type.String({ minLength: 1 }),
         title: Type.String({ minLength: 1, description: "Concise descriptive title used for display and intelligent naming of generic files." }),
-        kind: Type.Optional(
-          Type.Union([
-            Type.Literal("seed"),
-            Type.Literal("reference"),
-            Type.Literal("download"),
-            Type.Literal("research"),
-            Type.Literal("report"),
-            Type.Literal("proof"),
-            Type.Literal("screenshot"),
-            Type.Literal("other")
-          ])
-        ),
+        kind: Type.Optional(stringEnumSchema(["seed", "reference", "download", "research", "report", "proof", "screenshot", "other"] as const)),
         projectId: Type.Optional(Type.String()),
         projectLabel: Type.Optional(Type.String()),
         threadId: Type.Optional(Type.String()),
@@ -523,16 +494,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       parameters: Type.Object({
         title: Type.String({ minLength: 1 }),
         url: Type.String({ minLength: 1 }),
-        kind: Type.Optional(
-          Type.Union([
-            Type.Literal("seed"),
-            Type.Literal("reference"),
-            Type.Literal("download"),
-            Type.Literal("research"),
-            Type.Literal("report"),
-            Type.Literal("other")
-          ])
-        ),
+        kind: Type.Optional(stringEnumSchema(["seed", "reference", "download", "research", "report", "other"] as const)),
         projectId: Type.Optional(Type.String()),
         projectLabel: Type.Optional(Type.String()),
         threadId: Type.Optional(Type.String()),

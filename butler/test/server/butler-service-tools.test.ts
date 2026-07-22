@@ -59,7 +59,7 @@ function template(runtimeKind: "container" | "embedded" = "container") {
   };
 }
 
-test("register_service_template requires an explicit image and valid positive port", () => {
+test("register_service_template exposes a flat provider-portable object schema", () => {
   const definitions = definitionsFor();
   const schema = definitions.find((definition) => definition.name === "register_service_template")?.parameters;
   assert.ok(schema);
@@ -73,10 +73,12 @@ test("register_service_template requires an explicit image and valid positive po
     port: 8080
   };
   assert.equal(Value.Check(schema, base), true);
-  assert.equal(Value.Check(schema, { ...base, image: undefined }), false);
-  assert.equal(Value.Check(schema, { ...base, port: 0 }), false);
+  assert.equal(Value.Check(schema, { ...base, image: undefined }), true);
+  assert.equal(Value.Check(schema, { ...base, port: undefined }), true);
+  assert.equal(Value.Check(schema, { ...base, port: 0 }), true);
   assert.equal(Value.Check(schema, { ...base, port: -1 }), false);
   assert.equal(Value.Check(schema, { ...base, port: 65536 }), false);
+  assert.equal(Value.Check(schema, { ...base, port: "8080" }), false);
   assert.equal(Value.Check(schema, {
     id: "embedded",
     label: "Embedded",
@@ -91,10 +93,10 @@ test("register_service_template requires an explicit image and valid positive po
     description: "Embedded service",
     runtimeKind: "embedded",
     engine: "sqlite"
-  }), false);
+  }), true);
 });
 
-test("register_service_template accepts safe embedded templates and rejects unsafe file names", async () => {
+test("register_service_template enforces runtime-specific service safety before registry writes", async () => {
   let upserts = 0;
   const definitions = definitionsFor({
     normalizeServiceEnv: () => ({}),
@@ -115,9 +117,27 @@ test("register_service_template accepts safe embedded templates and rejects unsa
     fileName: ".manor/sqlite/app.db"
   };
   await register.execute("embedded-valid", valid);
+  const container = {
+    id: "container",
+    label: "Container",
+    description: "Container service",
+    runtimeKind: "container",
+    engine: "postgres",
+    image: "postgres:18",
+    port: 5432
+  };
+  await register.execute("container-valid", container);
+  await assert.rejects(() => register.execute("runtime-kind", { ...container, runtimeKind: "process" }), /runtimeKind must be container or embedded/);
+  await assert.rejects(() => register.execute("container-image", { ...container, image: "" }), /image is required/);
+  await assert.rejects(() => register.execute("container-port-missing", { ...container, port: undefined }), /port must be an integer/);
+  await assert.rejects(() => register.execute("container-port-fraction", { ...container, port: 5432.5 }), /port must be an integer/);
+  await assert.rejects(() => register.execute("container-port-low", { ...container, port: 0 }), /port must be an integer/);
+  await assert.rejects(() => register.execute("container-port-high", { ...container, port: 65536 }), /port must be an integer/);
+  await assert.rejects(() => register.execute("embedded-missing", { ...valid, fileName: undefined }), /safe relative path/);
   await assert.rejects(() => register.execute("embedded-traversal", { ...valid, fileName: "../escape.db" }), /safe relative path/);
   await assert.rejects(() => register.execute("embedded-absolute", { ...valid, fileName: "/tmp/escape.db" }), /safe relative path/);
-  assert.equal(upserts, 1);
+  await assert.rejects(() => register.execute("embedded-port", { ...valid, port: 1 }), /port must be 0/);
+  assert.equal(upserts, 2);
 });
 
 test("service mutations reject resources and stacks owned by another Butler session", async () => {

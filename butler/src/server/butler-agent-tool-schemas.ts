@@ -1,5 +1,82 @@
 import { Type } from "@sinclair/typebox";
 
+const FORBIDDEN_PROVIDER_SCHEMA_KEYWORDS = new Set([
+  "$defs",
+  "$ref",
+  "allOf",
+  "anyOf",
+  "const",
+  "dependentRequired",
+  "dependentSchemas",
+  "else",
+  "if",
+  "not",
+  "oneOf",
+  "patternProperties",
+  "then",
+  "unevaluatedItems",
+  "unevaluatedProperties"
+]);
+
+function escapeRegexLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function stringEnumSchema<const Values extends readonly string[]>(
+  values: Values,
+  options: { description?: string; default?: Values[number] } = {}
+) {
+  if (values.length === 0) throw new Error("String enum schemas require at least one value.");
+  return Type.String({
+    enum: [...values],
+    pattern: `^(?:${values.map(escapeRegexLiteral).join("|")})$`,
+    ...options
+  });
+}
+
+export function providerToolSchemaViolations(schema: unknown, path = "parameters"): string[] {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return [`${path} must be a schema object`];
+  const record = schema as Record<string, unknown>;
+  const violations = Object.keys(record)
+    .filter((key) => FORBIDDEN_PROVIDER_SCHEMA_KEYWORDS.has(key))
+    .map((key) => `${path}.${key}`);
+  if (Array.isArray(record.type)) violations.push(`${path}.type`);
+
+  for (const [key, value] of Object.entries(record)) {
+    if (["default", "enum", "example", "examples"].includes(key) || !value || typeof value !== "object") continue;
+    if (key === "properties" && !Array.isArray(value)) {
+      for (const [propertyName, propertySchema] of Object.entries(value as Record<string, unknown>)) {
+        violations.push(...providerToolSchemaViolations(propertySchema, `${path}.properties.${propertyName}`));
+      }
+      continue;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => {
+        if (entry && typeof entry === "object") {
+          violations.push(...providerToolSchemaViolations(entry, `${path}.${key}[${index}]`));
+        }
+      });
+      continue;
+    }
+    violations.push(...providerToolSchemaViolations(value, `${path}.${key}`));
+  }
+  return violations;
+}
+
+export function assertProviderPortableToolSchema(toolName: string, schema: unknown): void {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    throw new Error(`Tool ${toolName} parameters must be a top-level object schema.`);
+  }
+  const root = schema as Record<string, unknown>;
+  if (root.type !== "object" || !root.properties || typeof root.properties !== "object" || Array.isArray(root.properties)) {
+    throw new Error(`Tool ${toolName} parameters must expose top-level type=object and properties.`);
+  }
+  const violations = providerToolSchemaViolations(schema);
+  if (violations.length > 0) {
+    throw new Error(`Tool ${toolName} uses provider-fragile schema keywords: ${violations.join(", ")}.`);
+  }
+}
+
 export function stringMapSchema() {
   return Type.Object({}, { additionalProperties: Type.String() });
 }
@@ -31,8 +108,8 @@ export function startPreviewSchema() {
       minLength: 1,
       description: "Short hint like 'installing deps' or 'running migrations'."
     })),
-    heartbeatKind: Type.Optional(Type.Union(
-      [Type.Literal("none"), Type.Literal("http"), Type.Literal("tcp"), Type.Literal("command")],
+    heartbeatKind: Type.Optional(stringEnumSchema(
+      ["none", "http", "tcp", "command"] as const,
       { description: "Heartbeat type. Defaults to http for previews." }
     )),
     heartbeatTarget: Type.Optional(Type.String({

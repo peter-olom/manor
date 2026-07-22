@@ -8,7 +8,7 @@ import { applyServiceStartedPolicies } from "./project-artifacts-policies.js";
 import { assertRuntimeResourceOwned, getRuntimeStartThreadId, isRuntimeResourceOwned } from "./butler-runtime-tool-ownership.js";
 import { toServiceLeaseView } from "./service-templates.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
-import { stringMapSchema } from "./butler-agent-tool-schemas.js";
+import { stringEnumSchema, stringMapSchema } from "./butler-agent-tool-schemas.js";
 
 const DEFAULT_SERVICE_WORKSPACE_ROOTS = ["/repos"];
 
@@ -105,22 +105,13 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
     stackVolumePath: Type.Optional(Type.String()),
     connection: connectionSchema
   };
-  const registerServiceTemplateSchema = Type.Union([
-    Type.Object({
-      ...commonTemplateProperties,
-      runtimeKind: Type.Literal("container"),
-      image: Type.String({ minLength: 1 }),
-      port: Type.Integer({ minimum: 1, maximum: 65535 }),
-      fileName: Type.Optional(Type.String())
-    }),
-    Type.Object({
-      ...commonTemplateProperties,
-      runtimeKind: Type.Literal("embedded"),
-      image: Type.Optional(Type.String({ minLength: 1 })),
-      port: Type.Optional(Type.Literal(0)),
-      fileName: Type.String({ minLength: 1 })
-    })
-  ]);
+  const registerServiceTemplateSchema = Type.Object({
+    ...commonTemplateProperties,
+    runtimeKind: stringEnumSchema(["container", "embedded"] as const),
+    image: Type.Optional(Type.String({ minLength: 1 })),
+    port: Type.Optional(Type.Integer({ minimum: 0, maximum: 65535 })),
+    fileName: Type.Optional(Type.String({ minLength: 1 }))
+  });
   return [
     access.defineButlerTool({
       name: "list_service_templates",
@@ -177,6 +168,9 @@ export function buildButlerServiceTools(access: ButlerAgentToolAccess): ButlerCu
             notes?: string;
           };
         };
+        if (typedParams.runtimeKind !== "container" && typedParams.runtimeKind !== "embedded") {
+          throw new Error("Service template runtimeKind must be container or embedded.");
+        }
         if (typedParams.runtimeKind === "container") {
           if (!typedParams.image?.trim()) throw new Error("Container service template image is required.");
           if (!Number.isInteger(typedParams.port) || (typedParams.port ?? 0) < 1 || (typedParams.port ?? 0) > 65535) {

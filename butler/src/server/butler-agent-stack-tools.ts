@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { Type } from "@sinclair/typebox";
 
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { stringEnumSchema } from "./butler-agent-tool-schemas.js";
 import {
   assertRuntimeResourceOwned,
   getRuntimeStartThreadId,
@@ -82,9 +83,7 @@ export function buildButlerStackTools(access: ButlerAgentToolAccess): ButlerCust
         threadId: Type.Optional(Type.String()),
         title: Type.String({ minLength: 1 }),
         cwd: Type.Optional(Type.String()),
-        storageMode: Type.Optional(
-          Type.Union([Type.Literal("ephemeral"), Type.Literal("job"), Type.Literal("base"), Type.Literal("custom")])
-        ),
+        storageMode: Type.Optional(stringEnumSchema(["ephemeral", "job", "base", "custom"] as const)),
         retainsVolumes: Type.Optional(Type.Boolean()),
         storageKey: Type.Optional(Type.String()),
         cloneFromStorageKey: Type.Optional(Type.String()),

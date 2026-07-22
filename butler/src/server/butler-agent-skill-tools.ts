@@ -1,14 +1,12 @@
 import { Type } from "@sinclair/typebox";
 
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import { stringEnumSchema } from "./butler-agent-tool-schemas.js";
 import { redactSensitiveText } from "./redact-sensitive-text.js";
 import type { AgentSkillChangeInput, AgentSkillChangeProposal, SkillEnvironmentId, SkillScope } from "./skills-service.js";
 import { deleteWorkerThread, startWorkerThread } from "./worker-client-router.js";
 
-const environmentSchema = Type.Union([
-  Type.Literal("butler-pi"),
-  Type.Literal("worker-pi")
-]);
+const environmentSchema = stringEnumSchema(["butler-pi", "worker-pi"] as const);
 
 function environment(value: unknown): SkillEnvironmentId {
   if (value === "butler-pi" || value === "worker-pi") return value;
@@ -245,10 +243,10 @@ export function buildButlerSkillTools(access: ButlerAgentToolAccess): ButlerCust
       description: "Prepare a validated single-document skill create, install, update, or undo and ask the operator to approve it. Repository-backed installations use Butler scratch preparation.",
       promptSnippet: "propose_skill_change: after inspecting existing skills, use this for single-document creation, installation, update, or undo in the shared registry. Include the complete SKILL.md for a single-document install. For a repository or multi-file skill, prepare it under /scratch and use propose_repository_skill_install. Project-local skills are repository files and must be changed by Worker. Never call apply_skill_change until the operator approves the card.",
       parameters: Type.Object({
-        operation: Type.Union([Type.Literal("create"), Type.Literal("install"), Type.Literal("update"), Type.Literal("undo")]),
+        operation: stringEnumSchema(["create", "install", "update", "undo"] as const),
         environment: Type.Optional(environmentSchema),
         cwd: Type.Optional(Type.String()),
-        scope: Type.Optional(Type.Union([Type.Literal("user"), Type.Literal("project")])),
+        scope: Type.Optional(stringEnumSchema(["user", "project"] as const)),
         name: Type.Optional(Type.String()),
         description: Type.Optional(Type.String()),
         instructions: Type.Optional(Type.String()),
