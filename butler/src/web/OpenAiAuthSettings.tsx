@@ -66,11 +66,13 @@ function AuthActions({
         <button className={`button ${auth.loggedIn ? "" : "is-primary"}`} type="button" onClick={() => void onStartAuth(target)} disabled={busy}>
           {authPending && authTarget === target ? "Starting…" : authActionLabel(target, auth)}
         </button>
-        <button className="button" type="button" aria-label={`Check ${target === "butler" ? "Butler" : "Worker"} auth`} onClick={() => void onCheckAuth(target)} disabled={busy}>
-          {checking ? "Checking…" : "Check auth"}
-        </button>
+        {auth.loggedIn ? (
+          <button className="button" type="button" aria-label={`Check ${target === "butler" ? "Butler" : "Worker"} auth`} onClick={() => void onCheckAuth(target)} disabled={busy}>
+            {checking ? "Checking…" : "Check auth"}
+          </button>
+        ) : null}
       </div>
-      {authCheck ? <div className={`settings-auth-check is-${authCheck.ok ? "ok" : "failed"}`} role={authCheck.ok ? "status" : "alert"}>{authCheck.message}</div> : null}
+      {auth.loggedIn && authCheck ? <div className={`settings-auth-check is-${authCheck.ok ? "ok" : "failed"}`} role={authCheck.ok ? "status" : "alert"}>{authCheck.message}</div> : null}
     </>
   );
 }
