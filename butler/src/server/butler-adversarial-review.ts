@@ -18,16 +18,17 @@ import { formatProviderModelRef, modelToModelOption } from "./model-provider-con
 import { normalizeWorkerReviewResults } from "./butler-orchestration.js";
 import { applyOpencodeGoNativeThinkingPayload } from "./pi-opencode-web-tools-extension.js";
 import { piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
-import { buildReviewWorkspaceSnapshot, cleanupScopedReviewWorkspace, createScopedReviewWorkspace, resolveReviewWorkspaceCwd } from "./git-review-scope.js";
+import { buildReviewWorkspaceSnapshot, cleanupScopedReviewWorkspace, createNonGitReviewWorkspace, createScopedReviewWorkspace, resolveGitRoot, resolveReviewWorkspaceCwd } from "./git-review-scope.js";
 import { isolatedModelResourceOptions } from "./isolated-model-resources.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerThinkingLevel, CodexThreadRecord, CodexWorkerReportView, WorkerReviewResultRecordView } from "./types.js";
 import { workerExecutionEndAt } from "./worker-execution-window.js";
-import { workerFileChangeAttribution, workerFileChangePaths } from "./worker-review-attribution.js";
+import { workerFileChangeAttribution } from "./worker-review-attribution.js";
 import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { assertIsolatedPromptSucceeded } from "./isolated-prompt-outcome.js";
 import type { ActivityWatchdogService } from "./activity-watchdog.js";
 import { assertProviderPortableToolSchema } from "./butler-agent-tool-schemas.js";
+import { formatResolvedJobOutputManifestForReview, inspectCurrentJobOutputForReview } from "./job-output-manifest.js";
 
 export const ADVERSARIAL_REVIEW_OUTPUT_SCHEMA = {
   type: "object",
@@ -83,6 +84,24 @@ export function createPiReviewSubmissionTool(onSubmit: (review: ReturnType<typeo
         details: { submitted: true }
       };
     }
+  });
+}
+
+const PI_REVIEW_JOB_OUTPUT_SCHEMA = Type.Object({
+  outputId: Type.String({ minLength: 1 })
+}, { additionalProperties: false });
+
+export function createPiReviewJobOutputTool(inspect: (outputId: string) => Promise<string>) {
+  assertProviderPortableToolSchema("inspect_job_output", PI_REVIEW_JOB_OUTPUT_SCHEMA);
+  return defineTool({
+    name: "inspect_job_output",
+    label: "Inspect job output",
+    description: "Inspect one current-attempt durable output by manifest entry ID. Returns bounded extracted text for supported long text, PDF, Office, archive, and binary files without exposing filesystem paths.",
+    parameters: PI_REVIEW_JOB_OUTPUT_SCHEMA,
+    execute: async (_toolCallId, params) => ({
+      content: [{ type: "text" as const, text: await inspect(params.outputId) }],
+      details: { outputId: params.outputId }
+    })
   });
 }
 
@@ -169,6 +188,7 @@ export type ProviderAdversarialReviewInput = {
   onProgress?: (progress: AdversarialReviewProgress) => void;
   isCurrent?: () => boolean;
   watchdogs: ActivityWatchdogService;
+  inspectJobOutput?: (outputId: string) => Promise<string>;
 };
 
 export type AdversarialReviewProgress = {
@@ -235,6 +255,7 @@ async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unkno
     submitted = review;
     resolveSubmission(review);
   });
+  const inspectJobOutput = input.inspectJobOutput ? createPiReviewJobOutputTool(input.inspectJobOutput) : null;
   const settingsManager = SettingsManager.inMemory();
   const resourceLoader = new DefaultResourceLoader({
     cwd: input.cwd,
@@ -247,6 +268,7 @@ async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unkno
       "Judge the completed work against its goal using evidence appropriate to the capability. Work may be code-changing, operational, observational, advisory, or artifact-producing.",
       "Use repository inspection only when it materially tests a claim. A valid result may have no repository change.",
       "Your working directory is the only filesystem review surface. Worker runtime paths and session logs may not be mounted here. Never guess paths or repeatedly probe unavailable surfaces; judge the supplied evidence or report a compact evidence gap when it matters.",
+      "When a manifest output's complete contents matter, call inspect_job_output with its current manifest entry ID. This is the only artifact inspection surface; never infer another job ID or filesystem path.",
       "Find actionable correctness, regression, safety, proof, and task-fit issues.",
       "Do not modify files.",
       "You must finish by calling submit_review exactly once. Do not return the review as prose or raw JSON."
@@ -259,8 +281,8 @@ async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unkno
     modelRegistry: input.modelRegistry,
     model: input.selection.model,
     thinkingLevel: piThinkingLevelForModelOption(input.selection.thinkingLevel, modelToModelOption(input.selection.model)),
-    tools: ["read", "grep", "find", "ls", "submit_review"],
-    customTools: [submitReview],
+    tools: ["read", "grep", "find", "ls", ...(inspectJobOutput ? ["inspect_job_output"] : []), "submit_review"],
+    customTools: [...(inspectJobOutput ? [inspectJobOutput] : []), submitReview],
     sessionManager: SessionManager.inMemory(input.cwd),
     settingsManager,
     resourceLoader
@@ -344,6 +366,7 @@ export function buildAdversarialReviewPrompt(input: {
   thread: CodexThreadRecord;
   report: CodexWorkerReportView;
   workspaceSnapshot: string;
+  outputManifest?: string | null;
   reviewBrief?: string | null;
 }): string {
   const contract = input.thread.executionContract;
@@ -366,13 +389,13 @@ export function buildAdversarialReviewPrompt(input: {
     `Worker claims: ${clip(JSON.stringify(input.report.claims ?? null), 16_000)}`,
     `Worker evidence: ${clip(JSON.stringify(input.report.evidence ?? []), 16_000)}`,
     "",
+    "Durable outputs registered for this exact job attempt:",
+    clip(input.outputManifest?.trim() || "No durable outputs are registered for the current job attempt.", 40_000),
+    "Use these resolved records directly. Never search the filesystem for an artifact or proof identifier. Call inspect_job_output with a current manifest entry ID whenever complete long-text, PDF, Office, archive, or binary-derived evidence matters to the review.",
+    "",
     "Workspace evidence snapshot:",
     clip(input.workspaceSnapshot, 60_000)
   ].join("\n");
-}
-
-function workerWorkspaceContext(thread: CodexThreadRecord, report: CodexWorkerReportView | null): string {
-  return JSON.stringify({ report, changedPaths: workerFileChangePaths(thread) });
 }
 
 function concurrentReviewThreads(
@@ -447,12 +470,10 @@ export async function ensureButlerAdversarialReview(input: {
   const preferredCwd = thread.executionContract?.workspaceCwd || thread.cwd || process.cwd();
   const workerAttribution = workerFileChangeAttribution(thread);
   const workerAttributionText = JSON.stringify({ paths: workerAttribution.paths, attributionUnknown: workerAttribution.overflow });
-  const workerContextText = workerWorkspaceContext(thread, report);
   const reviewCwd = await resolveReviewWorkspaceCwd({
-    preferredCwd,
-    startedAt: thread.createdAt,
-    contextText: workerContextText
+    preferredCwd
   });
+  const reviewGitRoot = await resolveGitRoot(reviewCwd);
   const baselineSha = thread.executionContract?.reviewBaselineCwd && path.resolve(thread.executionContract.reviewBaselineCwd) === path.resolve(reviewCwd)
     ? thread.executionContract.reviewBaselineSha ?? null
     : null;
@@ -491,7 +512,8 @@ export async function ensureButlerAdversarialReview(input: {
   if (baselineTreeSha && baselineObjectDir && !scopedReview) {
     throw new Error("Worker review isolation could not be created safely. Butler will retry without reviewing the shared checkout.");
   }
-  const effectiveReviewCwd = scopedReview?.cwd ?? reviewCwd;
+  const nonGitReviewCwd = reviewGitRoot ? null : await createNonGitReviewWorkspace();
+  const effectiveReviewCwd = scopedReview?.cwd ?? nonGitReviewCwd ?? reviewCwd;
   try {
     const rawWorkspaceSnapshot = await (input.buildWorkspaceSnapshot ?? buildReviewWorkspaceSnapshot)(
       effectiveReviewCwd,
@@ -501,7 +523,12 @@ export async function ensureButlerAdversarialReview(input: {
     );
     if (input.isCurrent?.() === false) return [];
     const workspaceSnapshot = scopedReview ? `${scopedReview.scopeNote}\n\n${rawWorkspaceSnapshot}` : rawWorkspaceSnapshot;
-    const prompt = buildAdversarialReviewPrompt({ thread, report, workspaceSnapshot, reviewBrief: input.reviewBrief });
+    const payload = input.store.getThreadJobPayload(input.threadId);
+    const outputManifest = payload ? await formatResolvedJobOutputManifestForReview(payload, input.store) : null;
+    const inspectJobOutput = payload
+      ? (outputId: string) => inspectCurrentJobOutputForReview({ payload, store: input.store, outputId })
+      : undefined;
+    const prompt = buildAdversarialReviewPrompt({ thread, report, workspaceSnapshot, outputManifest, reviewBrief: input.reviewBrief });
     input.onProgress?.({
       stage: "reviewing_changes",
       message: "Workspace snapshot is ready. Starting the adversarial reviewer.",
@@ -517,7 +544,8 @@ export async function ensureButlerAdversarialReview(input: {
       timeoutMs: input.timeoutMs ?? 120_000,
       watchdogs: input.watchdogs,
       onProgress: input.onProgress,
-      isCurrent: input.isCurrent
+      isCurrent: input.isCurrent,
+      inspectJobOutput
     }));
     if (input.isCurrent?.() === false) return [];
     let results = normalizeWorkerReviewResults({
@@ -586,5 +614,6 @@ export async function ensureButlerAdversarialReview(input: {
     throw new Error(message);
   } finally {
     await cleanupScopedReviewWorkspace(scopedReview?.cwd);
+    await cleanupScopedReviewWorkspace(nonGitReviewCwd);
   }
 }

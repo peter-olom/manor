@@ -477,6 +477,13 @@ test("a persisted closeout message reconciles its callback without posting twice
   };
   await agent.notifyDirectCodexMessage({ threadId, text: "Finish it.", requestedAt: 1 });
   internals.operatorMessages.push({ id: `callback-fallback-${threadId}:turn-1`, role: "assistant", text: "Already posted.", at: 2, taskDurationMs: null, kind: "message" });
+  const pending = internals.pendingChatCallbacks.get(threadId)!;
+  pending.reviewState = "running";
+  pending.reviewStage = "supervising_closeout";
+  pending.reviewStartedAt = 1;
+  pending.reviewDeadlineAt = 10;
+  pending.reviewLastTool = "disprove_review_finding";
+  pending.reviewLastError = "stale review error";
   let reposts = 0;
   internals.operatorSink = { onOperatorReply: () => { reposts += 1; } };
 
@@ -485,6 +492,10 @@ test("a persisted closeout message reconciles its callback without posting twice
   assert.equal(reposts, 0);
   assert.equal(internals.pendingChatCallbacks.get(threadId)?.operatorCloseoutStatus, "posted");
   assert.equal(internals.pendingChatCallbacks.get(threadId)?.owesOperatorReply, false);
+  assert.equal(internals.pendingChatCallbacks.get(threadId)?.reviewState, "idle");
+  assert.equal(internals.pendingChatCallbacks.get(threadId)?.reviewStage, null);
+  assert.equal(internals.pendingChatCallbacks.get(threadId)?.reviewLastTool, null);
+  assert.equal(internals.pendingChatCallbacks.get(threadId)?.reviewLastError, null);
   agent.dispose();
 });
 

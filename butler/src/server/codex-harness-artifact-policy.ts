@@ -17,6 +17,7 @@ import {
 import type { RuntimeBrokerClient } from "./runtime-broker-client.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { CodexThreadRecord } from "./types.js";
+import { registerJobOutput } from "./codex-harness-payload.js";
 
 function hasOwnField(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
@@ -90,9 +91,25 @@ export async function handleHarnessArtifactPolicyAction(input: {
       metadata: normalizeArtifactMetadata(params.metadata)
     });
     store.upsertProjectArtifact(artifact);
+    await registerJobOutput({
+      artifactsDir,
+      store,
+      threadId,
+      output: {
+        kind: "project_artifact",
+        referenceId: artifact.id,
+        title: artifact.title,
+        projectId: artifact.projectId,
+        sourceTurnId: thread.turns?.at(-1)?.id ?? null,
+        contentType: artifact.contentType,
+        sizeBytes: artifact.sizeBytes,
+        checksumSha256: artifact.source.checksumSha256,
+        createdAt: artifact.createdAt
+      }
+    });
     store.addEvent(threadId, "harness/artifact/save", `Saved artifact ${artifact.title}`);
     return {
-      text: `Saved ${artifact.title} as a durable project artifact.`,
+      text: `Saved ${artifact.title} as durable project artifact ${artifact.id}.`,
       data: { artifact: decorateProjectArtifactWithAccess(artifact) }
     };
   }
@@ -125,9 +142,25 @@ export async function handleHarnessArtifactPolicyAction(input: {
       metadata: normalizeArtifactMetadata(params.metadata)
     });
     store.upsertProjectArtifact(artifact);
+    await registerJobOutput({
+      artifactsDir,
+      store,
+      threadId,
+      output: {
+        kind: "project_artifact",
+        referenceId: artifact.id,
+        title: artifact.title,
+        projectId: artifact.projectId,
+        sourceTurnId: thread.turns?.at(-1)?.id ?? null,
+        contentType: artifact.contentType,
+        sizeBytes: artifact.sizeBytes,
+        checksumSha256: artifact.source.checksumSha256,
+        createdAt: artifact.createdAt
+      }
+    });
     store.addEvent(threadId, "harness/artifact/download", `Downloaded artifact ${artifact.title}`);
     return {
-      text: `Downloaded ${artifact.title} into durable project storage.`,
+      text: `Downloaded ${artifact.title} into durable project storage as artifact ${artifact.id}.`,
       data: { artifact: decorateProjectArtifactWithAccess(artifact) }
     };
   }

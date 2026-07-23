@@ -5,11 +5,13 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  appendJobOutputManifestEntries,
   bindJobPayloadDelivery,
   buildJobPayload,
   formatJobPayloadMessage,
   listJobPayloads,
   persistJobPayload,
+  parseJobPayload,
   readCurrentJobPayload,
   updateJobPayload
 } from "../../src/server/job-instruction-artifacts.js";
@@ -87,6 +89,74 @@ test("job payload updates mutate the current payload node graph", async () => {
   assert.equal(read?.snapshots[1]?.nodeId, read?.nodes[1]?.id);
   assert.equal(read?.snapshots[1]?.display.summary, "Retry the proof with a focused screenshot.");
   assert.deepEqual(read?.attachments.images, ["image-1"]);
+});
+
+test("job payloads migrate old records and preserve registered outputs across updates", () => {
+  const payload = buildJobPayload({
+    threadId: "thread-payload",
+    kind: "delegation",
+    instruction: "Create a durable report"
+  });
+  const legacy = structuredClone(payload) as unknown as Record<string, unknown>;
+  delete legacy.outputManifest;
+  legacy.checksum = "legacy-checksum";
+  const migrated = parseJobPayload(legacy);
+  assert.deepEqual(migrated?.outputManifest, { version: 1, entries: [] });
+  assert.notEqual(migrated?.checksum, payload.checksum);
+
+  const withOutput = appendJobOutputManifestEntries(payload, [{
+    id: "attempt-thread-payload-1:project_artifact:artifact-1",
+    kind: "project_artifact",
+    title: "Research report",
+    threadId: "thread-payload",
+    projectId: "unknown",
+    attemptId: payload.protocol.currentAttemptId,
+    sourceTurnId: "turn-1",
+    artifactId: "artifact-1",
+    proofRunId: null,
+    reportTurnId: null,
+    logicalPath: "report.md",
+    contentType: "text/markdown",
+    sizeBytes: 42,
+    checksumSha256: "abc123",
+    availability: "available",
+    checksumStatus: "verified",
+    integrityCheckedAt: 10,
+    createdAt: 10
+  }], 10);
+  const updated = updateJobPayload(withOutput, {
+    kind: "steering",
+    instruction: "Check the report once more."
+  });
+
+  assert.equal(updated.outputManifest.entries.length, 1);
+  assert.equal(updated.outputManifest.entries[0]?.artifactId, "artifact-1");
+  assert.notEqual(updated.checksum, payload.checksum);
+});
+
+test("job output manifest rejects current-attempt overflow", () => {
+  const payload = buildJobPayload({ threadId: "thread-cap", kind: "delegation", instruction: "Bound outputs" });
+  const entries = Array.from({ length: 513 }, (_, index) => ({
+    id: `${payload.protocol.currentAttemptId}:worker_report:turn-${index}`,
+    kind: "worker_report" as const,
+    title: `Report ${index}`,
+    threadId: payload.threadId,
+    projectId: payload.project.id,
+    attemptId: payload.protocol.currentAttemptId,
+    sourceTurnId: `turn-${index}`,
+    artifactId: null,
+    proofRunId: null,
+    reportTurnId: `turn-${index}`,
+    logicalPath: null,
+    contentType: null,
+    sizeBytes: null,
+    checksumSha256: null,
+    availability: "available" as const,
+    checksumStatus: "unverified" as const,
+    integrityCheckedAt: null,
+    createdAt: index
+  }));
+  assert.throws(() => appendJobOutputManifestEntries(payload, entries), /512-entry safety limit/);
 });
 
 test("job payload delivery binding updates the current node snapshot", () => {

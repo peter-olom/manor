@@ -126,7 +126,15 @@ export function applyPostedCloseout(
   callback.owesOperatorReply = false;
   callback.closeoutChannel = "main_chat";
   callback.reviewState = "idle";
+  callback.reviewStage = null;
   callback.reviewReason = null;
+  callback.reviewStartedAt = null;
+  callback.reviewDeadlineAt = null;
+  callback.reviewNextAttemptAt = null;
+  callback.reviewLastActivityAt = input.postedAt;
+  callback.reviewLastActivity = "Review complete.";
+  callback.reviewLastTool = null;
+  callback.reviewLastError = null;
   callback.blockedCloseoutReason = null;
   callback.blockedCloseoutReportAt = null;
   callback.closedAt = input.postedAt;

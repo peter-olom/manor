@@ -119,6 +119,38 @@ export type WorkerJobPayload = {
   report: WorkerReport | null;
 };
 
+export type WorkerJobOutputManifestEntry = {
+  id: string;
+  kind: "project_artifact" | "proof" | "worker_report";
+  title: string;
+  threadId: string;
+  projectId: string;
+  attemptId: string;
+  currentAttempt: boolean;
+  sourceTurnId: string | null;
+  referenceId: string;
+  logicalPath: string | null;
+  createdAt: number;
+  available: boolean;
+  integrity: "verified" | "mismatch" | "unverified" | "missing";
+  checksumSha256: string | null;
+  checksumStatus: "verified" | "mismatch" | "unverified";
+  integrityCheckedAt: number | null;
+  status: string | null;
+  fileName: string | null;
+  contentType: string | null;
+  openUrl: string | null;
+  downloadUrl: string | null;
+};
+
+export type WorkerJobOutputManifest = {
+  jobId: string;
+  projectId: string;
+  currentAttemptId: string;
+  attempt: number;
+  entries: WorkerJobOutputManifestEntry[];
+};
+
 export type WorkerJobPayloadSnapshot = Pick<
   WorkerJobPayload,
   "kind" | "status" | "updatedAt" | "display" | "operatorGoal" | "requestedTask" | "checklist" | "proof" | "constraints" | "notes"
@@ -138,6 +170,7 @@ export type WorkerTimeline = {
   report: WorkerReport | null;
   reports: WorkerReport[];
   payload: WorkerJobPayload | null;
+  outputManifest: WorkerJobOutputManifest | null;
   checklist: WorkerChecklistItem[] | null;
   fallback: WorkerItem[];
 };
@@ -422,6 +455,94 @@ const WorkerPayloadDetails = memo(function WorkerPayloadDetails({
         )}
       </div>
     </details>
+  );
+});
+
+function outputKindLabel(kind: WorkerJobOutputManifestEntry["kind"]): string {
+  if (kind === "project_artifact") return "Artifact";
+  if (kind === "worker_report") return "Report";
+  return "Proof";
+}
+
+function outputIntegrityLabel(entry: WorkerJobOutputManifestEntry): string {
+  if (entry.kind !== "project_artifact" && entry.available) return "Not checksum-backed";
+  if (entry.integrity === "verified") return "Checksum verified";
+  if (entry.integrity === "mismatch") return "Checksum mismatch";
+  if (entry.integrity === "missing") return "Missing";
+  return "Unverified";
+}
+
+function outputOutcome(entry: WorkerJobOutputManifestEntry): { label: string; className: string } | null {
+  if (!entry.status) return null;
+  if (entry.kind === "proof") {
+    return entry.status === "passed"
+      ? { label: "Proof passed", className: "is-neutral" }
+      : { label: `Proof ${entry.status}`, className: "is-negative" };
+  }
+  if (entry.kind === "worker_report") {
+    return {
+      label: `Report ${entry.status}`,
+      className: entry.status === "blocked" || entry.status === "failed" ? "is-negative" : "is-neutral"
+    };
+  }
+  return null;
+}
+
+export const WorkerJobOutputManifestPanel = memo(function WorkerJobOutputManifestPanel({
+  manifest
+}: {
+  manifest: WorkerJobOutputManifest | null;
+}) {
+  if (!manifest) return null;
+  const entries = [...manifest.entries].sort((left, right) => left.createdAt - right.createdAt);
+  return (
+    <section className="worker-output-manifest" aria-label="Current Worker job outputs">
+      <header className="worker-output-manifest-head">
+        <div>
+          <h3>Job outputs</h3>
+          <p title={`Job ${manifest.jobId} · Project ${manifest.projectId} · ${manifest.currentAttemptId}`}>
+            Job {shortId(manifest.jobId)} · Attempt {manifest.attempt}
+          </p>
+        </div>
+        <span>{entries.length} output{entries.length === 1 ? "" : "s"}</span>
+      </header>
+      {entries.length === 0 ? (
+        <p className="worker-output-manifest-empty">No durable outputs registered yet.</p>
+      ) : (
+        <ol className="worker-output-manifest-list">
+          {entries.map((entry) => {
+            const outcome = outputOutcome(entry);
+            return <li key={entry.id} className={`worker-output-manifest-entry${entry.available ? "" : " is-missing"}`}>
+              <div className="worker-output-manifest-entry-head">
+                <span className="worker-output-kind">{outputKindLabel(entry.kind)}</span>
+                <strong>{entry.title}</strong>
+                <span className={`worker-output-availability ${entry.kind === "proof" && entry.available ? "" : entry.available ? "is-available" : "is-missing"}`}>
+                  {entry.kind === "proof" && entry.available ? "Record available" : entry.available ? "Available" : "Missing"}
+                </span>
+                <span className={`worker-output-integrity ${entry.kind !== "project_artifact" && entry.available ? "is-record" : `is-${entry.integrity}`}`}>{outputIntegrityLabel(entry)}</span>
+                {outcome ? <span className={`worker-output-outcome ${outcome.className}`}>{outcome.label}</span> : null}
+              </div>
+              <div className="worker-output-manifest-meta">
+                <span title={entry.referenceId}>Ref {shortId(entry.referenceId)}</span>
+                <span title={entry.attemptId}>Attempt {manifest.attempt}</span>
+                {entry.sourceTurnId ? <span title={entry.sourceTurnId}>Turn {shortId(entry.sourceTurnId)}</span> : null}
+                {entry.logicalPath ? <span title={entry.logicalPath}>{entry.logicalPath}</span> : entry.fileName ? <span title={entry.fileName}>{entry.fileName}</span> : null}
+                {entry.checksumSha256 ? <span title={`SHA-256 ${entry.checksumSha256}`}>sha256 {entry.checksumSha256.slice(0, 10)}</span> : null}
+                {entry.kind === "project_artifact" && entry.integrityCheckedAt ? (
+                  <span title={new Date(entry.integrityCheckedAt).toISOString()}>Integrity checked {new Date(entry.integrityCheckedAt).toLocaleString()}</span>
+                ) : null}
+              </div>
+              {entry.available && (entry.openUrl || entry.downloadUrl) ? (
+                <div className="worker-output-manifest-actions">
+                  {entry.openUrl ? <a href={entry.openUrl} target="_blank" rel="noreferrer" aria-label={`Open ${entry.title}`}>Open</a> : null}
+                  {entry.downloadUrl ? <a href={entry.downloadUrl} download aria-label={`Download ${entry.title}`}>Download</a> : null}
+                </div>
+              ) : null}
+            </li>;
+          })}
+        </ol>
+      )}
+    </section>
   );
 });
 
@@ -1052,7 +1173,7 @@ function WorkerTimelineView({
   resetKey: string;
   onPreviewImage: OpenProofPreview;
 }) {
-  const { turns, report, reports, payload, checklist, fallback } = timeline;
+  const { turns, report, reports, payload, outputManifest, checklist, fallback } = timeline;
   const visibleProofRecords = useMemo(
     () => proofsForLoadedWorkerWindow(turns, proofRecords, hasMore, reports),
     [hasMore, proofRecords, reports, turns]
@@ -1064,7 +1185,10 @@ function WorkerTimelineView({
   const unanchoredProofs = useMemo(() => visibleProofRecords.filter((proof) => !anchoredProofIds.has(proof.id)), [anchoredProofIds, visibleProofRecords]);
   const lastTurn = turns.at(-1);
   const lastItem = lastTurn?.items.at(-1);
-  const bottomKey = `${lastTurn?.id ?? ""}:${lastItem?.id ?? ""}:${lastItem?.at ?? 0}:${report?.updatedAt ?? 0}:${fallback.at(-1)?.id ?? ""}`;
+  const outputStateKey = outputManifest?.entries
+    .map((entry) => `${entry.id}:${entry.available}:${entry.integrity}:${entry.status ?? ""}:${entry.currentAttempt}`)
+    .join("|") ?? "";
+  const bottomKey = `${lastTurn?.id ?? ""}:${lastItem?.id ?? ""}:${lastItem?.at ?? 0}:${report?.updatedAt ?? 0}:${outputStateKey}:${fallback.at(-1)?.id ?? ""}`;
   const prependKey = turns[0]?.id ?? null;
   const { ref, onScroll, unreadCount, scrollToBottom } = useAnchoredScroll<HTMLDivElement>({
     bottomKey,
@@ -1072,7 +1196,7 @@ function WorkerTimelineView({
     resetKey
   });
 
-  if (loading && turns.length === 0 && !report && fallback.length === 0) {
+  if (loading && turns.length === 0 && !report && !outputManifest && fallback.length === 0) {
     return (
       <div className="transcript" ref={ref} onScroll={onScroll}>
         <div className="empty-state is-inline">
@@ -1083,7 +1207,7 @@ function WorkerTimelineView({
     );
   }
 
-  if (turns.length === 0 && !report && fallback.length === 0) {
+  if (turns.length === 0 && !report && !outputManifest && fallback.length === 0) {
     return (
       <div className="transcript" ref={ref} onScroll={onScroll}>
         <div className="empty-state is-inline">
@@ -1125,6 +1249,7 @@ function WorkerTimelineView({
         {turns.length === 0 && !report
           ? fallback.map((row) => <FallbackRow key={row.id} row={row} />)
           : null}
+        <WorkerJobOutputManifestPanel manifest={outputManifest} />
       </div>
       <JumpToLatest count={unreadCount} onClick={() => scrollToBottom("smooth")} />
     </div>

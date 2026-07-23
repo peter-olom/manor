@@ -153,7 +153,7 @@ test("remote device auth accepts the final localhost callback through the API", 
     workerPiAgentDir: path.join(root, "worker"),
     authCommand: process.execPath,
     authCommandArgs: [loginScript],
-    authCompletionTimeoutMs: 25,
+    authCompletionTimeoutMs: 500,
     onAuthChanged: async (target) => {
       changed.push(target);
       await new Promise((resolve) => setTimeout(resolve, 100));

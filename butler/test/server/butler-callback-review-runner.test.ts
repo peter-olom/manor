@@ -396,7 +396,77 @@ test("adversarial review brief carries Butler's latest steering and unresolved d
   for (const index of [3, 4, 5, 6, 7]) assert.match(brief, new RegExp(`Held correction ${index}\\.`));
   assert.ok(brief.indexOf("Held correction 3.") < brief.indexOf("Held correction 7."));
   assert.match(brief, /Add an exhausted-retry assertion/);
-  assert.match(brief, /retry loop hides the original error/);
+  assert.doesNotMatch(brief, /retry loop hides the original error/);
+});
+
+test("callback review brief includes blocking findings only for the current report", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-review-current-finding-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  const target = callback("worker", 1);
+  store.upsertThreadSummary({
+    id: target.threadId,
+    status: "idle",
+    cwd: dir,
+    turns: [{ id: "turn-current", status: "completed", startedAt: 2, completedAt: 3 }]
+  });
+  const contract = buildThreadExecutionContract({
+    threadId: target.threadId,
+    workspaceCwd: dir,
+    projectId: "project",
+    projectLabel: "Project",
+    branch: null,
+    taskText: "Verify the current result.",
+    notes: []
+  });
+  store.setThreadExecutionContract(target.threadId, contract);
+  const report = store.recordWorkerReport(target.threadId, {
+    status: "completed",
+    summary: "Current report",
+    details: null,
+    turnId: "turn-current",
+    evidence: [],
+    claims: null
+  });
+  store.recordWorkerReviewResults(target.threadId, [
+    {
+      id: "finding-stale",
+      reviewSource: "adversarial_review",
+      turnId: "turn-old",
+      reportUpdatedAt: 1,
+      severity: "high",
+      findingSummary: "Stale blocker",
+      blocking: true,
+      linkedClaimIds: [],
+      automationFailure: false,
+      modelProvider: "openai",
+      modelId: "gpt-5-codex",
+      reasoningLevel: "high",
+      waived: false,
+      waiverReason: null,
+      createdAt: 1
+    },
+    {
+      id: "finding-current",
+      reviewSource: "adversarial_review",
+      turnId: report.turnId,
+      reportUpdatedAt: report.updatedAt,
+      severity: "high",
+      findingSummary: "Current blocker",
+      blocking: true,
+      linkedClaimIds: [],
+      automationFailure: false,
+      modelProvider: "openai",
+      modelId: "gpt-5-codex",
+      reasoningLevel: "high",
+      waived: false,
+      waiverReason: null,
+      createdAt: report.updatedAt
+    }
+  ]);
+
+  const brief = buildCallbackAdversarialReviewBrief(store, target);
+  assert.match(brief, /Current blocker/);
+  assert.doesNotMatch(brief, /Stale blocker/);
 });
 
 test("a scoped operator follow-up stays primary without hiding its governing checklist", async () => {
@@ -592,6 +662,34 @@ test("callback proof review injects its job selector when the model omits it", a
 
   await tools[0]!.execute("call-proof", {} as never);
   assert.equal(received?.threadId, target.threadId);
+});
+
+test("callback output inspection is allowlisted and bound to the callback job", async () => {
+  const target = callback("worker-output", 1);
+  let received: Record<string, unknown> | null = null;
+  const tools = buildGuardedCallbackReviewTools({
+    callback: target,
+    isCurrent: () => true,
+    tools: [{
+      name: "inspect_job_output",
+      label: "Inspect output",
+      description: "",
+      parameters: {} as never,
+      execute: async (_id, params) => {
+        received = params as Record<string, unknown>;
+        return { content: [{ type: "text", text: "inspected" }], details: {} };
+      }
+    }] as never
+  });
+
+  assert.equal(tools[0]?.name, "inspect_job_output");
+  await tools[0]!.execute("call-output", { outputId: "entry-1" } as never);
+  assert.equal(received?.threadId, target.threadId);
+  assert.equal(received?.outputId, "entry-1");
+  await assert.rejects(
+    () => tools[0]!.execute("call-other", { threadId: "another-job", outputId: "entry-1" } as never),
+    /only act on job worker-output/
+  );
 });
 
 test("a stale review waiting on a job mutation cannot send after replacement", async () => {

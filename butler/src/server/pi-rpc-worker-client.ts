@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -991,18 +991,10 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
       ]
     });
     const mapper = new PiProviderRuntimeMapper(threadId);
+    const sessionDir = path.join(this.options.sessionRootDir, threadId);
     try {
-      if (this.options.manageSessionDirectories !== false) {
-        await mkdir(path.join(this.options.sessionRootDir, threadId), { recursive: true });
-      }
-      await client.start();
+      await this.initializeSessionStorage(client, sessionDir, { threadId, cwd, provider, model }, sessionPath);
       this.lastError = null;
-      await writeFile(path.join(this.options.sessionRootDir, threadId, PI_WORKER_METADATA_FILE), JSON.stringify({
-        threadId,
-        cwd,
-        provider,
-        model
-      } satisfies PiWorkerSessionMetadata, null, 2), "utf8");
     } catch (error) {
       await client.stop().catch(() => undefined);
       if (!sessionPath) await this.removeSessionDirectory(threadId);
@@ -1033,6 +1025,28 @@ export class PiRpcWorkerClient extends EventEmitter<PiRpcWorkerClientEvents> {
     this.transportDeadThreadIds.delete(threadId);
     this.retryWaits.delete(threadId);
     return session;
+  }
+
+  private async initializeSessionStorage(
+    client: Pick<RpcClient, "start" | "getState">,
+    sessionDir: string,
+    metadata: PiWorkerSessionMetadata,
+    sessionPath?: string
+  ): Promise<void> {
+    if (this.options.manageSessionDirectories !== false) {
+      await mkdir(sessionDir, { recursive: true });
+    }
+    await client.start();
+    if (this.options.manageSessionDirectories === false && !sessionPath) await client.getState();
+
+    const metadataPath = path.join(sessionDir, PI_WORKER_METADATA_FILE);
+    const temporaryPath = `${metadataPath}.${crypto.randomUUID()}.tmp`;
+    try {
+      await writeFile(temporaryPath, JSON.stringify(metadata, null, 2), "utf8");
+      await rename(temporaryPath, metadataPath);
+    } finally {
+      await rm(temporaryPath, { force: true }).catch(() => undefined);
+    }
   }
 
   private async webToolsExtensionArgs(provider: string | null = this.selectedProvider): Promise<string[]> {

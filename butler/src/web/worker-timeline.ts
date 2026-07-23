@@ -2,6 +2,7 @@ import type {
   WorkerChecklistItem,
   WorkerItem,
   WorkerJobPayload,
+  WorkerJobOutputManifest,
   WorkerTimeline,
   WorkerTurnGroup
 } from "./WorkerPane";
@@ -34,6 +35,7 @@ export type WorkerThread = {
   workerReport?: WorkerThreadReport | null;
   workerReports?: WorkerThreadReport[];
   jobPayload?: WorkerJobPayload | null;
+  jobOutputManifest?: WorkerJobOutputManifest | null;
   supervisionChecklist?: {
     items?: Array<{ id: string; text: string; status: string; butlerNote?: string | null; queuedInstruction?: string | null }>;
   } | null;
@@ -102,7 +104,7 @@ function isFailedWorkerTurn(status: string): boolean {
 }
 
 export function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline {
-  if (!thread) return { turns: [], report: null, reports: [], payload: null, checklist: null, fallback: [] };
+  if (!thread) return { turns: [], report: null, reports: [], payload: null, outputManifest: null, checklist: null, fallback: [] };
   const checklist: WorkerChecklistItem[] | null = thread.supervisionChecklist?.items?.length
     ? thread.supervisionChecklist.items.map((item) => ({
         id: item.id,
@@ -177,6 +179,7 @@ export function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline
     report: report && !turns.some((turn) => turn.id === report.turnId) ? report : null,
     reports,
     payload: thread.jobPayload ?? null,
+    outputManifest: thread.jobOutputManifest ?? null,
     checklist,
     fallback: []
   };

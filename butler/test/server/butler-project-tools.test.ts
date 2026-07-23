@@ -191,6 +191,8 @@ test("share project file presents inferred PNGs with a vision reference in the a
         getThread: (threadId: string) => threadId === "thread-boardwalk"
           ? { cwd: "/repos/boardwalk", supervisor: { projectId: "boardwalk", projectLabel: "Boardwalk" } }
           : null,
+        getThreadJobPayload: () => null,
+        setThreadJobPayload: () => undefined,
         getJobMemory: () => null,
         upsertProjectArtifact: (artifact: ProjectArtifactView) => { stored = artifact; }
       }

@@ -19,6 +19,8 @@ function printHelp() {
   manor-harness [--thread <jobId>] assist --summary "<text>" [--details "<text>"] [--question "<text>"]
   manor-harness [--thread <jobId>] payload current
   manor-harness [--thread <jobId>] payload update [--status completed|blocked] [--summary "<text>"] [--details "<text>"] [--evidence-json '<json>' ...]
+  manor-harness [--thread <jobId>] manifest current
+  manor-harness [--thread <jobId>] manifest reconcile
   manor-harness [--thread <jobId>] vision inspect --image <referenceId> [--image <referenceId> ...] [--proof-run <runId> [--proof-artifact <label> ...]] --question "<text>"
   manor-harness [--thread <jobId>] memory [--provenance]
   manor-harness [--thread <jobId>] memory project [--provenance]
@@ -529,8 +531,8 @@ async function main() {
     return;
   }
 
-  if (args[0] === "payload" && !explicitThreadId) {
-    throw new Error("Payload actions require an explicit job binding. Use `manor-harness --thread <jobId> payload ...` or set MANOR_THREAD_ID.");
+  if ((args[0] === "payload" || args[0] === "manifest") && !explicitThreadId) {
+    throw new Error("Payload actions require an explicit job binding; manifest actions use the same binding. Use `manor-harness --thread <jobId> payload current` or set MANOR_THREAD_ID.");
   }
 
   const capabilities = await loadCapabilities();
@@ -576,6 +578,9 @@ async function main() {
         evidence: parseReportEvidence(args)
       };
     }
+  } else if (args[0] === "manifest") {
+    if (args[1] === "current") action = "manifest.current";
+    else if (args[1] === "reconcile") action = "manifest.reconcile";
   } else if (args[0] === "vision" && args[1] === "inspect") {
     action = "vision.inspect";
     params = {

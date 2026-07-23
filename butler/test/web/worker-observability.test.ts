@@ -4,7 +4,7 @@ import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { WorkerTurnView } from "../../src/web/WorkerPane.js";
+import { WorkerJobOutputManifestPanel, WorkerTurnView } from "../../src/web/WorkerPane.js";
 import { isCurrentWorkerHistoryRequest } from "../../src/web/useWorkerThreadHistory.js";
 import { mergeWorkerThreadPages, shapeWorkerTimeline, type WorkerThread } from "../../src/web/worker-timeline.js";
 
@@ -184,4 +184,180 @@ test("a cancelled no-item turn renders as a stopped terminal turn", () => {
   }));
   assert.match(markup, /aria-label="Worker turn 1 stopped"/);
   assert.match(markup, /worker-turn-status is-failed">stopped/);
+});
+
+test("the Worker lane renders durable job outputs with provenance, integrity, and actions", () => {
+  const markup = renderToStaticMarkup(React.createElement(WorkerJobOutputManifestPanel, {
+    manifest: {
+      jobId: "pi-job-3ebf4711d2d4",
+      projectId: "workspace:shared",
+      currentAttemptId: "attempt-pi-job-3ebf4711d2d4-2",
+      attempt: 2,
+      entries: [
+        {
+          id: "artifact-entry",
+          kind: "project_artifact",
+          title: "Relocation options report",
+          threadId: "pi-job-3ebf4711d2d4",
+          projectId: "workspace:shared",
+          attemptId: "attempt-pi-job-3ebf4711d2d4-2",
+          currentAttempt: true,
+          sourceTurnId: "turn-65",
+          referenceId: "artifact-report-1",
+          logicalPath: "reports/relocation-options.md",
+          createdAt: 20,
+          available: true,
+          integrity: "verified",
+          checksumSha256: "abcdef1234567890",
+          checksumStatus: "verified",
+          integrityCheckedAt: 21,
+          status: null,
+          fileName: "relocation-options.md",
+          contentType: "text/markdown",
+          openUrl: "/api/project-artifacts/workspace%3Ashared/artifact-report-1/file",
+          downloadUrl: "/api/project-artifacts/workspace%3Ashared/artifact-report-1/file?download=1"
+        },
+        {
+          id: "proof-entry",
+          kind: "proof",
+          title: "Source verification",
+          threadId: "pi-job-3ebf4711d2d4",
+          projectId: "workspace:shared",
+          attemptId: "attempt-pi-job-3ebf4711d2d4-2",
+          currentAttempt: true,
+          sourceTurnId: "turn-60",
+          referenceId: "proof-run-1",
+          logicalPath: null,
+          createdAt: 10,
+          available: true,
+          integrity: "unverified",
+          checksumSha256: null,
+          checksumStatus: "unverified",
+          integrityCheckedAt: null,
+          status: "recorded",
+          fileName: "sources.txt",
+          contentType: "text/plain",
+          openUrl: "/api/proofs/proof-run-1/sources.txt",
+          downloadUrl: null
+        },
+        {
+          id: "report-entry",
+          kind: "worker_report",
+          title: "Worker report",
+          threadId: "pi-job-3ebf4711d2d4",
+          projectId: "workspace:shared",
+          attemptId: "attempt-pi-job-3ebf4711d2d4-2",
+          currentAttempt: true,
+          sourceTurnId: "turn-65",
+          referenceId: "turn-65",
+          logicalPath: null,
+          createdAt: 30,
+          available: false,
+          integrity: "missing",
+          checksumSha256: null,
+          checksumStatus: "unverified",
+          integrityCheckedAt: null,
+          status: "completed",
+          fileName: null,
+          contentType: null,
+          openUrl: null,
+          downloadUrl: null
+        }
+      ]
+    }
+  }));
+
+  assert.match(markup, /aria-label="Current Worker job outputs"/);
+  assert.match(markup, /Job 3ebf4711d2d4 · Attempt 2/);
+  assert.match(markup, /Relocation options report/);
+  assert.match(markup, /Attempt 2/);
+  assert.match(markup, /reports\/relocation-options\.md/);
+  assert.match(markup, />Available</);
+  assert.match(markup, />Checksum verified</);
+  assert.match(markup, /worker-output-integrity is-record">Not checksum-backed/);
+  assert.match(markup, /sha256 abcdef1234/);
+  assert.match(markup, /Integrity checked/);
+  assert.match(markup, />Missing</);
+  assert.match(markup, /href="\/api\/project-artifacts\/workspace%3Ashared\/artifact-report-1\/file"/);
+  assert.match(markup, /href="\/api\/project-artifacts\/workspace%3Ashared\/artifact-report-1\/file\?download=1"/);
+});
+
+test("the Worker job output surface makes an empty manifest explicit", () => {
+  const markup = renderToStaticMarkup(React.createElement(WorkerJobOutputManifestPanel, {
+    manifest: {
+      jobId: "pi-job-empty",
+      projectId: "workspace:shared",
+      currentAttemptId: "attempt-pi-job-empty-1",
+      attempt: 1,
+      entries: []
+    }
+  }));
+
+  assert.match(markup, /0 outputs/);
+  assert.match(markup, /No durable outputs registered yet/);
+});
+
+test("the Worker output surface separates failed proof outcome and suppresses missing artifact actions", () => {
+  const markup = renderToStaticMarkup(React.createElement(WorkerJobOutputManifestPanel, {
+    manifest: {
+      jobId: "pi-job-status",
+      projectId: "workspace:shared",
+      currentAttemptId: "attempt-pi-job-status-1",
+      attempt: 1,
+      entries: [
+        {
+          id: "missing-artifact",
+          kind: "project_artifact",
+          title: "Missing report",
+          threadId: "pi-job-status",
+          projectId: "workspace:shared",
+          attemptId: "attempt-pi-job-status-1",
+          currentAttempt: true,
+          sourceTurnId: "turn-1",
+          referenceId: "artifact-missing",
+          logicalPath: "report.md",
+          createdAt: 1,
+          available: false,
+          integrity: "missing",
+          checksumSha256: "deadbeef",
+          checksumStatus: "unverified",
+          integrityCheckedAt: 2,
+          status: null,
+          fileName: "report.md",
+          contentType: "text/markdown",
+          openUrl: "/api/project-artifacts/workspace%3Ashared/artifact-missing/file",
+          downloadUrl: "/api/project-artifacts/workspace%3Ashared/artifact-missing/file?download=1"
+        },
+        {
+          id: "expired-proof",
+          kind: "proof",
+          title: "Expired browser proof",
+          threadId: "pi-job-status",
+          projectId: "workspace:shared",
+          attemptId: "attempt-pi-job-status-1",
+          currentAttempt: true,
+          sourceTurnId: "turn-1",
+          referenceId: "proof-expired",
+          logicalPath: null,
+          createdAt: 2,
+          available: true,
+          integrity: "unverified",
+          checksumSha256: null,
+          checksumStatus: "unverified",
+          integrityCheckedAt: null,
+          status: "expired",
+          fileName: null,
+          contentType: null,
+          openUrl: null,
+          downloadUrl: null
+        }
+      ]
+    }
+  }));
+
+  assert.match(markup, /worker-output-outcome is-negative">Proof expired/);
+  assert.match(markup, /worker-output-integrity is-record">Not checksum-backed/);
+  assert.doesNotMatch(markup, /href="\/api\/project-artifacts\/workspace%3Ashared\/artifact-missing/);
+  assert.doesNotMatch(markup, /aria-label="Open Missing report"/);
+  assert.doesNotMatch(markup, /aria-label="Download Missing report"/);
 });

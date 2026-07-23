@@ -375,7 +375,7 @@ services:
       - skill-registry:/worker-pi/agent/skills:ro
       - worker-runtime:/worker-runtime
       - repos:/repos
-      - artifacts:/artifacts
+      - artifacts:/artifacts:ro
       - inputs:/inputs:ro
       - outputs:/outputs
     restart: unless-stopped

@@ -1,14 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readdir, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { ADVERSARIAL_REVIEW_OUTPUT_SCHEMA, assertPiReviewerPromptSucceeded, buildAdversarialReviewPrompt, createPiReviewSubmissionTool, ensureButlerAdversarialReview, validateAdversarialReviewOutput, waitForPiReviewSubmission } from "../../src/server/butler-adversarial-review.js";
 import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
 import { getOrchestrationCloseoutBlocker, normalizeWorkerReviewResults } from "../../src/server/butler-orchestration.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
+import { buildJobPayload } from "../../src/server/job-instruction-artifacts.js";
+
+const execFileAsync = promisify(execFile);
 
 test("isolated adversarial review stores only compact findings and reuses the exact review", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-adversarial-review-"));
@@ -20,7 +25,7 @@ test("isolated adversarial review stores only compact findings and reuses the ex
     cwd: dir,
     turns: [{ id: "turn-1", status: "completed", items: [] }]
   });
-  store.setThreadExecutionContract(threadId, buildThreadExecutionContract({
+  const contract = buildThreadExecutionContract({
     threadId,
     workspaceCwd: dir,
     projectId: "project",
@@ -30,7 +35,8 @@ test("isolated adversarial review stores only compact findings and reuses the ex
     taskCategory: "generic_code",
     inferredWorkDepth: "standard",
     notes: []
-  }));
+  });
+  store.setThreadExecutionContract(threadId, contract);
   const report = store.recordWorkerReport(threadId, {
     turnId: "turn-1",
     status: "completed",
@@ -131,7 +137,8 @@ test("adversarial review chooses evidence by goal instead of assuming a reposito
       claims: [],
       evidence: [{ summary: "Invocation completed", details: "Observed expected diagnostic output." }]
     } as never,
-    workspaceSnapshot: "No repository changes were recorded."
+    workspaceSnapshot: "No repository changes were recorded.",
+    outputManifest: '{"outputs":[{"id":"artifact-1","title":"Research report"}]}'
   });
 
   assert.match(prompt, /proof shape fits the requested outcome/i);
@@ -140,6 +147,110 @@ test("adversarial review chooses evidence by goal instead of assuming a reposito
   assert.match(prompt, /Do not guess alternate paths/i);
   assert.match(prompt, /Missing reviewer access is not itself a Worker defect/i);
   assert.match(prompt, /Workspace evidence snapshot/i);
+  assert.match(prompt, /artifact-1/);
+  assert.match(prompt, /Never search the filesystem for an artifact or proof identifier/i);
+});
+
+test("non-Git work is reviewed from an empty isolated filesystem", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-adversarial-non-git-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  const threadId = "worker-review-research";
+  store.upsertThreadSummary({ id: threadId, status: "idle", cwd: dir, turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  const contract = buildThreadExecutionContract({
+    threadId,
+    workspaceCwd: dir,
+    projectId: "workspace:shared",
+    projectLabel: "Shared workspace",
+    branch: null,
+    taskText: "Research the available options.",
+    taskCategory: "research",
+    inferredWorkDepth: "standard",
+    notes: []
+  });
+  store.setThreadExecutionContract(threadId, contract);
+  const report = store.recordWorkerReport(threadId, { turnId: "turn-1", status: "completed", summary: "Research complete.", details: "Sources checked." });
+  const payload = buildJobPayload({ threadId, kind: "delegation", instruction: "Research the available options.", contract });
+  payload.outputManifest.entries.push({
+    id: `${payload.protocol.currentAttemptId}:worker_report:${report.turnId}`,
+    kind: "worker_report",
+    title: report.summary,
+    threadId,
+    projectId: contract.projectId,
+    attemptId: payload.protocol.currentAttemptId,
+    sourceTurnId: report.turnId,
+    artifactId: null,
+    proofRunId: null,
+    reportTurnId: report.turnId,
+    createdAt: report.updatedAt
+  });
+  store.setThreadJobPayload(payload);
+
+  let reviewCwd = "";
+  await ensureButlerAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
+    store,
+    threadId,
+    model: { provider: "openai-codex", id: "gpt-5.5" } as never,
+    modelRegistry: {} as never,
+    piAuthPath: path.join(dir, "auth.json"),
+    thinkingLevel: "high",
+    buildWorkspaceSnapshot: async (cwd) => {
+      reviewCwd = cwd;
+      assert.match(path.basename(cwd), /^manor-scoped-review-/);
+      assert.deepEqual(await readdir(cwd), []);
+      return "No repository workspace was supplied for this job.";
+    },
+    runReview: async (input) => {
+      assert.equal(input.cwd, reviewCwd);
+      assert.match(input.prompt, /Research complete\./);
+      assert.match(input.prompt, /worker_report/);
+      assert.ok(input.inspectJobOutput);
+      assert.match(await input.inspectJobOutput(`${payload.protocol.currentAttemptId}:worker_report:${report.turnId}`), /Research complete\./);
+      return { findings: [] };
+    }
+  });
+});
+
+test("a declared Git repository with a review-temp-like name is never cleaned up", async () => {
+  const repo = await mkdtemp(path.join(tmpdir(), "manor-scoped-review-source-"));
+  await execFileAsync("git", ["init", "--quiet"], { cwd: repo });
+  const canonicalRepo = await realpath(repo);
+
+  const store = new ButlerStateStore(path.join(repo, "state.json"));
+  const threadId = "worker-review-real-repo";
+  store.upsertThreadSummary({ id: threadId, status: "idle", cwd: repo, turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  store.setThreadExecutionContract(threadId, buildThreadExecutionContract({
+    threadId,
+    workspaceCwd: repo,
+    projectId: "project",
+    projectLabel: "Project",
+    branch: null,
+    taskText: "Review this repository.",
+    taskCategory: "generic_code",
+    inferredWorkDepth: "standard",
+    notes: []
+  }));
+  store.recordWorkerReport(threadId, { turnId: "turn-1", status: "completed", summary: "Repository review complete.", details: null });
+
+  await ensureButlerAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
+    store,
+    threadId,
+    model: { provider: "openai-codex", id: "gpt-5.5" } as never,
+    modelRegistry: {} as never,
+    piAuthPath: path.join(repo, "auth.json"),
+    thinkingLevel: "high",
+    buildWorkspaceSnapshot: async (cwd) => {
+      assert.equal(cwd, canonicalRepo);
+      return "No repository changes were recorded.";
+    },
+    runReview: async (input) => {
+      assert.equal(input.cwd, canonicalRepo);
+      return { findings: [] };
+    }
+  });
+
+  assert.equal((await stat(repo)).isDirectory(), true);
 });
 
 test("OpenAI review runs through the isolated Pi reviewer", async () => {

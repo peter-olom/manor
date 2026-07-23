@@ -25,6 +25,7 @@ function pagePayload(payload: JobPayloadView | null | undefined, turnIds: Set<st
   const nodeIds = new Set(snapshots.map((snapshot) => snapshot.nodeId));
   return {
     ...payload,
+    outputManifest: { version: 1, entries: [] },
     snapshots,
     nodes: payload.nodes.filter((node) => Boolean((node.turnId && turnIds.has(node.turnId)) || nodeIds.has(node.id))),
     executionContract: null

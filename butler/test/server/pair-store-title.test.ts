@@ -560,6 +560,82 @@ test("completed worker report returns to idle after Butler posts the callback", 
   assert.equal(later?.status, "idle");
 });
 
+test("thread-recovery closeout marks the stored worker report reviewed", async () => {
+  const { pairStore, store } = await createPairHarness();
+  const created = pairStore.createPair();
+  store.upsertThreadSummary({
+    id: "thread-recovered",
+    status: "idle",
+    cwd: "/workspace",
+    turns: [
+      { id: "turn-with-report", status: "completed", items: [] },
+      { id: "turn-recovered", status: "completed", items: [] }
+    ]
+  });
+  pairStore.attachWorker(created.id, {
+    threadId: "thread-recovered",
+    task: "Research the requested topic",
+    cwd: "/workspace",
+    handoffPrompt: "Primary job"
+  });
+  const report = store.recordWorkerReport("thread-recovered", {
+    turnId: "turn-with-report",
+    status: "completed",
+    summary: "Stored report.",
+    details: null
+  });
+
+  pairStore.syncWorkerReports();
+  assert.equal(pairStore.getPair(created.id)?.status, "needs_butler_review");
+
+  const recovered = pairStore.updatePairSnapshot(created.id, {
+    butlerPending: false,
+    lastMessage: {
+      id: "callback-fallback-thread-recovered:turn-recovered",
+      role: "butler",
+      lane: "butler",
+      text: "Recovered from the latest Worker response.",
+      at: report.updatedAt + 1,
+      sourceThreadId: null,
+      memoryObservationId: null,
+      metadata: {}
+    },
+    updatedAt: report.updatedAt + 1
+  });
+
+  assert.equal(recovered?.status, "idle");
+  assert.equal(recovered?.worker?.lastReviewedReportAt, report.updatedAt);
+  assert.equal(recovered?.worker?.lastReviewedReportTurnId, report.turnId);
+
+  store.upsertThreadSummary({
+    id: "thread-recovered",
+    status: "idle",
+    cwd: "/workspace",
+    turns: [
+      { id: "turn-with-report", status: "completed", items: [] },
+      { id: "turn-recovered", status: "completed", items: [] },
+      { id: "turn-new-report", status: "completed", items: [] }
+    ]
+  });
+  const originalDateNow = Date.now;
+  Date.now = () => report.updatedAt;
+  let newerReport;
+  try {
+    newerReport = store.recordWorkerReport("thread-recovered", {
+      turnId: "turn-new-report",
+      status: "completed",
+      summary: "New report requiring review.",
+      details: null
+    });
+  } finally {
+    Date.now = originalDateNow;
+  }
+  assert.equal(newerReport.updatedAt, report.updatedAt);
+  pairStore.syncWorkerReports();
+  assert.equal(pairStore.getPair(created.id)?.status, "needs_butler_review");
+  assert.equal(pairStore.getPair(created.id)?.worker?.lastReviewedReportTurnId, report.turnId);
+});
+
 test("a newer worker report needs review even after an earlier callback", async () => {
   const { pairStore, store } = await createPairHarness();
   const created = pairStore.createPair();

@@ -173,15 +173,13 @@ test("failed baseline persistence restores the prior baseline and peer attributi
   await cleanupGitReviewBaseline(initial.objectDir);
 });
 
-test("review scope resolves a cloned child repository from Worker report context", async () => {
+test("review scope never guesses a child repository from Worker report context", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "manor-review-parent-"));
-  const repo = await createRepo(parent, "cloned-project");
+  await createRepo(parent, "cloned-project");
   const resolved = await resolveReviewWorkspaceCwd({
-    preferredCwd: parent,
-    contextText: `Implemented ${path.join(repo, "feature.txt")} and verified it.`,
-    startedAt: Date.now() - 60_000
+    preferredCwd: parent
   });
-  assert.equal(await realpath(resolved), await realpath(repo));
+  assert.equal(await realpath(resolved), await realpath(parent));
 });
 
 test("concurrent review workspace contains only Worker-attributed changes", async () => {

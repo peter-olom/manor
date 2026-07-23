@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import crypto from "node:crypto";
+import { access, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -155,6 +156,38 @@ test("project artifact stream copy enforces the byte limit after an earlier size
     /Artifact exceeds 10 bytes/
   );
   assert.equal(Buffer.concat(written).toString("utf8"), "small");
+});
+
+test("project artifact copy never admits bytes from a swapped source path", async (t) => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "manor-project-artifact-swap-"));
+  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  const approved = path.join(tempDir, "approved");
+  await mkdir(approved);
+  const sourcePath = path.join(approved, "source.bin");
+  const originalPath = path.join(approved, "original.bin");
+  const outsidePath = path.join(tempDir, "outside.bin");
+  const original = Buffer.alloc(8 * 1024 * 1024, 0x41);
+  const outside = Buffer.from("outside-secret");
+  await writeFile(sourcePath, original);
+  await writeFile(outsidePath, outside);
+
+  const copy = createProjectArtifactFromFile({
+    artifactsDir: path.join(tempDir, "artifacts"),
+    projectId: "alpha",
+    projectLabel: "Alpha",
+    kind: "report",
+    title: "Swapped source",
+    sourceFilePath: sourcePath,
+    approvedRoots: [approved]
+  }).then((artifact) => artifact, () => null);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await rename(sourcePath, originalPath).catch(() => undefined);
+  await symlink(outsidePath, sourcePath).catch(() => undefined);
+  const artifact = await copy;
+  if (artifact) {
+    assert.equal(artifact.source.checksumSha256, crypto.createHash("sha256").update(original).digest("hex"));
+    assert.notEqual(artifact.source.checksumSha256, crypto.createHash("sha256").update(outside).digest("hex"));
+  }
 });
 
 test("project artifacts are backfilled into the sqlite search index", async () => {

@@ -34,3 +34,10 @@ test('Manor appliance images are local source builds', async () => {
   assert.doesNotMatch(compose, /MANOR_IMAGE_(?:REGISTRY|TAG)/);
   assert.equal((compose.match(/image: manor-[a-z-]+:local/g) ?? []).length, 10);
 });
+
+test('Worker cannot mutate Butler-owned durable artifacts directly', async () => {
+  const compose = await readFile(composePath, 'utf8');
+  const workerService = compose.match(/\n  worker:\n([\s\S]*?)(?=\n  [a-z][a-z0-9-]*:\n)/)?.[1] ?? '';
+
+  assert.match(workerService, /\n      - artifacts:\/artifacts:ro\n/);
+});

@@ -251,6 +251,100 @@ test("harness reads and updates the current payload for the bound thread", async
   assert.equal((updated.data?.payload as { report?: { summary?: string } } | undefined)?.report?.summary, "Worker updated payload");
 });
 
+test("completed reports reject artifact evidence outside the current job manifest", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-report-artifact-"));
+  const stateDir = path.join(root, "state");
+  const codexHomeDir = path.join(root, "codex-home");
+  const artifactsDir = path.join(root, "artifacts");
+  const threadId = "thread-report-artifact";
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }, null, 2), "utf8");
+  const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
+  await store.load();
+  store.upsertThreadSummary({ id: threadId, cwd: "/workspace", status: "active", source: "codex", turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  const contract = buildThreadExecutionContract({
+    threadId,
+    workspaceCwd: "/workspace",
+    projectId: "project",
+    projectLabel: "Project",
+    branch: null,
+    taskText: "Return a durable research report.",
+    notes: []
+  });
+  store.setThreadExecutionContract(threadId, contract);
+  const payload = buildJobPayload({ threadId, kind: "delegation", instruction: contract.requestedTask, contract });
+  await persistJobPayload(jobPayloadsRoot(artifactsDir), payload);
+  store.setThreadJobPayload(payload);
+  const harness = new CodexHarnessService({
+    codexHomeDir,
+    stateDir,
+    artifactsDir,
+    store,
+    runtimeBroker: { listStacks: async () => [] } as unknown as RuntimeBrokerClient,
+    serviceTemplateRegistry: { list: () => [], get: () => undefined } as unknown as ServiceTemplateRegistry
+  });
+  await harness.load();
+  const capability = await harness.ensureThreadCapability(threadId, "/workspace");
+  assert.ok(capability);
+
+  await assert.rejects(
+    harness.handleAction({
+      token: capability.token,
+      action: "report",
+      params: {
+        status: "completed",
+        summary: "Research complete",
+        evidence: [{ kind: "file", summary: "Saved report", artifactId: "another-job-artifact" }]
+      }
+    }),
+    /not registered in the current job attempt manifest/
+  );
+  assert.equal(store.getWorkerReport(threadId), null);
+});
+
+test("completed reports reconcile durable job outputs inside the report lock", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "manor-harness-report-reconcile-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const stateDir = path.join(root, "state");
+  const artifactsDir = path.join(root, "artifacts");
+  const outputsDir = path.join(root, "outputs");
+  const threadId = "thread-report-reconcile";
+  await mkdir(stateDir, { recursive: true });
+  await mkdir(path.join(outputsDir, threadId), { recursive: true });
+  await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }), "utf8");
+  await writeFile(path.join(outputsDir, threadId, "report.md"), "durable report", "utf8");
+  const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
+  await store.load();
+  store.upsertThreadSummary({ id: threadId, cwd: "/workspace", status: "active", source: "codex", turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  const contract = buildThreadExecutionContract({ threadId, workspaceCwd: "/workspace", projectId: "project", projectLabel: "Project", branch: null, taskText: "Create a durable report.", notes: [] });
+  store.setThreadExecutionContract(threadId, contract);
+  const payload = buildJobPayload({ threadId, kind: "delegation", instruction: contract.requestedTask, contract });
+  await persistJobPayload(jobPayloadsRoot(artifactsDir), payload);
+  store.setThreadJobPayload(payload);
+  const harness = new CodexHarnessService({
+    stateDir,
+    artifactsDir,
+    store,
+    runtimeBroker: { listStacks: async () => [] } as unknown as RuntimeBrokerClient,
+    serviceTemplateRegistry: { list: () => [], get: () => undefined } as unknown as ServiceTemplateRegistry,
+    inputActionAccess: { outputsDir, fileStore: {}, imageStore: {}, referenceMutations: {} } as never
+  } as never);
+  await harness.load();
+  const capability = await harness.ensureThreadCapability(threadId, "/workspace");
+  assert.ok(capability);
+
+  const result = await Promise.race([
+    harness.handleAction({ token: capability.token, action: "report", params: { status: "completed", summary: "Report complete" } }),
+    new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("completed report timed out")), 1_000))
+  ]);
+
+  assert.match(result.text, /Recorded completed supervisor report/);
+  const entry = store.getThreadJobPayload(threadId)?.outputManifest.entries.find((candidate) => candidate.logicalPath === "report.md");
+  assert.ok(entry?.artifactId);
+  assert.equal(entry.checksumStatus, "verified");
+  assert.equal(store.getWorkerReport(threadId)?.status, "completed");
+});
+
 test("a queued Worker report does not cross into a refreshed job scope", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "manor-harness-report-lock-"));
   const stateDir = path.join(root, "state");

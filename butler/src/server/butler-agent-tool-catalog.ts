@@ -302,6 +302,18 @@ export const BUTLER_TOOL_CATALOG: ButlerToolView[] = [
     uiEffects: [{ kind: "refreshThreads", description: "Makes approved skill changes available to Butler." }]
   },
   {
+    name: "inspect_job_output_manifest",
+    label: "Inspect job outputs",
+    description: "Inspect the durable artifacts, proofs, and Worker report registered for one job.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while inspecting exact job outputs." }]
+  },
+  {
+    name: "inspect_job_output",
+    label: "Inspect job output",
+    description: "Inspect one current-attempt manifest output, including bounded extracted document content.",
+    uiEffects: [{ kind: "focusButler", description: "Keeps Butler in supervisor mode while inspecting one exact job output." }]
+  },
+  {
     name: "list_project_artifacts",
     label: "List project artifacts",
     description: "List or search durable project artifacts such as saved seeds, downloads, and reusable analysis files.",

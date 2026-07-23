@@ -893,14 +893,15 @@ export function PairShell() {
   }, [pairsLoaded, reconcileManorRestartRequest, selectedPairId]);
 
   const workerTimeline = useMemo<WorkerTimeline>(() => {
-    if (!activePair?.worker) return { turns: [], report: null, reports: [], payload: null, checklist: null, fallback: [] };
+    if (!activePair?.worker) return { turns: [], report: null, reports: [], payload: null, outputManifest: null, checklist: null, fallback: [] };
     const timeline = shapeWorkerTimeline(activeWorkerThread);
-    if (activeWorkerThreadLoading || timeline.turns.length > 0 || timeline.report) return timeline;
+    if (activeWorkerThreadLoading || timeline.turns.length > 0 || timeline.report || timeline.outputManifest) return timeline;
     return {
       turns: [],
       report: null,
       reports: timeline.reports,
       payload: null,
+      outputManifest: timeline.outputManifest,
       checklist: timeline.checklist,
       fallback: [
         {

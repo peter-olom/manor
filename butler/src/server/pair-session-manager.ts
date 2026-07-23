@@ -30,6 +30,7 @@ import { resolveOperatorTimezone } from "./operator-timezone.js";
 import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { workerThreadIsRunning } from "./worker-thread-status.js";
 import { pageWorkerProofRecords, pageWorkerThread } from "./worker-thread-page.js";
+import { buildJobOutputManifestUiView } from "./job-output-manifest.js";
 import { listWorkspaceProjectDirectories, validateWorkspaceCwd, type WorkspaceProjectDirectory } from "./repo-worktree.js";
 import { buildManorSkillRoutingContext, listManorSkillCapabilities, normalizeManorSkillName, parseManorSkillInvocation, skillAvailabilityDetail } from "./manor-skill-routing.js";
 import type { AutomationDispatchResult } from "./session-automation-scheduler.js";
@@ -263,7 +264,9 @@ function pairNeedsSupervision(pair: PairChat, store: ButlerStateStore): boolean 
   if (workerThreadIsRunning(thread) || pair.worker.status === "running" || pair.worker.status === "starting") return true;
   if (!report) return true;
   if ((thread?.turns.at(-1)?.startedAt ?? 0) > report.updatedAt) return true;
-  return !pair.worker.lastReviewedReportAt || report.updatedAt > pair.worker.lastReviewedReportAt;
+  return pair.worker.lastReviewedReportTurnId !== report.turnId ||
+    pair.worker.lastReviewedReportAt === null ||
+    report.updatedAt > pair.worker.lastReviewedReportAt;
 }
 
 async function pairHasPersistedCallbackObligation(pair: PairChat, sessionRootDir: string): Promise<boolean> {
@@ -1079,8 +1082,14 @@ export class PairSessionManager {
     const thread = this.options.store.getThreadDetail(pair.worker.threadId);
     if (!thread) return { thread: null, proofRecords: [] };
     const page = pageWorkerThread(thread, before, limit);
+    const jobOutputManifest = thread.jobPayload
+      ? await buildJobOutputManifestUiView(thread.jobPayload, this.options.store)
+      : null;
     const proofs = buildProofsByThreadMap(this.options.store.listPreviewProofs())[pair.worker.threadId] ?? [];
-    return { thread: page, proofRecords: pageWorkerProofRecords(proofs, page) };
+    return {
+      thread: { ...page, jobOutputManifest },
+      proofRecords: pageWorkerProofRecords(proofs, page)
+    };
   }
 
   private refreshWorkerThreadInBackground(threadId: string): void {

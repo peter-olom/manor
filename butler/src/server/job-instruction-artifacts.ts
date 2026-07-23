@@ -6,7 +6,7 @@ import { Type } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 
 import { writeJsonStateFileAtomic } from "./json-state-file.js";
-import type { JobPayloadView } from "./job-payload-types.js";
+import type { JobOutputManifestEntryView, JobPayloadView } from "./job-payload-types.js";
 import type { CodexThreadExecutionContractView, SupervisionChecklistView } from "./types.js";
 
 export type JobPayloadKind =
@@ -88,6 +88,33 @@ export const JobPayloadSchema = Type.Object({
   attachments: Type.Object({
     images: Type.Array(Type.String()),
     files: Type.Array(Type.String())
+  }),
+  outputManifest: Type.Object({
+    version: Type.Literal(1),
+    entries: Type.Array(Type.Object({
+      id: Type.String({ minLength: 1 }),
+      kind: Type.Union([
+        Type.Literal("project_artifact"),
+        Type.Literal("proof"),
+        Type.Literal("worker_report")
+      ]),
+      title: Type.String({ minLength: 1 }),
+      threadId: Type.String({ minLength: 1 }),
+      projectId: Type.String({ minLength: 1 }),
+      attemptId: Type.String({ minLength: 1 }),
+      sourceTurnId: nullableString,
+      artifactId: nullableString,
+      proofRunId: nullableString,
+      reportTurnId: nullableString,
+      logicalPath: nullableString,
+      contentType: nullableString,
+      sizeBytes: Type.Union([Type.Number(), Type.Null()]),
+      checksumSha256: nullableString,
+      availability: Type.Union([Type.Literal("available"), Type.Literal("missing")]),
+      checksumStatus: Type.Union([Type.Literal("verified"), Type.Literal("mismatch"), Type.Literal("unverified")]),
+      integrityCheckedAt: Type.Union([Type.Number(), Type.Null()]),
+      createdAt: Type.Number()
+    }))
   }),
   snapshots: Type.Array(Type.Object({
     nodeId: Type.String(),
@@ -358,6 +385,10 @@ export function buildJobPayload(input: {
       images: [...new Set(input.imageReferenceIds ?? [])],
       files: [...new Set(input.fileReferenceIds ?? [])]
     },
+    outputManifest: {
+      version: 1,
+      entries: []
+    },
     snapshots: [],
     nodes: [node],
     delivery: {
@@ -418,6 +449,10 @@ export function remapJobPayloadForWorkerHandoff(
     attachments: {
       images: [...payload.attachments.images],
       files: [...payload.attachments.files]
+    },
+    outputManifest: {
+      version: 1,
+      entries: payload.outputManifest.entries.map((entry) => ({ ...entry }))
     },
     nodes: payload.nodes.map((node) => ({
       ...node,
@@ -498,6 +533,10 @@ export function updateJobPayload(payload: JobPayloadView, input: JobPayloadUpdat
       images: [...new Set([...payload.attachments.images, ...(input.imageReferenceIds ?? [])])],
       files: [...new Set([...payload.attachments.files, ...(input.fileReferenceIds ?? [])])]
     },
+    outputManifest: {
+      version: 1,
+      entries: payload.outputManifest.entries.map((entry) => ({ ...entry }))
+    },
     nodes: [...payload.nodes, node],
     snapshots: [...(payload.snapshots.length > 0 ? payload.snapshots : synthesizeSnapshots(payload))],
     delivery: {
@@ -551,15 +590,147 @@ export function parseJobPayload(value: unknown): JobPayloadView | null {
   if (!record) {
     return null;
   }
+  const rawOutputManifest = record.outputManifest && typeof record.outputManifest === "object"
+    ? record.outputManifest as Record<string, unknown>
+    : null;
+  const rawOutputEntries = Array.isArray(rawOutputManifest?.entries) ? rawOutputManifest.entries : [];
+  const migratedOutputManifest = !rawOutputManifest || rawOutputEntries.some((entry) => {
+    const candidate = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+    return !candidate ||
+      !("availability" in candidate) ||
+      !("checksumStatus" in candidate) ||
+      !("integrityCheckedAt" in candidate) ||
+      !("logicalPath" in candidate) ||
+      !("contentType" in candidate) ||
+      !("sizeBytes" in candidate) ||
+      !("checksumSha256" in candidate);
+  });
   const normalized = {
     ...record,
+    outputManifest: rawOutputManifest
+      ? {
+          ...rawOutputManifest,
+          entries: rawOutputEntries.map((entry) => ({
+            ...(entry as Record<string, unknown>),
+            availability: (entry as Record<string, unknown>).availability ?? "available",
+            checksumStatus: (entry as Record<string, unknown>).checksumStatus ?? "unverified",
+            integrityCheckedAt: (entry as Record<string, unknown>).integrityCheckedAt ?? null,
+            logicalPath: (entry as Record<string, unknown>).logicalPath ?? null,
+            contentType: (entry as Record<string, unknown>).contentType ?? null,
+            sizeBytes: (entry as Record<string, unknown>).sizeBytes ?? null,
+            checksumSha256: (entry as Record<string, unknown>).checksumSha256 ?? null
+          }))
+        }
+      : { version: 1, entries: [] },
     snapshots: Array.isArray(record.snapshots)
       ? record.snapshots
       : Array.isArray(record.nodes)
         ? synthesizeSnapshots(record as unknown as JobPayloadView)
         : []
   };
-  return Value.Check(JobPayloadSchema, normalized) ? normalized as JobPayloadView : null;
+  if (!Value.Check(JobPayloadSchema, normalized)) {
+    return null;
+  }
+  const parsed = normalized as JobPayloadView;
+  if (migratedOutputManifest) {
+    parsed.checksum = checksumPayload(parsed);
+  }
+  return parsed;
+}
+
+export function appendJobOutputManifestEntries(
+  payload: JobPayloadView,
+  entries: JobOutputManifestEntryView[],
+  updatedAt = Date.now()
+): JobPayloadView {
+  if (entries.length === 0) {
+    return payload;
+  }
+  const byId = new Map(payload.outputManifest.entries.map((entry) => [entry.id, { ...entry }]));
+  let changed = false;
+  for (const entry of entries) {
+    const existing = byId.get(entry.id);
+    if (!existing || JSON.stringify(existing) !== JSON.stringify(entry)) {
+      byId.set(entry.id, { ...entry });
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return payload;
+  }
+  const currentEntries = [...byId.values()].filter((entry) => entry.attemptId === payload.protocol.currentAttemptId);
+  if (currentEntries.length > 512) {
+    throw new Error("The current job attempt output manifest exceeds the 512-entry safety limit.");
+  }
+  const historicalEntries = [...byId.values()]
+    .filter((entry) => entry.attemptId !== payload.protocol.currentAttemptId)
+    .sort((left, right) => left.createdAt - right.createdAt)
+    .slice(-512);
+  return finalizePayload({
+    ...payload,
+    revision: payload.revision + 1,
+    updatedAt: Math.max(payload.updatedAt, updatedAt),
+    protocol: {
+      ...payload.protocol,
+      version: payload.protocol.version + 1
+    },
+    outputManifest: {
+      version: 1,
+      entries: [...historicalEntries, ...currentEntries].sort((left, right) => left.createdAt - right.createdAt)
+    }
+  });
+}
+
+export function updateJobOutputManifestIntegrity(
+  payload: JobPayloadView,
+  updates: Array<{
+    entryId: string;
+    availability: JobOutputManifestEntryView["availability"];
+    checksumStatus: JobOutputManifestEntryView["checksumStatus"];
+    integrityCheckedAt: number;
+  }>
+): JobPayloadView {
+  const byId = new Map(updates.map((update) => [update.entryId, update]));
+  let changed = false;
+  const entries = payload.outputManifest.entries.map((entry) => {
+    const update = byId.get(entry.id);
+    if (!update) return { ...entry };
+    if (
+      entry.availability === update.availability &&
+      entry.checksumStatus === update.checksumStatus &&
+      entry.integrityCheckedAt === update.integrityCheckedAt
+    ) {
+      return { ...entry };
+    }
+    changed = true;
+    return {
+      ...entry,
+      availability: update.availability,
+      checksumStatus: update.checksumStatus,
+      integrityCheckedAt: update.integrityCheckedAt
+    };
+  });
+  if (!changed) return payload;
+  return finalizePayload({
+    ...payload,
+    revision: payload.revision + 1,
+    updatedAt: Math.max(payload.updatedAt, ...updates.map((update) => update.integrityCheckedAt)),
+    protocol: { ...payload.protocol, version: payload.protocol.version + 1 },
+    outputManifest: { version: 1, entries }
+  });
+}
+
+export function formatJobOutputManifestText(payload: JobPayloadView | null): string {
+  const entries = payload?.outputManifest.entries.filter((entry) => entry.attemptId === payload.protocol.currentAttemptId) ?? [];
+  if (entries.length === 0) {
+    return "No durable outputs are registered for this job.";
+  }
+  return entries
+    .map((entry, index) => {
+      const reference = entry.artifactId ?? entry.proofRunId ?? entry.reportTurnId ?? entry.id;
+      return `${index + 1}. ${entry.kind} | ${entry.title} | ${reference} | thread=${entry.threadId} | attempt=${entry.attemptId}`;
+    })
+    .join("\n");
 }
 
 function payloadFilePath(rootDir: string, threadId: string): string {

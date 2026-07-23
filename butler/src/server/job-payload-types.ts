@@ -1,3 +1,31 @@
+export type JobOutputManifestKind = "project_artifact" | "proof" | "worker_report";
+
+export interface JobOutputManifestEntryView {
+  id: string;
+  kind: JobOutputManifestKind;
+  title: string;
+  threadId: string;
+  projectId: string;
+  attemptId: string;
+  sourceTurnId: string | null;
+  artifactId: string | null;
+  proofRunId: string | null;
+  reportTurnId: string | null;
+  logicalPath: string | null;
+  contentType: string | null;
+  sizeBytes: number | null;
+  checksumSha256: string | null;
+  availability: "available" | "missing";
+  checksumStatus: "verified" | "mismatch" | "unverified";
+  integrityCheckedAt: number | null;
+  createdAt: number;
+}
+
+export interface JobOutputManifestView {
+  version: 1;
+  entries: JobOutputManifestEntryView[];
+}
+
 export interface JobPayloadView {
   schemaVersion: "manor.job_payload.v1";
   payloadId: string;
@@ -31,6 +59,7 @@ export interface JobPayloadView {
   constraints: string[];
   notes: string[];
   attachments: { images: string[]; files: string[] };
+  outputManifest: JobOutputManifestView;
   snapshots: Array<{
     nodeId: string;
     revision: number;

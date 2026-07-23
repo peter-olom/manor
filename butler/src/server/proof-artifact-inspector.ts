@@ -4,7 +4,6 @@ import path from "node:path";
 import zlib from "node:zlib";
 
 import JSZip from "jszip";
-import { PDFParse } from "pdf-parse";
 
 import type { PreviewVerificationArtifactView } from "./types.js";
 
@@ -89,6 +88,7 @@ function artifactLine(artifact: PreviewVerificationArtifactView, buffer: Buffer 
 }
 
 async function inspectPdf(buffer: Buffer, artifact: PreviewVerificationArtifactView): Promise<string> {
+  const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: new Uint8Array(buffer) });
   try {
     const text = await parser.getText().catch(() => null);

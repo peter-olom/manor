@@ -432,6 +432,7 @@ test("worker-running state uses a dedicated Worker indicator", () => {
       lastReportStatus: null,
       lastReportSummary: null,
       lastReviewedReportAt: null,
+      lastReviewedReportTurnId: null,
       provider: "ollama-cloud",
       model: "ollama-cloud/glm-5.2"
     },

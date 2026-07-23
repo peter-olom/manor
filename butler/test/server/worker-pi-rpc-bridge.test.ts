@@ -287,8 +287,8 @@ test("Worker bridge validates workspace writes inside the Worker runtime", async
   const socketRoot = await mkdtemp("/tmp/manor-pi-socket-");
   const socketPath = path.join(socketRoot, "bridge.sock");
   const fakeCliPath = path.join(root, "fake-pi-cli.mjs");
+  await mkdir(reposRoot, { recursive: true });
   await Promise.all([
-    mkdir(reposRoot, { recursive: true }),
     mkdir(sessionRoot, { recursive: true }),
     mkdir(extensionRoot, { recursive: true }),
     writeFile(invalidCwd, "not a workspace", "utf8"),

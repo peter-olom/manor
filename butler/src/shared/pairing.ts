@@ -163,6 +163,7 @@ export type PairWorker = {
   lastReportStatus: "completed" | "blocked" | null;
   lastReportSummary: string | null;
   lastReviewedReportAt: number | null;
+  lastReviewedReportTurnId?: string | null;
   requestedReasoningEffort?: string | null;
   handedOffFrom?: PairWorkerHandoff | null;
 };

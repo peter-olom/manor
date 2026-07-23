@@ -265,6 +265,16 @@ test("manor-harness forwards payload current requests", async () => {
   assert.equal(request.action, "payload.current");
 });
 
+test("manor-harness forwards job manifest inspection requests", async () => {
+  const request = await captureHarnessAction(["--thread", "thread-1", "manifest", "current"]);
+  assert.equal(request.action, "manifest.current");
+});
+
+test("manor-harness forwards deterministic job output reconciliation requests", async () => {
+  const request = await captureHarnessAction(["--thread", "thread-1", "manifest", "reconcile"]);
+  assert.equal(request.action, "manifest.reconcile");
+});
+
 test("manor-harness forwards scoped vision inspection requests", async () => {
   const request = await captureHarnessAction([
     "--thread", "thread-1", "vision", "inspect",

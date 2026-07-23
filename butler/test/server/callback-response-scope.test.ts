@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { buildCallbackReviewPrompt } from "../../src/server/butler-agent-helpers.js";
+import { buildJobPayload } from "../../src/server/job-instruction-artifacts.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
 
@@ -29,12 +30,27 @@ test("callback review prompt makes the latest operator follow-up authoritative",
     turns: [{ id: "turn-egress", status: "completed", items: [] }]
   });
   store.setThreadExecutionContract(contract.threadId, contract);
-  store.recordWorkerReport(contract.threadId, {
+  const report = store.recordWorkerReport(contract.threadId, {
     turnId: "turn-egress",
     status: "completed",
     summary: "Worker can reach here.now.",
     details: "The Worker received HTTP 200 and the proxy CONNECT succeeded."
   });
+  const payload = buildJobPayload({ threadId: contract.threadId, kind: "delegation", instruction: contract.requestedTask, contract });
+  payload.outputManifest.entries.push({
+    id: `${payload.protocol.currentAttemptId}:worker_report:${report.turnId}`,
+    kind: "worker_report",
+    title: report.summary,
+    threadId: contract.threadId,
+    projectId: contract.projectId,
+    attemptId: payload.protocol.currentAttemptId,
+    sourceTurnId: report.turnId,
+    artifactId: null,
+    proofRunId: null,
+    reportTurnId: report.turnId,
+    createdAt: report.updatedAt
+  });
+  store.setThreadJobPayload(payload);
 
   const prompt = buildCallbackReviewPrompt(store, {
     threadId: contract.threadId,
@@ -66,4 +82,7 @@ test("callback review prompt makes the latest operator follow-up authoritative",
   assert.match(prompt, /persisted review scope still governs whether work may close/i);
   assert.match(prompt, /Structured supervision checklist/);
   assert.match(prompt, /Do not substitute a general job completion report/);
+  assert.match(prompt, /Resolved durable outputs for the current job attempt/);
+  assert.match(prompt, /Worker can reach here\.now\./);
+  assert.match(prompt, /instead of guessing artifact locations/i);
 });

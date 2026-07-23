@@ -217,7 +217,11 @@ function reportCloseoutMessageId(threadId: string, turnId: string): string {
   return `callback-${threadId}:${turnId}`;
 }
 
-function reviewedReportUpdatedAt(pair: PairChat, store: ButlerStateStore, message: PairMessage | null | undefined): number | null {
+function reviewedReportIdentity(
+  pair: PairChat,
+  store: ButlerStateStore,
+  message: PairMessage | null | undefined
+): { turnId: string; updatedAt: number } | null {
   if (!pair.worker || !message || message.role !== "butler") {
     return null;
   }
@@ -225,7 +229,27 @@ function reviewedReportUpdatedAt(pair: PairChat, store: ButlerStateStore, messag
   if (!report || report.status !== "completed") {
     return null;
   }
-  return message.id === reportCloseoutMessageId(report.threadId, report.turnId) ? report.updatedAt : null;
+  if (message.id === reportCloseoutMessageId(report.threadId, report.turnId)) {
+    return { turnId: report.turnId, updatedAt: report.updatedAt };
+  }
+
+  const fallbackPrefix = `callback-fallback-${report.threadId}:`;
+  if (!message.id.startsWith(fallbackPrefix) || message.at < report.updatedAt) {
+    return null;
+  }
+  const fallbackTurnId = message.id.slice(fallbackPrefix.length);
+  const thread = store.getThread(report.threadId);
+  const reportTurnIndex = thread?.turns.findIndex((turn) => turn.id === report.turnId) ?? -1;
+  const fallbackTurnIndex = thread?.turns.findIndex((turn) => turn.id === fallbackTurnId) ?? -1;
+  return reportTurnIndex >= 0 && fallbackTurnIndex >= reportTurnIndex
+    ? { turnId: report.turnId, updatedAt: report.updatedAt }
+    : null;
+}
+
+function workerReportNeedsReview(worker: PairWorker, report: { turnId: string; updatedAt: number }): boolean {
+  return worker.lastReviewedReportTurnId !== report.turnId ||
+    worker.lastReviewedReportAt === null ||
+    report.updatedAt > worker.lastReviewedReportAt;
 }
 
 function emptyPair(input: { id: string; title?: string | null; defaultCwd?: string | null; now: number }): PairChat {
@@ -292,7 +316,16 @@ function normalizePair(raw: Partial<PairChat> & { id?: string }, store: ButlerSt
     lastReviewedReportAt:
       typeof raw.worker.lastReviewedReportAt === "number" && Number.isFinite(raw.worker.lastReviewedReportAt)
         ? raw.worker.lastReviewedReportAt
-        : null
+        : null,
+    lastReviewedReportTurnId:
+      typeof raw.worker.lastReviewedReportTurnId === "string" && raw.worker.lastReviewedReportTurnId.trim()
+        ? raw.worker.lastReviewedReportTurnId.trim()
+        : typeof raw.worker.lastReviewedReportAt === "number" &&
+            Number.isFinite(raw.worker.lastReviewedReportAt) &&
+            workerThread?.workerReport &&
+            workerThread.workerReport.updatedAt <= raw.worker.lastReviewedReportAt
+          ? workerThread.workerReport.turnId
+          : null
   } : null;
   pair.memoryQuery = typeof raw.memoryQuery === "string" && raw.memoryQuery.trim() ? raw.memoryQuery : null;
   pair.lastHandoffPrompt = pair.worker && typeof raw.lastHandoffPrompt === "string" && raw.lastHandoffPrompt.trim() ? raw.lastHandoffPrompt : null;
@@ -325,7 +358,7 @@ function deriveStatus(pair: PairChat, store: ButlerStateStore): PairStatus {
       report &&
       (report.status === "completed" || !workerThreadIsRunning(thread)) &&
       (!pair.worker.lastRevertAt || report.updatedAt > pair.worker.lastRevertAt) &&
-      (!pair.worker.lastReviewedReportAt || report.updatedAt > pair.worker.lastReviewedReportAt);
+      workerReportNeedsReview(pair.worker, report);
     if (reportNeedsReview) {
       return "needs_butler_review";
     }
@@ -782,9 +815,10 @@ export class PairStore extends EventEmitter {
     if (snapshot.butlerLastError !== undefined) pair.butlerLastError = snapshot.butlerLastError;
     if (snapshot.messageCount !== undefined) pair.messageCount = Math.max(0, Math.trunc(snapshot.messageCount));
     if (snapshot.lastMessage !== undefined) pair.lastMessage = snapshot.lastMessage;
-    const reviewedAt = reviewedReportUpdatedAt(pair, this.store, snapshot.lastMessage);
-    if (reviewedAt && pair.worker && (!pair.worker.lastReviewedReportAt || reviewedAt > pair.worker.lastReviewedReportAt)) {
-      pair.worker.lastReviewedReportAt = reviewedAt;
+    const reviewedReport = reviewedReportIdentity(pair, this.store, snapshot.lastMessage);
+    if (reviewedReport && pair.worker && workerReportNeedsReview(pair.worker, reviewedReport)) {
+      pair.worker.lastReviewedReportAt = reviewedReport.updatedAt;
+      pair.worker.lastReviewedReportTurnId = reviewedReport.turnId;
     }
     if (snapshot.butlerThinkingLevel !== undefined) pair.butlerThinkingLevel = snapshot.butlerThinkingLevel;
     if (snapshot.butlerModel !== undefined) pair.butlerModel = snapshot.butlerModel;
@@ -878,6 +912,7 @@ export class PairStore extends EventEmitter {
       lastReportStatus: sameWorker?.lastReportStatus ?? null,
       lastReportSummary: sameWorker?.lastReportSummary ?? null,
       lastReviewedReportAt: sameWorker?.lastReviewedReportAt ?? null,
+      lastReviewedReportTurnId: sameWorker?.lastReviewedReportTurnId ?? null,
       requestedReasoningEffort: input.effort === undefined
         ? sameWorker?.requestedReasoningEffort ?? thread?.requestedReasoningEffort ?? null
         : normalizeText(input.effort) || null,
@@ -954,9 +989,10 @@ export class PairStore extends EventEmitter {
         pair.updatedAt = Math.max(pair.updatedAt, report.updatedAt);
         changed = true;
       }
-      const reviewedAt = reviewedReportUpdatedAt(pair, this.store, pair.lastMessage);
-      if (reviewedAt && (!pair.worker.lastReviewedReportAt || reviewedAt > pair.worker.lastReviewedReportAt)) {
-        pair.worker.lastReviewedReportAt = reviewedAt;
+      const reviewedReport = reviewedReportIdentity(pair, this.store, pair.lastMessage);
+      if (reviewedReport && workerReportNeedsReview(pair.worker, reviewedReport)) {
+        pair.worker.lastReviewedReportAt = reviewedReport.updatedAt;
+        pair.worker.lastReviewedReportTurnId = reviewedReport.turnId;
         changed = true;
       }
       const nextPairStatus = deriveStatus(pair, this.store);

@@ -15,6 +15,7 @@ import type { ButlerStateStore } from "./state-store.js";
 import { redactSensitiveText } from "./redact-sensitive-text.js";
 import { assertIsolatedPromptSucceeded } from "./isolated-prompt-outcome.js";
 import type { ActivityWatchdogService } from "./activity-watchdog.js";
+import { formatResolvedJobOutputManifestForReview } from "./job-output-manifest.js";
 
 const CALLBACK_REVIEW_RETRY_MS = 30_000;
 const CALLBACK_REVIEW_MAX_ATTEMPTS = 3;
@@ -24,6 +25,7 @@ const CALLBACK_SUPERVISOR_TIMEOUT_MS = 90_000;
 const CALLBACK_REVIEW_TOOL_NAMES = new Set([
   "read_job",
   "read_supervision_checklist",
+  "inspect_job_output",
   "review_acceptance_point",
   "disprove_review_finding",
   "flush_rejected_acceptance_points",
@@ -175,6 +177,7 @@ function registerOpencodeGoRequestTransforms(pi: ExtensionAPI): void {
 export function buildCallbackAdversarialReviewBrief(store: ButlerStateStore, callback: PendingChatCallback): string {
   const thread = store.getThread(callback.threadId);
   const payload = store.getThreadJobPayload(callback.threadId);
+  const currentReport = store.getWorkerReport(callback.threadId);
   const heldContext = thread?.eventLog
     .filter((entry) => entry.method === "butler.context.held" && entry.at >= callback.requestedAt - 1000)
     .slice(0, 5)
@@ -185,7 +188,12 @@ export function buildCallbackAdversarialReviewBrief(store: ButlerStateStore, cal
     .slice(0, 20)
     .map((item) => `${item.id} ${item.status}: ${item.text}${item.butlerNote ? ` | Butler note: ${item.butlerNote}` : ""}${item.queuedInstruction ? ` | required next step: ${item.queuedInstruction}` : ""}`) ?? [];
   const priorBlockingFindings = thread?.executionContract?.reviewResults
-    ?.filter((finding) => finding.blocking && !finding.waived)
+    ?.filter((finding) =>
+      finding.blocking &&
+      !finding.waived &&
+      currentReport?.updatedAt === finding.reportUpdatedAt &&
+      currentReport.turnId === finding.turnId
+    )
     .slice(-10)
     .map((finding) => `${finding.id} ${finding.severity}: ${finding.findingSummary}`) ?? [];
   const operatorRequestText = callback.operatorRequestText?.trim() || null;
@@ -284,7 +292,7 @@ export function buildGuardedCallbackReviewTools(input: {
         if (targetThreadId && targetThreadId !== input.callback.threadId) {
           throw new Error(`This isolated review can only act on job ${input.callback.threadId}.`);
         }
-        const scopedParams = tool.name === "review_preview_proof" && !targetThreadId
+        const scopedParams = (tool.name === "review_preview_proof" || tool.name === "inspect_job_output") && !targetThreadId
           ? { ...record, threadId: input.callback.threadId }
           : params;
         const result = await runWithCallbackReviewGuard(
@@ -502,9 +510,14 @@ export async function runCallbackAdversarialReview(input: {
         callback: check
       });
     });
+    const payload = input.store.getThreadJobPayload(callback.threadId);
+    const outputManifest = payload
+      ? await formatResolvedJobOutputManifestForReview(payload, input.store)
+      : "No durable outputs are registered for the current job attempt.";
     await Promise.race([
       session.prompt(buildCallbackReviewPrompt(input.store, callback, {
-        butlerTurnContext: buildCurrentOperatorTurnContext(sessionAccess.session.messages, callback.operatorRequestText)
+        butlerTurnContext: buildCurrentOperatorTurnContext(sessionAccess.session.messages, callback.operatorRequestText),
+        outputManifest
       })),
       reviewHealth
     ]);

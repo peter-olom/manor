@@ -25,6 +25,10 @@ import { stringEnumSchema, stringMapSchema } from "./butler-agent-tool-schemas.j
 import { formatMemoryDebugTrace, formatMemoryDebugTraceList, getMemoryDebugTrace, listMemoryDebugTraces } from "./memory-debug-traces.js";
 import { buildMemoryDiagnostics, formatMemoryDiagnostics } from "./memory-diagnostics.js";
 import { formatButlerMemoryRetrieval, retrieveButlerMemoryWithEmbeddings } from "./memory-retrieval.js";
+import { formatJobOutputManifestText } from "./job-instruction-artifacts.js";
+import { inspectCurrentJobOutputForReview, resolveJobOutputManifest } from "./job-output-manifest.js";
+import { registerJobOutput } from "./codex-harness-payload.js";
+import type { ProjectArtifactView } from "./types.js";
 
 function hasOwnField(value: unknown, key: string): boolean {
   return Boolean(value) && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key);
@@ -91,6 +95,32 @@ function resolveRequestedProject(
     return { id: projectId, label: projectLabel || projectId };
   }
   return access.resolveWorkspaceProject(input.cwd, input.fallbackId, projectLabel || input.fallbackLabel);
+}
+
+async function registerButlerArtifactOutput(input: {
+  access: ButlerAgentToolAccess;
+  artifactsDir: string;
+  threadId: string;
+  artifact: ProjectArtifactView;
+}): Promise<void> {
+  if (!input.threadId) return;
+  const thread = input.access.store.getThread(input.threadId);
+  await registerJobOutput({
+    artifactsDir: input.artifactsDir,
+    store: input.access.store,
+    threadId: input.threadId,
+    output: {
+      kind: "project_artifact",
+      referenceId: input.artifact.id,
+      title: input.artifact.title,
+      projectId: input.artifact.projectId,
+      sourceTurnId: thread?.turns?.at(-1)?.id ?? null,
+      contentType: input.artifact.contentType,
+      sizeBytes: input.artifact.sizeBytes,
+      checksumSha256: input.artifact.source.checksumSha256,
+      createdAt: input.artifact.createdAt
+    }
+  });
 }
 
 export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifactsDir: string): ButlerCustomTool[] {
@@ -249,6 +279,61 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       }
     }),
     access.defineButlerTool({
+      name: "inspect_job_output_manifest",
+      label: "Inspect job outputs",
+      description: "Inspect the durable output manifest for one Worker job without guessing file or repository locations.",
+      promptSnippet: "inspect_job_output_manifest: use this to inspect the exact artifacts, proofs, and Worker report registered for a job.",
+      parameters: Type.Object({
+        threadId: Type.String({ minLength: 1 })
+      }),
+      uiEffects: access.getToolUiEffects("inspect_job_output_manifest"),
+      execute: async (_toolCallId, params) => {
+        const threadId = (params.threadId as string).trim();
+        const payload = access.store.getThreadJobPayload(threadId);
+        if (!payload) {
+          return {
+            content: [{ type: "text", text: "No Manor job payload is stored for this thread." }],
+            details: { manifest: null, outputs: [] }
+          };
+        }
+        const outputs = (await resolveJobOutputManifest(payload, access.store))
+          .filter(({ entry }) => entry.attemptId === payload.protocol.currentAttemptId);
+        const availability = outputs.map(({ entry, available, checksumStatus }) => `${entry.id} | ${available ? "available" : "missing"} | checksum=${checksumStatus}`).join("\n");
+        return {
+          content: [{
+            type: "text",
+            text: [formatJobOutputManifestText(payload), availability ? `\nResolution:\n${availability}` : ""].join("")
+          }],
+          details: { manifest: { version: 1, entries: outputs.map(({ entry }) => entry) }, outputs }
+        };
+      }
+    }),
+    access.defineButlerTool({
+      name: "inspect_job_output",
+      label: "Inspect job output",
+      description: "Inspect one current-attempt output from a Worker's durable manifest, including bounded text extracted from supported PDF and Office files.",
+      promptSnippet: "inspect_job_output: inspect the full bounded content of one current manifest entry by output ID; never guess a filesystem path.",
+      parameters: Type.Object({
+        threadId: Type.String({ minLength: 1 }),
+        outputId: Type.String({ minLength: 1 })
+      }),
+      uiEffects: access.getToolUiEffects("inspect_job_output"),
+      execute: async (_toolCallId, params) => {
+        const threadId = (params.threadId as string).trim();
+        const payload = access.store.getThreadJobPayload(threadId);
+        if (!payload) throw new Error(`No Manor job payload is stored for job ${threadId}.`);
+        const text = await inspectCurrentJobOutputForReview({
+          payload,
+          store: access.store,
+          outputId: (params.outputId as string).trim()
+        });
+        return {
+          content: [{ type: "text", text }],
+          details: { threadId, outputId: (params.outputId as string).trim(), currentAttemptId: payload.protocol.currentAttemptId }
+        };
+      }
+    }),
+    access.defineButlerTool({
       name: "list_project_artifacts",
       label: "List project artifacts",
       description: "List or search durable project artifacts such as seeds, research files, references, and downloaded inputs.",
@@ -319,7 +404,8 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       }),
       uiEffects: access.getToolUiEffects("save_project_artifact"),
       execute: async (_toolCallId, params) => {
-        const threadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
+        const requestedThreadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
+        const threadId = requestedThreadId || access.getActiveOperatorThreadGuard?.()?.lockedThreadId || "";
         const thread = threadId ? access.store.getThread(threadId) ?? null : null;
         const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : thread?.cwd ?? access.getWorkerDefaults?.()?.cwd ?? "/repos";
         const project = resolveRequestedProject(access, {
@@ -351,8 +437,9 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
           metadata: normalizeArtifactMetadata(params.metadata)
         });
         access.store.upsertProjectArtifact(artifact);
+        await registerButlerArtifactOutput({ access, artifactsDir, threadId, artifact });
         return {
-          content: [{ type: "text", text: `Saved ${artifact.title} as a durable project artifact.` }],
+          content: [{ type: "text", text: `Saved ${artifact.title} as durable project artifact ${artifact.id}.` }],
           details: { artifact: decorateProjectArtifactWithAccess(artifact) }
         };
       }
@@ -441,6 +528,7 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
           artifact.metadata = { ...artifact.metadata, imageReferenceId: imageReference.id };
         }
         access.store.upsertProjectArtifact(artifact);
+        await registerButlerArtifactOutput({ access, artifactsDir, threadId, artifact });
         const presentationText = [
           `**${artifact.title}**`,
           `[Open ${artifact.fileName}](${openUrl}) · [Download](${downloadUrl})`
@@ -507,7 +595,8 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
       }),
       uiEffects: access.getToolUiEffects("download_project_artifact"),
       execute: async (_toolCallId, params) => {
-        const threadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
+        const requestedThreadId = typeof params.threadId === "string" ? params.threadId.trim() : "";
+        const threadId = requestedThreadId || access.getActiveOperatorThreadGuard?.()?.lockedThreadId || "";
         const thread = threadId ? access.store.getThread(threadId) ?? null : null;
         const cwd = typeof params.cwd === "string" && params.cwd.trim() ? params.cwd.trim() : thread?.cwd ?? "/repos";
         const project = resolveRequestedProject(access, {
@@ -539,8 +628,9 @@ export function buildButlerProjectTools(access: ButlerAgentToolAccess, artifacts
           metadata: normalizeArtifactMetadata(params.metadata)
         });
         access.store.upsertProjectArtifact(artifact);
+        await registerButlerArtifactOutput({ access, artifactsDir, threadId, artifact });
         return {
-          content: [{ type: "text", text: `Downloaded ${artifact.title} into durable project storage.` }],
+          content: [{ type: "text", text: `Downloaded ${artifact.title} into durable project storage as artifact ${artifact.id}.` }],
           details: { artifact: decorateProjectArtifactWithAccess(artifact) }
         };
       }

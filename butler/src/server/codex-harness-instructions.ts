@@ -1,6 +1,7 @@
 import {
   assertJobPayloadWorkerAuthority,
   buildJobPayload,
+  formatJobOutputManifestText,
   formatPayloadCurrentText,
   jobPayloadsRoot,
   persistJobPayload,
@@ -57,7 +58,7 @@ async function loadCurrentPayload(input: {
 }
 
 export async function handleHarnessPayloadAction(input: HarnessPayloadActionInput): Promise<{ text: string; data?: Record<string, unknown> } | null> {
-  if (input.action !== "payload.current" && input.action !== "payload.update") {
+  if (input.action !== "payload.current" && input.action !== "payload.update" && input.action !== "manifest.current") {
     return null;
   }
   return runSerializedJobMutation(input.threadId, () => handleHarnessPayloadActionLocked(input));
@@ -71,6 +72,14 @@ async function handleHarnessPayloadActionLocked(input: HarnessPayloadActionInput
     return {
       text: formatPayloadCurrentText(current),
       data: { payload: current }
+    };
+  }
+
+  if (input.action === "manifest.current") {
+    const entries = current?.outputManifest.entries.filter((entry) => entry.attemptId === current.protocol.currentAttemptId) ?? [];
+    return {
+      text: formatJobOutputManifestText(current),
+      data: { manifest: { version: 1, entries } }
     };
   }
 

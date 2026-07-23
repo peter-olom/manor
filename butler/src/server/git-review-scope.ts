@@ -230,52 +230,16 @@ export async function cleanupScopedReviewWorkspace(cwd: string | null | undefine
   await fs.rm(cwd, { recursive: true, force: true });
 }
 
-function absolutePathCandidates(text: string): string[] {
-  return [...text.matchAll(/\/(?:repos|workspace|workspaces|tmp)\/[A-Za-z0-9._@+~/-]+/g)]
-    .map((match) => match[0]!.replace(/[),.;:'"`\]}]+$/g, ""))
-    .sort((left, right) => right.length - left.length)
-    .slice(0, 80);
-}
-
-async function nearestExistingDirectory(candidate: string): Promise<string | null> {
-  let current = path.resolve(candidate);
-  for (let depth = 0; depth < 12; depth += 1) {
-    const stat = await fs.stat(current).catch(() => null);
-    if (stat?.isDirectory()) return current;
-    if (stat?.isFile()) return path.dirname(current);
-    const parent = path.dirname(current);
-    if (parent === current) return null;
-    current = parent;
-  }
-  return null;
-}
-
-export async function resolveReviewWorkspaceCwd(input: {
-  preferredCwd: string;
-  contextText: string;
-  startedAt: number;
-}): Promise<string> {
+export async function resolveReviewWorkspaceCwd(input: { preferredCwd: string }): Promise<string> {
   const preferredRoot = await resolveGitRoot(input.preferredCwd);
   if (preferredRoot) return preferredRoot;
+  return path.resolve(input.preferredCwd);
+}
 
-  for (const candidate of absolutePathCandidates(input.contextText)) {
-    const directory = await nearestExistingDirectory(candidate);
-    if (!directory) continue;
-    const root = await resolveGitRoot(directory);
-    if (root && root !== path.resolve(input.preferredCwd)) return root;
-  }
-
-  const children = await fs.readdir(input.preferredCwd, { withFileTypes: true }).catch(() => []);
-  const recentRoots: Array<{ root: string; updatedAt: number }> = [];
-  for (const child of children.filter((entry) => entry.isDirectory()).slice(0, 100)) {
-    const childPath = path.join(input.preferredCwd, child.name);
-    const stat = await fs.stat(childPath).catch(() => null);
-    if (!stat || stat.mtimeMs + 60_000 < input.startedAt) continue;
-    const root = await resolveGitRoot(childPath);
-    if (root) recentRoots.push({ root, updatedAt: stat.mtimeMs });
-  }
-  recentRoots.sort((left, right) => right.updatedAt - left.updatedAt);
-  return recentRoots[0]?.root ?? input.preferredCwd;
+export async function createNonGitReviewWorkspace(): Promise<string> {
+  const reviewDir = await fs.mkdtemp(path.join(os.tmpdir(), "manor-scoped-review-"));
+  await ensureWorkerOwnedDirectory(reviewDir, reviewWorkerOwnership());
+  return reviewDir;
 }
 
 async function inferredBaseSha(cwd: string): Promise<string | null> {

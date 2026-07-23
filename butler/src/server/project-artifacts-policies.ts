@@ -350,6 +350,7 @@ async function writeArtifactFile(input: {
   await fs.mkdir(dir, { recursive: true });
   const filePath = path.join(dir, fileName);
   await fs.writeFile(filePath, input.content);
+  await fs.chmod(filePath, 0o444);
   return filePath;
 }
 
@@ -489,6 +490,7 @@ export async function createProjectArtifactFromUrl(input: {
   } finally {
     clearDeadline();
   }
+  await fs.chmod(target.filePath, 0o444);
   const previewBuffer = previewChunks.length > 0 ? Buffer.concat(previewChunks) : Buffer.alloc(0);
   const now = Date.now();
   return {
@@ -534,15 +536,28 @@ export async function createProjectArtifactFromFile(input: {
   const sourceFilePath = input.approvedRoots
     ? await resolveApprovedProjectFilePath(input.sourceFilePath, input.approvedRoots)
     : path.resolve(input.sourceFilePath);
-  const handle = await fs.open(sourceFilePath, constants.O_RDONLY | constants.O_NOFOLLOW);
-  const stats = await handle.stat();
-  if (!stats.isFile()) {
+  const handle = await fs.open(sourceFilePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const stats = await handle.stat({ bigint: true });
+  if (!stats.isFile() || stats.nlink !== 1n) {
     await handle.close();
-    throw new Error("Source artifact is not a file");
+    throw new Error(stats.nlink !== 1n ? "Source artifact has multiple hard links" : "Source artifact is not a file");
   }
-  if (stats.size > MAX_PROJECT_ARTIFACT_DOWNLOAD_BYTES) {
+  if (stats.size > BigInt(MAX_PROJECT_ARTIFACT_DOWNLOAD_BYTES)) {
     await handle.close();
     throw new Error(`Artifact exceeds ${MAX_PROJECT_ARTIFACT_DOWNLOAD_BYTES} bytes`);
+  }
+  const reopenedPath = await fs.realpath(sourceFilePath).catch(() => null);
+  const reopenedStats = reopenedPath ? await fs.stat(reopenedPath, { bigint: true }).catch(() => null) : null;
+  if (
+    !reopenedPath ||
+    !reopenedStats ||
+    reopenedStats.dev !== stats.dev ||
+    reopenedStats.ino !== stats.ino ||
+    (input.approvedRoots && !(await Promise.all(input.approvedRoots.map((root) => fs.realpath(root).catch(() => null))))
+      .some((root) => root && isInsideRoot(reopenedPath, root)))
+  ) {
+    await handle.close();
+    throw new Error("Source artifact changed while it was being opened");
   }
 
   const fileName = sanitizeFileName(input.fileName || path.basename(sourceFilePath) || "artifact.bin");
@@ -555,29 +570,60 @@ export async function createProjectArtifactFromFile(input: {
     await handle.close().catch(() => undefined);
     throw error;
   });
+  const destinationHandle = await fs.open(
+    target.filePath,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+    0o600
+  ).catch(async (error) => {
+    await handle.close().catch(() => undefined);
+    throw error;
+  });
   const hash = crypto.createHash("sha256");
   const previewChunks: Buffer[] = [];
   let previewBytes = 0;
   let sizeBytes = 0;
   try {
-    const source = handle.createReadStream({ autoClose: false });
-    sizeBytes = await pipeProjectArtifactStreamWithinLimit({
-      source,
-      destination: createWriteStream(target.filePath),
-      maxBytes: MAX_PROJECT_ARTIFACT_DOWNLOAD_BYTES,
-      onChunk: (buffer) => {
-        hash.update(buffer);
-        if (previewBytes < MAX_TEXT_PREVIEW_BYTES) {
-          const slice = buffer.subarray(0, Math.min(buffer.byteLength, MAX_TEXT_PREVIEW_BYTES - previewBytes));
-          previewChunks.push(slice);
-          previewBytes += slice.byteLength;
-        }
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let position = 0;
+    while (true) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, position);
+      if (bytesRead === 0) break;
+      sizeBytes += bytesRead;
+      if (sizeBytes > MAX_PROJECT_ARTIFACT_DOWNLOAD_BYTES) {
+        throw new Error(`Artifact exceeds ${MAX_PROJECT_ARTIFACT_DOWNLOAD_BYTES} bytes`);
       }
-    });
+      const chunk = buffer.subarray(0, bytesRead);
+      hash.update(chunk);
+      if (previewBytes < MAX_TEXT_PREVIEW_BYTES) {
+        const slice = Buffer.from(chunk.subarray(0, Math.min(bytesRead, MAX_TEXT_PREVIEW_BYTES - previewBytes)));
+        previewChunks.push(slice);
+        previewBytes += slice.byteLength;
+      }
+      let written = 0;
+      while (written < bytesRead) {
+        const result = await destinationHandle.write(buffer, written, bytesRead - written, position + written);
+        written += result.bytesWritten;
+      }
+      position += bytesRead;
+    }
+    const finalStats = await handle.stat({ bigint: true });
+    if (
+      finalStats.dev !== stats.dev ||
+      finalStats.ino !== stats.ino ||
+      finalStats.nlink !== 1n ||
+      finalStats.size !== BigInt(sizeBytes) ||
+      finalStats.mtimeNs !== stats.mtimeNs ||
+      finalStats.ctimeNs !== stats.ctimeNs
+    ) {
+      throw new Error("Source artifact changed while it was being copied");
+    }
+    await destinationHandle.sync();
+    await destinationHandle.chmod(0o444);
   } catch (error) {
     await fs.rm(target.filePath, { force: true });
     throw error;
   } finally {
+    await destinationHandle.close().catch(() => undefined);
     await handle.close().catch(() => undefined);
   }
   const previewBuffer = previewChunks.length > 0 ? Buffer.concat(previewChunks) : Buffer.alloc(0);

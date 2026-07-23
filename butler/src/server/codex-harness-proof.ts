@@ -6,6 +6,7 @@ import type { HarnessCapability } from "./codex-harness-helpers.js";
 import { normalizeString } from "./codex-harness-helpers.js";
 import { ButlerStateStore } from "./state-store.js";
 import type { CodexThreadRecord, PreviewVerificationView } from "./types.js";
+import { registerJobOutput } from "./codex-harness-payload.js";
 
 function safeFileName(value: string): string {
   return path.basename(value).replace(/[^\w.-]+/g, "-") || "proof-file";
@@ -194,6 +195,19 @@ export async function handleHarnessProofAction(input: {
     projectLabel: project.label,
     title,
     verification
+  });
+  await registerJobOutput({
+    artifactsDir: input.artifactsDir,
+    store: input.store,
+    threadId: input.capability.threadId,
+    output: {
+      kind: "proof",
+      referenceId: runId,
+      title,
+      projectId: project.id,
+      sourceTurnId: input.thread.turns?.at(-1)?.id ?? null,
+      createdAt: proof.createdAt
+    }
   });
 
   return {
