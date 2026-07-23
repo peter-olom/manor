@@ -48,7 +48,7 @@ function printHelp() {
   manor-harness [--thread <jobId>] stack promote <stackSelector> [--to <storageKey>] --confirm-target <storageKey>
   manor-harness [--thread <jobId>] stack stop <stackSelector> [--drop-volumes]
   manor-harness [--thread <jobId>] preview list
-  manor-harness [--thread <jobId>] preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--image <image>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>] [--sticky] [--lease-ttl-minutes <n>]
+  manor-harness [--thread <jobId>] preview start --command "<cmd>" --port <port> [--title <title>] [--cwd <path>] [--stack <stackSelector>] [--alias <name> ...] [--env KEY=VALUE ...] [--image <image>] [--image-setup-command <command>] [--egress-profile <name>] [--egress-domain <domain> ...] [--bootstrap-wait-seconds <n>] [--bootstrap-hint <text>] [--heartbeat-kind none|http|tcp|command] [--heartbeat-target <value>] [--heartbeat-interval-seconds <n>] [--sticky] [--lease-ttl-minutes <n>]
   manor-harness preview wait <previewSelector> [--timeout-seconds <n>]
 
 Preview defaults:
@@ -758,6 +758,7 @@ async function main() {
         command: readFlag(args, "--command"),
         port: Number(readFlag(args, "--port", "0")),
         image: readFlag(args, "--image"),
+        imageSetupCommand: readFlag(args, "--image-setup-command"),
         egressProfile: readFlag(args, "--egress-profile"),
         egressDomains: readRepeatedFlag(args, "--egress-domain"),
         bootstrapWaitSeconds: Number(readFlag(args, "--bootstrap-wait-seconds", "0")),

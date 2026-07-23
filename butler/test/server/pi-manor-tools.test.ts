@@ -52,6 +52,7 @@ test("Manor Worker tools expose bounded preview, browser, and report operations"
   assert.match(systemInspect.description, /without refreshing registries.*mutating runtime state/i);
   assert.ok(previewStart.parameters.properties.stack_id);
   assert.ok(previewStart.parameters.properties.egress_profile);
+  assert.ok(previewStart.parameters.properties.image_setup_command);
   assert.match(previewStart.description, /omit bootstrap_wait_seconds.*runtime default/i);
   assert.match(previewStart.parameters.properties.bootstrap_wait_seconds?.description ?? "", /omit.*runtime default/i);
   assert.equal((previewWait.parameters.properties.timeout_seconds as { maximum?: number }).maximum, 60);

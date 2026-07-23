@@ -92,6 +92,10 @@ export function startPreviewSchema() {
     aliases: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
     env: Type.Optional(stringMapSchema()),
     image: Type.Optional(Type.String()),
+    imageSetupCommand: Type.Optional(Type.String({
+      minLength: 1,
+      description: "Optional root-only setup command used to prepare an isolated derived image before the non-root preview starts. The preparation receives no workspace, secrets, inputs, outputs, or durable mounts. Never include secrets in this command."
+    })),
     egressProfile: Type.Optional(Type.String({
       minLength: 1,
       description: "Defaults to direct internet access. Use 'none' to block outbound traffic or a named preview egress profile such as 'web' to restrict it."

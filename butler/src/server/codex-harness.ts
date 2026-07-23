@@ -769,8 +769,7 @@ export class HarnessService {
         },
         workspaceBootstrap
       );
-      const image = previewDefaults.image;
-      const egressProfile = previewDefaults.egressProfile || "internet";
+      const image = previewDefaults.image, egressProfile = previewDefaults.egressProfile || "internet";
       const egressDomains = previewDefaults.egressDomains ?? [];
       const bootstrapWaitSeconds = normalizePositiveInteger(params.bootstrapWaitSeconds) ?? undefined;
       const bootstrapHint = previewDefaults.bootstrapHint;
@@ -796,6 +795,7 @@ export class HarnessService {
         command,
         workspaceMode,
         image,
+        imageSetupCommand: normalizeString(params.imageSetupCommand) || undefined,
         egressProfile,
         egressDomains,
         bootstrapWaitSeconds,

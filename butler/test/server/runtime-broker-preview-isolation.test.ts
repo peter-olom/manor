@@ -16,6 +16,19 @@ import {
 } from "../../../docker/runtime-broker/broker-runtime.mjs";
 import { createBrokerStorage } from "../../../docker/runtime-broker/broker-storage.mjs";
 
+test("runtime broker classifies only preview runtime containers as previews", (t) => {
+  const egressConfigPath = path.join(os.tmpdir(), `manor-egress-${process.pid}-${Date.now()}.json`);
+  fs.writeFileSync(egressConfigPath, '{"profiles":[]}\n', "utf8");
+  t.after(() => fs.rmSync(egressConfigPath, { force: true }));
+  const broker = createBrokerCore({ previewEgressConfigPath: egressConfigPath });
+
+  assert.equal(broker.isPreviewRuntimeLabels({ "manor.runtime-kind": "preview", "manor.lease-id": "lease-1" }), true);
+  assert.equal(broker.isPreviewRuntimeLabels({ "manor.lease-id": "legacy-lease" }), true);
+  assert.equal(broker.isPreviewRuntimeLabels({ "manor.runtime-kind": "preview-image-preparation" }), false);
+  assert.equal(broker.isPreviewRuntimeLabels({ "manor.runtime-kind": "service" }), false);
+  assert.equal(broker.isPreviewRuntimeLabels({ "manor.runtime-kind": "stack" }), false);
+});
+
 test("preview browser targets cannot escape the selected preview", () => {
   const controller = createBrokerBrowserController({
     previewNetwork: "preview",

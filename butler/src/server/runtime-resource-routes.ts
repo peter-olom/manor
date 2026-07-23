@@ -187,6 +187,8 @@ app.post("/api/stacks/start", async (request, response) => {
           )
         : {};
     const image = typeof request.body?.image === "string" ? request.body.image.trim() : undefined;
+    const imageSetupCommand =
+      typeof request.body?.imageSetupCommand === "string" ? request.body.imageSetupCommand.trim() : undefined;
     const egressDomains = Array.isArray(request.body?.egressDomains)
       ? request.body.egressDomains
           .map((value: unknown) => (typeof value === "string" ? value.trim() : ""))
@@ -248,6 +250,7 @@ app.post("/api/stacks/start", async (request, response) => {
         command,
         workspaceMode,
         image: previewDefaults.image,
+        imageSetupCommand,
         egressProfile: previewDefaults.egressProfile ?? "internet",
         egressDomains: previewDefaults.egressDomains ?? [],
         bootstrapWaitSeconds: Number.isFinite(bootstrapWaitSeconds) && bootstrapWaitSeconds > 0 ? bootstrapWaitSeconds : undefined,

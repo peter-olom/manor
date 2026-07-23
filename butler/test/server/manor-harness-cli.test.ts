@@ -170,11 +170,13 @@ test("manor-harness resolves lifecycle cwd flags before forwarding broker reques
     "preview", "start",
     "--cwd", relativeCwd,
     "--command", "npm run dev",
+    "--image-setup-command", "install system dependencies",
     "--port", "3000"
   ], { cwd: workspace });
   assert.equal(previewStart.action, "preview.start");
   assert.equal(previewStart.requestPath, "/api/harness/action");
   assert.equal(previewStart.params?.cwd, expectedCwd);
+  assert.equal(previewStart.params?.imageSetupCommand, "install system dependencies");
 
   const serviceStart = await captureHarnessAction([
     "service", "start",

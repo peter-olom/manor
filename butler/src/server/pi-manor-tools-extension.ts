@@ -59,6 +59,9 @@ const previewStartTool = defineTool({
     aliases: Type.Optional(Type.Array(Type.String())),
     env: Type.Optional(Type.Array(Type.Object({ name: Type.String({ minLength: 1 }), value: Type.String() }))),
     image: Type.Optional(Type.String()),
+    image_setup_command: Type.Optional(Type.String({
+      description: "Optional root-only setup command for an isolated derived image. The running preview remains non-root. Never include secrets in this command."
+    })),
     egress_profile: Type.Optional(Type.String()),
     egress_domains: Type.Optional(Type.Array(Type.String())),
     bootstrap_wait_seconds: Type.Optional(Type.Integer({
@@ -81,6 +84,7 @@ const previewStartTool = defineTool({
       aliases: params.aliases ?? [],
       env: Object.fromEntries((params.env ?? []).map((entry) => [entry.name, entry.value])),
       image: params.image ?? "",
+      imageSetupCommand: params.image_setup_command ?? "",
       egressProfile: params.egress_profile ?? "",
       egressDomains: params.egress_domains ?? [],
       bootstrapWaitSeconds: params.bootstrap_wait_seconds ?? 0,

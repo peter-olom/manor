@@ -474,6 +474,7 @@ export class RuntimeBrokerClient {
     command: string;
     workspaceMode?: "snapshot";
     image?: string;
+    imageSetupCommand?: string;
     egressProfile?: PreviewEgressProfile;
     egressDomains?: string[];
     bootstrapWaitSeconds?: number;

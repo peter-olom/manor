@@ -9,6 +9,11 @@ import { createBrokerBrowserController } from "./broker-browser.mjs";
 import { createBrokerDesktopController } from "./broker-desktop.mjs";
 import { createBrokerCore } from "./broker-core.mjs";
 import { createBrokerJsonParserMiddleware } from "./broker-http.mjs";
+import {
+  buildPreviewUserDirectoryCommand,
+  buildPreviewUserEnvironment,
+  createPreviewImagePreparer
+} from "./broker-preview-environment.mjs";
 import { createBrokerRuntime } from "./broker-runtime.mjs";
 import { registerBrokerServiceRoutes } from "./broker-services.mjs";
 import { createBrokerStorage } from "./broker-storage.mjs";
@@ -123,6 +128,7 @@ const {
   clearLeaseTransition,
   clearLeaseTransitionIfIdle,
   clearRetainedPreviewLease,
+  isPreviewRuntimeLabels,
   clearStackThreadBinding,
   cloneManagedStackVolume,
   collectDockerLogs,
@@ -199,6 +205,15 @@ const {
   ...runtimeHelpers,
   ...storageHelpers
 };
+
+const preparePreviewImage = createPreviewImagePreparer({
+  docker,
+  ensureImage,
+  collectDockerLogs,
+  ensureNetworkConnection,
+  disconnectNetworkConnection,
+  previewEgressContainerName
+});
 
 function buildOperatorPreviewUrl(lease) {
   return appendPreviewRoutePath(operatorBaseUrl, lease.routePrefix);
@@ -318,6 +333,7 @@ async function runManagedRuntimeReconcile(reason = "scheduled") {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
+        await preparePreviewImage.maintain();
         await reconcileManagedRuntimeState();
         runtimeReconcileState.lastFinishedAt = Date.now();
         runtimeReconcileState.lastSucceededAt = runtimeReconcileState.lastFinishedAt;
@@ -817,12 +833,19 @@ app.post("/leases", async (request, response) => {
     response.status(400).json({ error: `Unknown stack: ${lease.stackId}` });
     return;
   }
+  let env;
+  try {
+    env = buildPreviewUserEnvironment(lease.id, normalizeEnv(payload.env));
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    return;
+  }
   setLeaseTransition(lease.id, "starting");
   setLeaseBootstrapState(lease.id, lease.bootstrap);
   pendingPreviewLeases.set(lease.id, lease);
   clearRetainedPreviewLease(lease.id);
-  const env = typeof payload.env === "object" && payload.env ? payload.env : {};
   const envVars = [`PORT=${lease.targetPort}`, "HOST=0.0.0.0", "NODE_OPTIONS=--use-openssl-ca"];
+  const preparationProxyEnv = [];
   const aliases = [...new Set([lease.containerName, ...lease.aliases])];
   let proxyPort = null;
   let dynamicPolicyName = null;
@@ -875,6 +898,16 @@ app.post("/leases", async (request, response) => {
         `no_proxy=${noProxyValue}`,
         "NODE_OPTIONS=--use-env-proxy --use-openssl-ca"
       );
+      preparationProxyEnv.push(
+        `HTTP_PROXY=${previewProxy}`,
+        `HTTPS_PROXY=${previewProxy}`,
+        `ALL_PROXY=${previewProxy}`,
+        `http_proxy=${previewProxy}`,
+        `https_proxy=${previewProxy}`,
+        `all_proxy=${previewProxy}`,
+        `NO_PROXY=${noProxyValue}`,
+        `no_proxy=${noProxyValue}`
+      );
     }
 
     envVars.push(`MANOR_EGRESS_PROFILE=${lease.egressProfile}`);
@@ -886,7 +919,17 @@ app.post("/leases", async (request, response) => {
     }
 
     mergeLeaseBootstrapState(lease.id, { phase: "pulling_image" });
-    await ensureImage(lease.image);
+    const imageSetupCommand = normalizeString(payload.imageSetupCommand);
+    lease.image = imageSetupCommand
+      ? await preparePreviewImage({
+          baseImage: lease.image,
+          setupCommand: imageSetupCommand,
+          egressProfile: lease.egressProfile,
+          egressDomains: lease.egressDomains,
+          proxyEnv: preparationProxyEnv,
+          isCancelled: () => getLeaseTransition(lease.id)?.state === "stopping"
+        })
+      : (await ensureImage(lease.image), lease.image);
 
     throwIfPreviewCreationCancelled(lease.id);
 
@@ -905,17 +948,23 @@ app.post("/leases", async (request, response) => {
     const workspaceUser = await resolveWorkspaceUser();
     const sourceWorktreePath = lease.worktreePath;
     const runtimeWorktreePath = `/tmp/manor-preview-workspaces/${lease.id}`;
-    const runtimeCommand = buildSnapshotWorkspaceCommand(sourceWorktreePath, runtimeWorktreePath, lease.command);
+    const runtimeCommand = buildSnapshotWorkspaceCommand(
+      sourceWorktreePath,
+      runtimeWorktreePath,
+      `${buildPreviewUserDirectoryCommand(env)}; ${lease.command}`
+    );
 
     const runtimeContainer = await docker.createContainer({
       Image: lease.image,
       name: lease.containerName,
       User: workspaceUser,
+      Entrypoint: [],
       Cmd: buildShellCommand(runtimeCommand),
       WorkingDir: "/tmp",
       Env: envVars,
       Labels: {
         "manor.managed": "true",
+        "manor.runtime-kind": "preview",
         "manor.lease-id": lease.id,
         "manor.thread-id": lease.threadId ?? "",
         "manor.project-id": lease.projectId,
@@ -946,7 +995,9 @@ app.post("/leases", async (request, response) => {
       HostConfig: {
         AutoRemove: false,
         NetworkMode: networkName,
-        Mounts: workspaceMounts
+        Mounts: workspaceMounts,
+        CapDrop: ["ALL"],
+        SecurityOpt: ["no-new-privileges:true"]
       },
       ExposedPorts: {
         [`${lease.targetPort}/tcp`]: {}
@@ -1060,7 +1111,7 @@ app.get("/leases", async (request, response) => {
   }
 
   try {
-    const containers = await listManagedContainers((labels) => labels["manor.runtime-kind"] !== "service");
+    const containers = await listManagedContainers(isPreviewRuntimeLabels);
     const liveLeases = (await Promise.all(containers.map((container) => serializeLiveLeaseFromSummary(container)))).filter(
       (lease) => !requestedThreadId || lease.threadId === requestedThreadId
     );

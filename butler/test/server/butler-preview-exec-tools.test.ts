@@ -220,9 +220,11 @@ test("start_preview forwards the delegated job branch", async () => {
       cwd,
       title: "Preview",
       command: "npm start",
+      imageSetupCommand: "install system dependencies",
       port: 3000
     });
     assert.equal(leaseInput?.branchName, "feature/preview");
+    assert.equal(leaseInput?.imageSetupCommand, "install system dependencies");
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

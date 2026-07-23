@@ -35,6 +35,11 @@ function savePreviewLifecycleRegistry() {
   fs.renameSync(temporaryPath, previewLifecycleStatePath);
 }
 
+function isPreviewRuntimeLabels(labels = {}) {
+  const runtimeKind = labels["manor.runtime-kind"];
+  return runtimeKind === "preview" || (!runtimeKind && Boolean(labels["manor.lease-id"]));
+}
+
 loadPreviewLifecycleRegistry();
 
 function loadStackBindingRegistry() {
@@ -564,7 +569,7 @@ async function reconcileManagedStackInfrastructure() {
 }
 
 async function reconcileManagedPreviewBootstraps() {
-  const containers = await listManagedContainers((labels) => labels["manor.runtime-kind"] !== "service");
+  const containers = await listManagedContainers(isPreviewRuntimeLabels);
   for (const containerSummary of containers) {
     if (containerSummary.State !== "running") {
       continue;
@@ -1397,6 +1402,7 @@ async function listManagedContainers(filter) {
     toStackNetworkName,
     toManagedVolumeName,
     normalizeString,
+    isPreviewRuntimeLabels,
     normalizeHeaderMap,
     normalizeCookieEntries,
     appendPreviewRoutePath,

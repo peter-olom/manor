@@ -71,7 +71,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
       name: "start_preview",
       label: "Start preview",
       description: "Start a disposable preview runtime on the internal Manor network and expose it through a stable route.",
-      promptSnippet: "start_preview: use this only for work Butler is handling directly when a live reviewable app is needed. If the operator explicitly asked for delegation or Worker, call delegate_to_worker instead.",
+      promptSnippet: "start_preview: use this only for work Butler is handling directly when a live reviewable app is needed. Preview user directories are writable automatically. If OS packages are required, pass imageSetupCommand; Manor prepares the image separately and still runs the preview non-root. If the operator explicitly asked for delegation or Worker, call delegate_to_worker instead.",
       parameters: startPreviewSchema(),
       uiEffects: access.getToolUiEffects("start_preview"),
       execute: async (_toolCallId, params, signal) => {
@@ -85,6 +85,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           aliases?: string[];
           env?: Record<string, string>;
           image?: string;
+          imageSetupCommand?: string;
           egressProfile?: string;
           egressDomains?: string[];
           bootstrapWaitSeconds?: number;
@@ -137,6 +138,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           command: typedParams.command,
           workspaceMode: "snapshot",
           image: previewDefaults.image,
+          imageSetupCommand: typedParams.imageSetupCommand,
           egressProfile: previewDefaults.egressProfile ?? "internet",
           egressDomains: previewDefaults.egressDomains ?? [],
           bootstrapWaitSeconds: typedParams.bootstrapWaitSeconds,

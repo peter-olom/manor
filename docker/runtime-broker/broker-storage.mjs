@@ -14,6 +14,7 @@ export function createBrokerStorage(context, deps = {}) {
     getStackScopeKeyFromLabels,
     getStackStorageModeFromLabels,
     inspectVolume,
+    isPreviewRuntimeLabels,
     listManagedContainers,
     listStackVolumesByScopeKey,
     normalizeString,
@@ -397,7 +398,7 @@ async function serializeStackFromNetwork(networkSummary) {
   const containers = await listStackMemberContainers(stackId);
   const volumes = retainsVolumes ? await listStackVolumesByScopeKey(stackScopeKey) : [];
   const previewIds = containers
-    .filter((container) => container.Labels?.["manor.runtime-kind"] !== "service")
+    .filter((container) => isPreviewRuntimeLabels(container.Labels))
     .map((container) => container.Labels?.["manor.lease-id"] || "")
     .filter(Boolean);
   const serviceIds = containers
