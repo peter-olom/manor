@@ -9,6 +9,7 @@ const butlerStartPath = new URL("../../../docker/butler/start.sh", import.meta.u
 const workerStartPath = new URL("../../../docker/worker/start.sh", import.meta.url);
 const ownershipInitPath = new URL("../../../docker/worker/ownership-init.sh", import.meta.url);
 const brokerPath = new URL("../../../docker/runtime-broker/broker.mjs", import.meta.url);
+const brokerCorePath = new URL("../../../docker/runtime-broker/broker-core.mjs", import.meta.url);
 const brokerStoragePath = new URL("../../../docker/runtime-broker/broker-storage.mjs", import.meta.url);
 
 function serviceSection(compose: string, name: string, nextName: string): string {
@@ -70,15 +71,22 @@ test("a constrained one-shot initializer repairs only managed actor volumes", as
 });
 
 test("preview containers and output directories use the Worker identity", async () => {
-  const [broker, brokerStorage] = await Promise.all([
+  const [broker, brokerCore, brokerStorage] = await Promise.all([
     readFile(brokerPath, "utf8"),
+    readFile(brokerCorePath, "utf8"),
     readFile(brokerStoragePath, "utf8")
   ]);
 
   assert.match(broker, /const workspaceUser = await resolveWorkspaceUser\(\)/);
   assert.match(broker, /User: workspaceUser/);
+  assert.match(broker, /WorkingDir: "\/tmp"/);
+  assert.doesNotMatch(broker, /WorkingDir: runtimeWorktreePath/);
+  assert.doesNotMatch(brokerCore, /rm -rf \\"\$DST\\"/);
+  assert.match(brokerCore, /mkdir \\"\$DST\\"/);
   assert.match(broker, /"manor\.workspace-user": workspaceUser/);
   assert.doesNotMatch(brokerStorage, /User: "0"/);
   assert.doesNotMatch(brokerStorage, /chmod 0777/);
   assert.match(brokerStorage, /Cmd: \["mkdir", "-p", `\/outputs\/\$\{outputSubpath\}`\]/);
+  assert.match(broker, /outputSubpath: lease\.id/);
+  assert.doesNotMatch(broker, /outputSubpath: lease\.threadId \|\| lease\.id/);
 });

@@ -114,7 +114,7 @@ export function startPreviewSchema() {
     )),
     heartbeatTarget: Type.Optional(Type.String({
       minLength: 1,
-      description: "Heartbeat target such as /health, 127.0.0.1:3000, or a shell command. Defaults to / when the heartbeat kind is omitted."
+      description: "Heartbeat target: an HTTP path like /health, a TCP host:port, or a shell command. Loopback hosts refer to the preview container. Defaults to / for HTTP."
     })),
     heartbeatIntervalSeconds: Type.Optional(Type.Number({
       minimum: 1,

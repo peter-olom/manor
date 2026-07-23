@@ -116,6 +116,7 @@ const {
   assertProjectStackStorageLineage,
   authorizeScopedThread,
   buildLease,
+  buildSnapshotWorkspaceCommand,
   buildShellCommand,
   buildStack,
   clearLeaseBootstrapState,
@@ -386,26 +387,6 @@ async function getRuntimeHealthSnapshot(now = Date.now()) {
     },
     proof
   };
-}
-
-function buildSnapshotWorkspaceCommand(sourceWorktreePath, runtimeWorktreePath, command) {
-  const source = normalizeString(sourceWorktreePath);
-  const runtimePath = normalizeString(runtimeWorktreePath);
-  const runtimeCommand = normalizeString(command);
-  if (!source || !runtimePath || !runtimeCommand) {
-    throw new Error("Snapshot workspace launch requires source worktree, runtime worktree, and command.");
-  }
-
-  return [
-    "set -eu",
-    `SRC=${shellQuote(source)}`,
-    `DST=${shellQuote(runtimePath)}`,
-    "rm -rf \"$DST\"",
-    "mkdir -p \"$DST\"",
-    "tar -C \"$SRC\" --exclude=.git --exclude=node_modules --exclude=.next --exclude=.turbo -cf - . | tar -C \"$DST\" -xf -",
-    "cd \"$DST\"",
-    `exec sh -lc ${shellQuote(runtimeCommand)}`
-  ].join("; ");
 }
 
 const browserController = createBrokerBrowserController({
@@ -919,7 +900,7 @@ app.post("/leases", async (request, response) => {
     const networkName = stack?.Name || previewNetwork;
     const workspaceMounts = await resolveWorkspaceMounts({
       readOnly: true,
-      outputSubpath: lease.threadId || lease.id
+      outputSubpath: lease.id
     });
     const workspaceUser = await resolveWorkspaceUser();
     const sourceWorktreePath = lease.worktreePath;
@@ -931,7 +912,7 @@ app.post("/leases", async (request, response) => {
       name: lease.containerName,
       User: workspaceUser,
       Cmd: buildShellCommand(runtimeCommand),
-      WorkingDir: runtimeWorktreePath,
+      WorkingDir: "/tmp",
       Env: envVars,
       Labels: {
         "manor.managed": "true",

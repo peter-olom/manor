@@ -352,8 +352,50 @@ function buildShellCommand(command, cwd = "") {
   return ["sh", "-lc", snippet];
 }
 
+function buildSnapshotWorkspaceCommand(sourceWorktreePath, runtimeWorktreePath, command) {
+  const source = normalizeString(sourceWorktreePath);
+  const runtimePath = normalizeString(runtimeWorktreePath);
+  const runtimeCommand = normalizeString(command);
+  if (!source || !runtimePath || !runtimeCommand) {
+    throw new Error("Snapshot workspace launch requires source worktree, runtime worktree, and command.");
+  }
+
+  const runtimeParent = path.posix.dirname(runtimePath);
+  return [
+    "set -eu",
+    `SRC=${shellQuote(source)}`,
+    `ROOT=${shellQuote(runtimeParent)}`,
+    `DST=${shellQuote(runtimePath)}`,
+    "mkdir -p \"$ROOT\"",
+    "mkdir \"$DST\"",
+    "tar -C \"$SRC\" --exclude=.git --exclude=node_modules --exclude=.next --exclude=.turbo -cf - . | tar -C \"$DST\" -xf -",
+    "cd \"$DST\"",
+    `exec sh -lc ${shellQuote(runtimeCommand)}`
+  ].join("; ");
+}
+
 function resolveContainerExecWorkingDir(container, cwd = "") {
   const normalizedCwd = normalizeString(cwd);
+  const labels = container?.Config?.Labels ?? {};
+  const runtimeWorktreePath = normalizeString(labels["manor.worktree-runtime-path"]);
+  const sourceWorktreePath = normalizeString(labels["manor.worktree-source-path"]);
+
+  if (path.posix.isAbsolute(runtimeWorktreePath)) {
+    if (!normalizedCwd) {
+      return path.posix.normalize(runtimeWorktreePath);
+    }
+    if (!path.posix.isAbsolute(normalizedCwd)) {
+      return path.posix.normalize(path.posix.join(runtimeWorktreePath, normalizedCwd));
+    }
+    if (path.posix.isAbsolute(sourceWorktreePath)) {
+      const normalizedSource = path.posix.normalize(sourceWorktreePath);
+      const relativeToSource = path.posix.relative(normalizedSource, path.posix.normalize(normalizedCwd));
+      if (relativeToSource === "" || (!relativeToSource.startsWith("../") && relativeToSource !== "..")) {
+        return path.posix.normalize(path.posix.join(runtimeWorktreePath, relativeToSource));
+      }
+    }
+  }
+
   if (!normalizedCwd) {
     return "";
   }
@@ -1374,6 +1416,7 @@ async function listManagedContainers(filter) {
     shellQuote,
     buildShellSnippet,
     buildShellCommand,
+    buildSnapshotWorkspaceCommand,
     resolveContainerExecWorkingDir,
     inspectNetwork,
     ensureBrokerManagedNetwork,

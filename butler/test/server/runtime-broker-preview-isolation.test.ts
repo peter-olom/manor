@@ -9,7 +9,11 @@ import express from "express";
 import { createBrokerBrowserController } from "../../../docker/runtime-broker/broker-browser.mjs";
 import { createBrokerCore } from "../../../docker/runtime-broker/broker-core.mjs";
 import { createBrokerJsonParserMiddleware } from "../../../docker/runtime-broker/broker-http.mjs";
-import { createBrokerRuntime } from "../../../docker/runtime-broker/broker-runtime.mjs";
+import {
+  createBrokerRuntime,
+  resolveHttpHeartbeatUrl,
+  resolveTcpHeartbeatTarget
+} from "../../../docker/runtime-broker/broker-runtime.mjs";
 import { createBrokerStorage } from "../../../docker/runtime-broker/broker-storage.mjs";
 
 test("preview browser targets cannot escape the selected preview", () => {
@@ -223,6 +227,35 @@ test("runtime broker TCP heartbeat defaults to the preview container target", (t
 
   assert.equal(lease.bootstrap.heartbeatTarget, null);
   assert.equal(broker.bootstrapConfigFromLabels({ "manor.bootstrap-heartbeat-kind": "tcp" }, 3101).heartbeatTarget, null);
+});
+
+test("runtime broker treats loopback heartbeat targets as preview-container addresses", () => {
+  const lease = {
+    containerName: "manor-preview-preview-1",
+    targetPort: 8080
+  };
+
+  assert.equal(resolveHttpHeartbeatUrl(lease, "/health").href, "http://manor-preview-preview-1:8080/health");
+  assert.equal(
+    resolveHttpHeartbeatUrl(lease, "http://127.0.0.1:8080/health").href,
+    "http://manor-preview-preview-1:8080/health"
+  );
+  assert.equal(
+    resolveHttpHeartbeatUrl(lease, "http://localhost/ready").href,
+    "http://manor-preview-preview-1:8080/ready"
+  );
+  assert.equal(
+    resolveHttpHeartbeatUrl(lease, "https://health.example.com/ready").href,
+    "https://health.example.com/ready"
+  );
+  assert.deepEqual(resolveTcpHeartbeatTarget(lease, "127.0.0.1:8080"), {
+    host: "manor-preview-preview-1",
+    port: 8080
+  });
+  assert.deepEqual(resolveTcpHeartbeatTarget(lease, "db.internal:5432"), {
+    host: "db.internal",
+    port: 5432
+  });
 });
 
 test("runtime broker decodes Docker multiplexed log frames", (t) => {
@@ -530,7 +563,11 @@ test("runtime broker resolves exec cwd inside the container", (t) => {
   });
   const previewContainer = {
     Config: {
-      WorkingDir: "/tmp/manor-preview-workspaces/preview-1"
+      WorkingDir: "/tmp",
+      Labels: {
+        "manor.worktree-source-path": "/repos/project",
+        "manor.worktree-runtime-path": "/tmp/manor-preview-workspaces/preview-1"
+      }
     }
   };
   const serviceContainer = {
@@ -547,9 +584,20 @@ test("runtime broker resolves exec cwd inside the container", (t) => {
     broker.resolveContainerExecWorkingDir(previewContainer, "/tmp/manor-preview-workspaces/preview-1/apps/demo"),
     "/tmp/manor-preview-workspaces/preview-1/apps/demo"
   );
+  assert.equal(
+    broker.resolveContainerExecWorkingDir(previewContainer, "/repos/project/apps/demo"),
+    "/tmp/manor-preview-workspaces/preview-1/apps/demo"
+  );
+  assert.equal(
+    broker.resolveContainerExecWorkingDir(previewContainer, "/outputs/thread-1"),
+    "/outputs/thread-1"
+  );
   assert.equal(broker.resolveContainerExecWorkingDir(serviceContainer, "redis"), "/data/redis");
   assert.equal(broker.resolveContainerExecWorkingDir({ Config: {} }, "tmp"), "/tmp");
-  assert.equal(broker.resolveContainerExecWorkingDir(previewContainer, ""), "");
+  assert.equal(
+    broker.resolveContainerExecWorkingDir(previewContainer, ""),
+    "/tmp/manor-preview-workspaces/preview-1"
+  );
 });
 
 test("runtime broker shell quoting preserves command variables for nested snapshot shells", (t) => {
@@ -571,6 +619,43 @@ test("runtime broker shell quoting preserves command variables for nested snapsh
 
   assert.equal(evaluated.status, 0);
   assert.equal(evaluated.stdout, command);
+});
+
+test("runtime broker creates a fresh snapshot without deleting a pre-existing destination", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "manor-preview-bootstrap-"));
+  const source = path.join(root, "source");
+  const destination = path.join(root, "runtime", "preview-1");
+  const marker = path.join(root, "operator-command-ran");
+  const egressConfigPath = path.join(root, "preview-egress.json");
+  fs.mkdirSync(source);
+  fs.writeFileSync(path.join(source, "package.json"), '{"name":"preview-smoke"}\n', "utf8");
+  fs.writeFileSync(egressConfigPath, '{"profiles":[]}\n', "utf8");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const broker = createBrokerCore({ routeBase: "/preview", previewEgressConfigPath: egressConfigPath });
+  const command = broker.buildSnapshotWorkspaceCommand(
+    source,
+    destination,
+    `test -f package.json && printf ready > ${broker.shellQuote(marker)}`
+  );
+  const first = spawnSync("sh", ["-lc", command], { encoding: "utf8", cwd: os.tmpdir() });
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(fs.readFileSync(marker, "utf8"), "ready");
+
+  fs.rmSync(marker);
+  const second = spawnSync("sh", ["-lc", command], { encoding: "utf8", cwd: os.tmpdir() });
+  assert.notEqual(second.status, 0);
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(fs.readFileSync(path.join(destination, "package.json"), "utf8"), '{"name":"preview-smoke"}\n');
+
+  fs.rmSync(destination, { recursive: true });
+  const symlinkTarget = path.join(root, "symlink-target");
+  fs.mkdirSync(symlinkTarget);
+  fs.symlinkSync(symlinkTarget, destination, "dir");
+  const symlinked = spawnSync("sh", ["-lc", command], { encoding: "utf8", cwd: os.tmpdir() });
+  assert.notEqual(symlinked.status, 0);
+  assert.equal(fs.existsSync(marker), false);
+  assert.deepEqual(fs.readdirSync(symlinkTarget), []);
 });
 
 test("runtime broker starts preview containers before attaching outbound network", () => {

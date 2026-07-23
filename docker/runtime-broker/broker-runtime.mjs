@@ -1,6 +1,30 @@
 
 import net from "node:net";
 
+function isContainerLoopbackHost(hostname) {
+  const normalized = String(hostname || "").trim().toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "0.0.0.0" || normalized === "::1" || normalized === "[::1]";
+}
+
+export function resolveHttpHeartbeatUrl(lease, target = "/") {
+  const url = new URL(target || "/", `http://${lease.containerName}:${lease.targetPort}/`);
+  if (isContainerLoopbackHost(url.hostname)) {
+    url.hostname = lease.containerName;
+    if (!url.port) url.port = String(lease.targetPort);
+  }
+  return url;
+}
+
+export function resolveTcpHeartbeatTarget(lease, target = "") {
+  const rawTarget = target || `${lease.containerName}:${lease.targetPort}`;
+  const marker = rawTarget.lastIndexOf(":");
+  const rawHost = marker === -1 ? lease.containerName : rawTarget.slice(0, marker) || lease.containerName;
+  return {
+    host: isContainerLoopbackHost(rawHost) ? lease.containerName : rawHost,
+    port: marker === -1 ? lease.targetPort : Number(rawTarget.slice(marker + 1))
+  };
+}
+
 export function createBrokerRuntime(context, deps = {}) {
   const { previewNetwork, previewOutboundNetwork, sharedWorkNetwork, previewImage, routeBase, previewEgressConfigPath, previewEgressAdminUrl, brokerToken, harnessAccessRegistryPath, stackBindingRegistryPath, internalOperatorBaseUrl, playwrightContainerName, runtimeBrokerContainerName, previewEgressContainerName, artifactsRootDir, playwrightArtifactsScratchDir, stackNetworkPrefix, stackVolumePrefix, stackInfraReconnectIntervalMs, docker, leaseTransitions, leaseBootstrapStates, activeLeaseBootstrapMonitors, pendingPreviewLeases, retainedPreviewLeases, noHeartbeatReadyDelayMs } = context;
   const {
@@ -65,7 +89,7 @@ async function runHeartbeatCheck(lease) {
 
   if (bootstrap.heartbeatKind === "http") {
     const target = bootstrap.heartbeatTarget || "/";
-    const url = new URL(target, `http://${lease.containerName}:${lease.targetPort}/`);
+    const url = resolveHttpHeartbeatUrl(lease, target);
     const response = await fetch(url, {
       method: "GET",
       redirect: "manual",
@@ -78,10 +102,7 @@ async function runHeartbeatCheck(lease) {
   }
 
   if (bootstrap.heartbeatKind === "tcp") {
-    const rawTarget = bootstrap.heartbeatTarget || `${lease.containerName}:${lease.targetPort}`;
-    const marker = rawTarget.lastIndexOf(":");
-    const host = marker === -1 ? lease.containerName : rawTarget.slice(0, marker) || lease.containerName;
-    const port = marker === -1 ? lease.targetPort : Number(rawTarget.slice(marker + 1));
+    const { host, port } = resolveTcpHeartbeatTarget(lease, bootstrap.heartbeatTarget);
     await new Promise((resolve, reject) => {
       const socket = net.createConnection({ host, port });
       const timer = setTimeout(() => {
