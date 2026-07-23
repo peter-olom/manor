@@ -33,7 +33,7 @@ export async function reconcilePendingCallbackWorkerWatchdog(input: {
   }
 
   const isCurrent = () => input.isOwned() && isCallbackOutstanding(callback) &&
-    !relevantTerminalWorkerReport(workerAccess.store.getThread(callback.threadId), workerAccess.store.getWorkerReport(callback.threadId), callback.requestedAt);
+    !relevantTerminalWorkerReport(workerAccess.store.getThread(callback.threadId), workerAccess.store.getWorkerReport(callback.threadId), callback.requestedAt, callback.acceptedWorkerTurnId);
   const result = await reconcileWorkerWatchdog({
     callback,
     thread,

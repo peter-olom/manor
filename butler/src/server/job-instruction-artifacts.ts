@@ -35,6 +35,7 @@ export type JobPayloadUpdateInput = {
   messageId?: string | null;
   report?: JobPayloadView["report"] | null;
   createdAt?: number;
+  replaceOutputScope?: boolean;
 };
 
 const nullableString = Type.Union([Type.String(), Type.Null()]);
@@ -48,6 +49,8 @@ export const JobPayloadSchema = Type.Object({
     butlerThreadId: nullableString,
     workerThreadId: Type.String({ minLength: 1 }),
     currentAttemptId: Type.String({ minLength: 1 }),
+    currentScopeId: Type.String({ minLength: 1 }),
+    currentScopeStartedAt: Type.Number(),
     attempt: Type.Number(),
     version: Type.Number(),
     parentThreadId: nullableString,
@@ -63,7 +66,8 @@ export const JobPayloadSchema = Type.Object({
   updatedAt: Type.Number(),
   workspace: Type.Object({
     cwd: nullableString,
-    branch: nullableString
+    branch: nullableString,
+    outputDir: Type.String({ minLength: 1 })
   }),
   project: Type.Object({
     id: Type.String(),
@@ -102,6 +106,7 @@ export const JobPayloadSchema = Type.Object({
       threadId: Type.String({ minLength: 1 }),
       projectId: Type.String({ minLength: 1 }),
       attemptId: Type.String({ minLength: 1 }),
+      scopeId: Type.String({ minLength: 1 }),
       sourceTurnId: nullableString,
       artifactId: nullableString,
       proofRunId: nullableString,
@@ -118,6 +123,7 @@ export const JobPayloadSchema = Type.Object({
   }),
   snapshots: Type.Array(Type.Object({
     nodeId: Type.String(),
+    scopeId: Type.String({ minLength: 1 }),
     revision: Type.Number(),
     kind: Type.String(),
     status: Type.String(),
@@ -146,6 +152,7 @@ export const JobPayloadSchema = Type.Object({
   })),
   nodes: Type.Array(Type.Object({
     id: Type.String(),
+    scopeId: Type.String({ minLength: 1 }),
     kind: Type.String(),
     parentId: nullableString,
     turnId: nullableString,
@@ -182,6 +189,10 @@ export function jobPayloadsRoot(baseDir: string): string {
 function normalizeText(value: string | null | undefined): string | null {
   const normalized = value?.replace(/\s+/g, " ").trim() ?? "";
   return normalized || null;
+}
+
+function outputDirFor(threadId: string, scopeId: string): string {
+  return `/outputs/${threadId}/${scopeId}`;
 }
 
 function normalizeList(values: Array<string | null | undefined>, max = 16): string[] {
@@ -274,6 +285,7 @@ function snapshotFromPayload(
 ): JobPayloadView["snapshots"][number] {
   return {
     nodeId: node.id,
+    scopeId: node.scopeId,
     revision,
     kind: node.kind,
     status: payload.status,
@@ -315,8 +327,10 @@ function buildNode(
   summary: string,
   now: number
 ): JobPayloadView["nodes"][number] {
+  const id = `node-${now}-${crypto.randomUUID().slice(0, 8)}`;
   return {
-    id: `node-${now}-${crypto.randomUUID().slice(0, 8)}`,
+    id,
+    scopeId: input.replaceOutputScope || !payload ? id : payload.protocol.currentScopeId,
     kind: input.kind,
     parentId: payload?.currentNodeId ?? null,
     turnId: input.turnId ?? null,
@@ -346,6 +360,8 @@ export function buildJobPayload(input: {
       butlerThreadId: input.butlerThreadId ?? null,
       workerThreadId: input.threadId,
       currentAttemptId: `attempt-${input.threadId}-1`,
+      currentScopeId: node.id,
+      currentScopeStartedAt: now,
       attempt: 1,
       version: 1,
       parentThreadId: input.parentThreadId ?? null,
@@ -361,7 +377,8 @@ export function buildJobPayload(input: {
     updatedAt: now,
     workspace: {
       cwd: contract?.workspaceCwd ?? null,
-      branch: contract?.branch ?? null
+      branch: contract?.branch ?? null,
+      outputDir: outputDirFor(input.threadId, node.id)
     },
     project: {
       id: contract?.projectId ?? "unknown",
@@ -432,7 +449,8 @@ export function remapJobPayloadForWorkerHandoff(
     updatedAt: now,
     workspace: {
       cwd: input.contract.workspaceCwd,
-      branch: input.contract.branch
+      branch: input.contract.branch,
+      outputDir: outputDirFor(input.threadId, payload.protocol.currentScopeId)
     },
     project: {
       id: input.contract.projectId,
@@ -490,11 +508,14 @@ export function updateJobPayload(payload: JobPayloadView, input: JobPayloadUpdat
   const typedContract = contract as CodexThreadExecutionContractView | null;
   const summary = summaryFor(input, typedContract);
   const node = buildNode(payload, input, summary, now);
+  const currentScopeId = input.replaceOutputScope ? node.id : payload.protocol.currentScopeId;
   const next: JobPayloadView = {
     ...payload,
     protocol: {
       ...payload.protocol,
       workerThreadId: payload.threadId,
+      currentScopeId,
+      currentScopeStartedAt: input.replaceOutputScope ? now : payload.protocol.currentScopeStartedAt,
       version: payload.protocol.version + 1,
       butlerThreadId: input.butlerThreadId ?? payload.protocol.butlerThreadId,
       parentThreadId: input.parentThreadId ?? payload.protocol.parentThreadId,
@@ -507,7 +528,8 @@ export function updateJobPayload(payload: JobPayloadView, input: JobPayloadUpdat
     updatedAt: now,
     workspace: {
       cwd: typedContract?.workspaceCwd ?? payload.workspace.cwd,
-      branch: typedContract?.branch ?? payload.workspace.branch
+      branch: typedContract?.branch ?? payload.workspace.branch,
+      outputDir: input.replaceOutputScope ? outputDirFor(payload.threadId, currentScopeId) : payload.workspace.outputDir
     },
     project: {
       id: typedContract?.projectId ?? payload.project.id,
@@ -544,7 +566,7 @@ export function updateJobPayload(payload: JobPayloadView, input: JobPayloadUpdat
       turnId: input.turnId ?? payload.delivery.turnId,
       messageId: input.messageId ?? payload.delivery.messageId
     },
-    report: input.report ?? payload.report,
+    report: input.report ?? (input.replaceOutputScope ? null : payload.report),
     executionContract: typedContract ?? payload.executionContract
   };
   next.snapshots.push(snapshotFromPayload(next, node));
@@ -594,6 +616,36 @@ export function parseJobPayload(value: unknown): JobPayloadView | null {
     ? record.outputManifest as Record<string, unknown>
     : null;
   const rawOutputEntries = Array.isArray(rawOutputManifest?.entries) ? rawOutputManifest.entries : [];
+  const rawProtocol = record.protocol && typeof record.protocol === "object" ? record.protocol as Record<string, unknown> : {};
+  const rawWorkspace = record.workspace && typeof record.workspace === "object" ? record.workspace as Record<string, unknown> : {};
+  const legacyAttemptId = typeof rawProtocol.currentAttemptId === "string" ? rawProtocol.currentAttemptId : "attempt-legacy";
+  const currentScopeId = typeof rawProtocol.currentScopeId === "string" && rawProtocol.currentScopeId.trim()
+    ? rawProtocol.currentScopeId
+    : `scope-legacy-${legacyAttemptId}`;
+  const currentScopeStartedAt = typeof rawProtocol.currentScopeStartedAt === "number" && Number.isFinite(rawProtocol.currentScopeStartedAt)
+    ? rawProtocol.currentScopeStartedAt
+    : typeof record.updatedAt === "number" && Number.isFinite(record.updatedAt) ? record.updatedAt : Date.now();
+  const rawNodes = Array.isArray(record.nodes) ? record.nodes : [];
+  const normalizedNodes: Array<Record<string, unknown>> = rawNodes.map((node) => ({
+    ...(node as Record<string, unknown>),
+    scopeId: (node as Record<string, unknown>).scopeId ?? currentScopeId
+  }));
+  const nodeScopeById = new Map(normalizedNodes.map((node) => [String(node["id"]), String(node["scopeId"])]));
+  const rawSnapshots = Array.isArray(record.snapshots) ? record.snapshots : null;
+  const normalizedSnapshots = rawSnapshots
+    ? rawSnapshots.map((snapshot) => ({
+        ...(snapshot as Record<string, unknown>),
+        scopeId: (snapshot as Record<string, unknown>).scopeId ??
+          nodeScopeById.get(String((snapshot as Record<string, unknown>).nodeId)) ??
+          currentScopeId
+      }))
+    : normalizedNodes.length > 0
+      ? synthesizeSnapshots({
+          ...record,
+          protocol: { ...rawProtocol, currentScopeId, currentScopeStartedAt },
+          nodes: normalizedNodes
+        } as unknown as JobPayloadView)
+      : [];
   const migratedOutputManifest = !rawOutputManifest || rawOutputEntries.some((entry) => {
     const candidate = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
     return !candidate ||
@@ -605,13 +657,29 @@ export function parseJobPayload(value: unknown): JobPayloadView | null {
       !("sizeBytes" in candidate) ||
       !("checksumSha256" in candidate);
   });
+  const migratedScope = !("currentScopeId" in rawProtocol) || !("currentScopeStartedAt" in rawProtocol) || !("outputDir" in rawWorkspace) ||
+    rawOutputEntries.some((entry) => !entry || typeof entry !== "object" || !("scopeId" in entry)) ||
+    rawNodes.some((node) => !node || typeof node !== "object" || !("scopeId" in node)) ||
+    (rawSnapshots?.some((snapshot) => !snapshot || typeof snapshot !== "object" || !("scopeId" in snapshot)) ?? false);
   const normalized = {
     ...record,
+    protocol: {
+      ...rawProtocol,
+      currentScopeId,
+      currentScopeStartedAt
+    },
+    workspace: {
+      ...rawWorkspace,
+      outputDir: typeof rawWorkspace.outputDir === "string" && rawWorkspace.outputDir.trim()
+        ? rawWorkspace.outputDir
+        : `/outputs/${String(record.threadId ?? "unknown")}`
+    },
     outputManifest: rawOutputManifest
       ? {
           ...rawOutputManifest,
           entries: rawOutputEntries.map((entry) => ({
             ...(entry as Record<string, unknown>),
+            scopeId: (entry as Record<string, unknown>).scopeId ?? currentScopeId,
             availability: (entry as Record<string, unknown>).availability ?? "available",
             checksumStatus: (entry as Record<string, unknown>).checksumStatus ?? "unverified",
             integrityCheckedAt: (entry as Record<string, unknown>).integrityCheckedAt ?? null,
@@ -622,17 +690,14 @@ export function parseJobPayload(value: unknown): JobPayloadView | null {
           }))
         }
       : { version: 1, entries: [] },
-    snapshots: Array.isArray(record.snapshots)
-      ? record.snapshots
-      : Array.isArray(record.nodes)
-        ? synthesizeSnapshots(record as unknown as JobPayloadView)
-        : []
+    nodes: normalizedNodes,
+    snapshots: normalizedSnapshots
   };
   if (!Value.Check(JobPayloadSchema, normalized)) {
     return null;
   }
   const parsed = normalized as JobPayloadView;
-  if (migratedOutputManifest) {
+  if (migratedOutputManifest || migratedScope) {
     parsed.checksum = checksumPayload(parsed);
   }
   return parsed;
@@ -649,21 +714,24 @@ export function appendJobOutputManifestEntries(
   const byId = new Map(payload.outputManifest.entries.map((entry) => [entry.id, { ...entry }]));
   let changed = false;
   for (const entry of entries) {
-    const existing = byId.get(entry.id);
-    if (!existing || JSON.stringify(existing) !== JSON.stringify(entry)) {
-      byId.set(entry.id, { ...entry });
+    const normalizedEntry = { ...entry, scopeId: entry.scopeId || payload.protocol.currentScopeId };
+    const existing = byId.get(normalizedEntry.id);
+    if (!existing || JSON.stringify(existing) !== JSON.stringify(normalizedEntry)) {
+      byId.set(normalizedEntry.id, normalizedEntry);
       changed = true;
     }
   }
   if (!changed) {
     return payload;
   }
-  const currentEntries = [...byId.values()].filter((entry) => entry.attemptId === payload.protocol.currentAttemptId);
+  const currentEntries = [...byId.values()].filter((entry) =>
+    entry.attemptId === payload.protocol.currentAttemptId && entry.scopeId === payload.protocol.currentScopeId
+  );
   if (currentEntries.length > 512) {
     throw new Error("The current job attempt output manifest exceeds the 512-entry safety limit.");
   }
   const historicalEntries = [...byId.values()]
-    .filter((entry) => entry.attemptId !== payload.protocol.currentAttemptId)
+    .filter((entry) => entry.attemptId !== payload.protocol.currentAttemptId || entry.scopeId !== payload.protocol.currentScopeId)
     .sort((left, right) => left.createdAt - right.createdAt)
     .slice(-512);
   return finalizePayload({
@@ -679,6 +747,28 @@ export function appendJobOutputManifestEntries(
       entries: [...historicalEntries, ...currentEntries].sort((left, right) => left.createdAt - right.createdAt)
     }
   });
+}
+
+export function selectCurrentJobOutputEntries(payload: JobPayloadView): JobOutputManifestEntryView[] {
+  const current = payload.outputManifest.entries.filter((entry) =>
+    entry.attemptId === payload.protocol.currentAttemptId && entry.scopeId === payload.protocol.currentScopeId
+  );
+  const artifactsByPath = new Map<string, JobOutputManifestEntryView>();
+  const proofs: JobOutputManifestEntryView[] = [];
+  let latestReport: JobOutputManifestEntryView | null = null;
+  for (const entry of current) {
+    if (entry.kind === "project_artifact") {
+      const key = entry.logicalPath ?? entry.artifactId ?? entry.id;
+      const previous = artifactsByPath.get(key);
+      if (!previous || previous.createdAt <= entry.createdAt) artifactsByPath.set(key, entry);
+    } else if (entry.kind === "proof") {
+      proofs.push(entry);
+    } else if (!latestReport || latestReport.createdAt <= entry.createdAt) {
+      latestReport = entry;
+    }
+  }
+  return [...artifactsByPath.values(), ...proofs, ...(latestReport ? [latestReport] : [])]
+    .sort((left, right) => left.createdAt - right.createdAt);
 }
 
 export function updateJobOutputManifestIntegrity(
@@ -721,7 +811,7 @@ export function updateJobOutputManifestIntegrity(
 }
 
 export function formatJobOutputManifestText(payload: JobPayloadView | null): string {
-  const entries = payload?.outputManifest.entries.filter((entry) => entry.attemptId === payload.protocol.currentAttemptId) ?? [];
+  const entries = payload ? selectCurrentJobOutputEntries(payload) : [];
   if (entries.length === 0) {
     return "No durable outputs are registered for this job.";
   }

@@ -8,9 +8,11 @@ import { workerThreadIsRunning } from "./worker-thread-status.js";
 export function relevantTerminalWorkerReport(
   thread: CodexThreadRecord | null | undefined,
   report: CodexWorkerReportView | null | undefined,
-  requestedAt: number
+  requestedAt: number,
+  acceptedWorkerTurnId?: string | null
 ): CodexWorkerReportView | null {
   if (!report || report.updatedAt < requestedAt) return null;
+  if (acceptedWorkerTurnId && report.turnId !== acceptedWorkerTurnId) return null;
   if (report.status === "completed") return report;
   return workerThreadIsRunning(thread) ? null : report;
 }

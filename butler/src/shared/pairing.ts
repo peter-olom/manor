@@ -87,6 +87,8 @@ export type PairReviewActivity = {
   modelId: string | null;
   thinkingLevel: string | null;
   retryable: boolean;
+  workSliceNodeId: string | null;
+  scopeLabel: string | null;
 };
 
 export type PairOperatorQuestionOption = {

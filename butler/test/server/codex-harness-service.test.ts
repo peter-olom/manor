@@ -310,15 +310,16 @@ test("completed reports reconcile durable job outputs inside the report lock", a
   const outputsDir = path.join(root, "outputs");
   const threadId = "thread-report-reconcile";
   await mkdir(stateDir, { recursive: true });
-  await mkdir(path.join(outputsDir, threadId), { recursive: true });
   await writeFile(path.join(stateDir, "butler-ui.json"), JSON.stringify({ windows: [], focusedWindowId: null }), "utf8");
-  await writeFile(path.join(outputsDir, threadId, "report.md"), "durable report", "utf8");
   const store = new ButlerStateStore(path.join(stateDir, "butler-ui.json"));
   await store.load();
   store.upsertThreadSummary({ id: threadId, cwd: "/workspace", status: "active", source: "codex", turns: [{ id: "turn-1", status: "completed", items: [] }] });
   const contract = buildThreadExecutionContract({ threadId, workspaceCwd: "/workspace", projectId: "project", projectLabel: "Project", branch: null, taskText: "Create a durable report.", notes: [] });
   store.setThreadExecutionContract(threadId, contract);
   const payload = buildJobPayload({ threadId, kind: "delegation", instruction: contract.requestedTask, contract });
+  const scopedOutputDir = path.join(outputsDir, payload.workspace.outputDir.replace(/^\/outputs\//, ""));
+  await mkdir(scopedOutputDir, { recursive: true });
+  await writeFile(path.join(scopedOutputDir, "report.md"), "durable report", "utf8");
   await persistJobPayload(jobPayloadsRoot(artifactsDir), payload);
   store.setThreadJobPayload(payload);
   const harness = new CodexHarnessService({
@@ -343,6 +344,9 @@ test("completed reports reconcile durable job outputs inside the report lock", a
   assert.ok(entry?.artifactId);
   assert.equal(entry.checksumStatus, "verified");
   assert.equal(store.getWorkerReport(threadId)?.status, "completed");
+  assert.equal(store.getThreadJobPayload(threadId)?.report?.summary, "Report complete");
+  const reportEntry = store.getThreadJobPayload(threadId)?.outputManifest.entries.find((candidate) => candidate.kind === "worker_report");
+  assert.equal(reportEntry?.scopeId, payload.protocol.currentScopeId);
 });
 
 test("a queued Worker report does not cross into a refreshed job scope", async () => {

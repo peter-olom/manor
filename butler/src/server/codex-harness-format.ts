@@ -32,7 +32,7 @@ export function formatHarnessRuntimeModel(): string[] {
     "The Worker shell is a normal development environment for source, installs, builds, tests, scripts, and Git. Use previews when a clean runtime, service lifecycle, isolation, or browser proof is useful.",
     "Every preview receives private writable HOME, temporary, cache, config, data, state, and runtime directories automatically. Do not add tool-specific cache workarounds.",
     "When a preview needs operating-system packages, use the preview image setup command. Manor prepares an isolated derived image without workspace files, secrets, inputs, outputs, or durable mounts, then runs the preview as the normal non-root user.",
-    "Uploaded inputs are mounted read-only at /inputs in both Worker and previews. Write derived files under /outputs/<jobId>, then publish them with manor-harness input publish <path> --from <referenceId> so Manor creates a linked immutable version.",
+    "Uploaded inputs are mounted read-only at /inputs in both Worker and previews. Read the current payload and write derived files to its exact workspace.outputDir, then publish them with manor-harness input publish <path> --from <referenceId> so Manor creates a linked immutable version.",
     "Previews run app code. Services provide supporting infrastructure such as databases, queues, object storage, or mail capture.",
     "Browser-use sessions already capture tracing, video, a ready screenshot, a final screenshot, and per-action screenshots unless you disable auto-capture.",
     "Choose proof that directly demonstrates the result. Frontend work usually benefits from screenshots or video plus test output; operational work is often best shown with a Markdown command transcript.",

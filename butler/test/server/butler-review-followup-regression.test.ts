@@ -40,7 +40,7 @@ test("a dispatched review follow-up stays current until the review tool finishes
   const threadId = "thread-review-followup-dispatch";
   store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
   const agent = createButlerAgent(store, sessionDir);
-  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: 1 });
+  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: 1, scopeDisposition: "replace" });
   const internals = agent as unknown as { pendingChatCallbacks: Map<string, ButlerThreadCallbackView> };
   const attempted = internals.pendingChatCallbacks.get(threadId)!;
   attempted.reviewState = "running";
@@ -52,7 +52,7 @@ test("a dispatched review follow-up stays current until the review tool finishes
     isCurrent: () => internals.pendingChatCallbacks.get(threadId) === attempted && attempted.reviewState === "running"
   }, async () => {
     const watchdogs = new ActivityWatchdogService();
-    await agent.reserveDirectCodexMessage({ threadId, text: "Fix the rejected point.", requestedAt });
+    await agent.reserveDirectCodexMessage({ threadId, text: "Fix the rejected point.", requestedAt, scopeDisposition: "preserve" });
     const monitor = monitorCallbackReviewCurrent(threadId, watchdogs);
     assert.ok(monitor);
     assert.equal(watchdogs.size, 1);
@@ -75,14 +75,14 @@ test("an external Worker dispatch supersedes an in-flight callback review", asyn
   const threadId = "thread-external-followup-dispatch";
   store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
   const agent = createButlerAgent(store, sessionDir);
-  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: 1 });
+  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: 1, scopeDisposition: "replace" });
   const internals = agent as unknown as { pendingChatCallbacks: Map<string, ButlerThreadCallbackView> };
   const attempted = internals.pendingChatCallbacks.get(threadId)!;
   attempted.reviewState = "running";
   const reviewIsCurrent = () => internals.pendingChatCallbacks.get(threadId) === attempted && attempted.reviewState === "running";
   assert.equal(reviewIsCurrent(), true);
 
-  await agent.reserveDirectCodexMessage({ threadId, text: "Operator changed the task.", requestedAt: 2 });
+  await agent.reserveDirectCodexMessage({ threadId, text: "Operator changed the task.", requestedAt: 2, scopeDisposition: "replace" });
 
   assert.notEqual(internals.pendingChatCallbacks.get(threadId), attempted);
   assert.equal(reviewIsCurrent(), false);
@@ -95,7 +95,7 @@ test("a cancelled follow-up restores retry history before the outer review failu
   const threadId = "thread-review-followup-retry-count";
   store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
   const agent = createButlerAgent(store, sessionDir);
-  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: 1 });
+  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: 1, scopeDisposition: "replace" });
   const internals = agent as unknown as {
     pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
     callbackReviewFailureCount: Map<string, number>;
@@ -107,7 +107,7 @@ test("a cancelled follow-up restores retry history before the outer review failu
   internals.callbackReviewFailureCount.set(threadId, 2);
   internals.callbackReviewNotBefore.set(threadId, 123);
   await runWithCallbackReviewGuard({ threadId, isCurrent: () => true }, async () => {
-    const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Retry the follow-up.", requestedAt: 2 });
+    const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Retry the follow-up.", requestedAt: 2, scopeDisposition: "preserve" });
     await agent.rollbackDirectCodexMessage(threadId, 2, reservation);
   });
 
@@ -132,7 +132,7 @@ test("a failed review schedules its retry without waiting for status polling", a
   const threadId = "thread-review-retry-schedule";
   store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
   const agent = createButlerAgent(store, sessionDir);
-  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: 1 });
+  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: 1, scopeDisposition: "replace" });
   const internals = agent as unknown as {
     pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
     processCallbackReviews(): Promise<void>;
@@ -157,7 +157,7 @@ test("a failed ordinary steer preserves checklist updates that arrived while sen
   store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
   store.setThreadExecutionContract(threadId, buildThreadExecutionContract({ threadId, workspaceCwd: "/workspace", projectId: "project", projectLabel: "Project", branch: "main", taskText: "Verify the result", notes: [] }));
   const agent = createButlerAgent(store, sessionDir);
-  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Retry the send.", requestedAt: 2 });
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Retry the send.", requestedAt: 2, scopeDisposition: "preserve" });
   const pointId = store.getSupervisionChecklist(threadId)!.items[0]!.id;
   store.reviewAcceptancePoint({ threadId, pointId, status: "accepted", note: "Worker evidence arrived." });
 
@@ -175,7 +175,7 @@ test("a failed scope replacement does not overwrite newer Worker review evidence
   store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
   store.setThreadExecutionContract(threadId, buildThreadExecutionContract({ threadId, workspaceCwd: "/workspace", projectId: "project", projectLabel: "Project", branch: "main", taskText: "Old work", notes: [] }));
   const agent = createButlerAgent(store, sessionDir);
-  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "New work", requestedAt: 2 });
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "New work", requestedAt: 2, scopeDisposition: "replace" });
   store.refreshCompletedSupervisionChecklistForFollowup(threadId, "New work", { force: true });
   const refreshed = store.getThread(threadId)!;
   reservation.reviewScopeReplacement = { executionContract: structuredClone(refreshed.executionContract), supervisionChecklist: structuredClone(refreshed.supervisionChecklist) };
@@ -196,7 +196,7 @@ test("an already dispatched callback posts attention when restart hydration fail
   const originalStore = await createStore();
   originalStore.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
   const originalAgent = createButlerAgent(originalStore, sessionDir);
-  await originalAgent.reserveDirectCodexMessage({ threadId, text: "Finish and report.", requestedAt: 1 });
+  await originalAgent.reserveDirectCodexMessage({ threadId, text: "Finish and report.", requestedAt: 1, scopeDisposition: "replace" });
   await originalAgent.markPendingChatCallbackDispatched(threadId, 1, "turn-dispatched");
   originalAgent.dispose();
 
@@ -220,12 +220,12 @@ test("a direct notification failure restores scope refreshed before payload pers
   store.setThreadExecutionContract(threadId, buildThreadExecutionContract({ threadId, workspaceCwd: "/workspace", projectId: "project", projectLabel: "Project", branch: "main", taskText: "Old work", notes: [] }));
   for (const item of store.getSupervisionChecklist(threadId)?.items ?? []) store.reviewAcceptancePoint({ threadId, pointId: item.id, status: "accepted" });
   const agent = createButlerAgent(store, sessionDir);
-  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "New work", requestedAt: 2 });
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "New work", requestedAt: 2, scopeDisposition: "replace" });
   const internals = agent as unknown as { createOrUpdateJobPayload(input: { threadId: string; kind: "direct_message"; instruction: string; onPrepared?: (payload: never) => void }): Promise<unknown> };
   const createPayload = internals.createOrUpdateJobPayload.bind(agent);
   internals.createOrUpdateJobPayload = async (input) => { await createPayload(input); throw new Error("callback persistence failed"); };
 
-  await assert.rejects(() => agent.notifyDirectCodexMessage({ threadId, text: "New work", requestedAt: 2, callbackAlreadyRegistered: true }, reservation), /callback persistence failed/);
+  await assert.rejects(() => agent.notifyDirectCodexMessage({ threadId, text: "New work", requestedAt: 2, callbackAlreadyRegistered: true, scopeDisposition: "replace" }, reservation), /callback persistence failed/);
   assert.deepEqual(store.getThread(threadId)?.executionContract, reservation.reviewScopeReplacement?.executionContract);
   assert.deepEqual(store.getThread(threadId)?.supervisionChecklist?.items, reservation.reviewScopeReplacement?.supervisionChecklist?.items);
   await agent.rollbackDirectCodexMessage(threadId, 2, reservation);
@@ -243,7 +243,7 @@ test("payload rollback preserves a newer Worker checkpoint", async () => {
   store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
   const agent = createButlerAgent(store, sessionDir);
   const internals = agent as unknown as { createOrUpdateJobPayload(input: { threadId: string; kind: "steering" | "worker_report"; instruction: string; onPrepared?: (payload: never) => void }): Promise<unknown> };
-  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Unsent follow-up", requestedAt: 2 });
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Unsent follow-up", requestedAt: 2, scopeDisposition: "preserve" });
   const replacement = await internals.createOrUpdateJobPayload({ threadId, kind: "steering", instruction: "Unsent follow-up", onPrepared: (payload) => { reservation.jobPayloadReplacement = structuredClone(payload); } });
   assert.ok(replacement);
   const checkpoint = await internals.createOrUpdateJobPayload({ threadId, kind: "worker_report", instruction: "Worker checkpoint arrived" });
@@ -262,8 +262,8 @@ test("a newer Worker checkpoint preserves the refreshed payload and review scope
   store.setThreadExecutionContract(threadId, buildThreadExecutionContract({ threadId, workspaceCwd: "/workspace", projectId: "project", projectLabel: "Project", branch: "main", taskText: "Old work", notes: [] }));
   for (const item of store.getSupervisionChecklist(threadId)?.items ?? []) store.reviewAcceptancePoint({ threadId, pointId: item.id, status: "accepted" });
   const agent = createButlerAgent(store, sessionDir);
-  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "New work", requestedAt: 2 });
-  await agent.notifyDirectCodexMessage({ threadId, text: "New work", requestedAt: 2, callbackAlreadyRegistered: true }, reservation);
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "New work", requestedAt: 2, scopeDisposition: "replace" });
+  await agent.notifyDirectCodexMessage({ threadId, text: "New work", requestedAt: 2, callbackAlreadyRegistered: true, scopeDisposition: "replace" }, reservation);
   const internals = agent as unknown as { createOrUpdateJobPayload(input: { threadId: string; kind: "worker_report"; instruction: string }): Promise<unknown> };
   const checkpoint = await internals.createOrUpdateJobPayload({ threadId, kind: "worker_report", instruction: "Worker checkpoint arrived" });
 
@@ -283,8 +283,8 @@ test("new review evidence preserves the refreshed payload and review scope toget
   store.setThreadExecutionContract(threadId, buildThreadExecutionContract({ threadId, workspaceCwd: "/workspace", projectId: "project", projectLabel: "Project", branch: "main", taskText: "Old work", notes: [] }));
   for (const item of store.getSupervisionChecklist(threadId)?.items ?? []) store.reviewAcceptancePoint({ threadId, pointId: item.id, status: "accepted" });
   const agent = createButlerAgent(store, sessionDir);
-  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "New work", requestedAt: 2 });
-  await agent.notifyDirectCodexMessage({ threadId, text: "New work", requestedAt: 2, callbackAlreadyRegistered: true }, reservation);
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "New work", requestedAt: 2, scopeDisposition: "replace" });
+  await agent.notifyDirectCodexMessage({ threadId, text: "New work", requestedAt: 2, callbackAlreadyRegistered: true, scopeDisposition: "replace" }, reservation);
   const replacementPayload = structuredClone(store.getThreadJobPayload(threadId)!);
   store.setThreadJobPayload(replacementPayload);
   const pointId = store.getSupervisionChecklist(threadId)!.items[0]!.id;
@@ -311,8 +311,8 @@ test("a rollback persistence failure keeps callback memory aligned with durable 
   };
   await internals.createOrUpdateJobPayload({ threadId, kind: "steering", instruction: "Old work" });
   for (const item of store.getSupervisionChecklist(threadId)?.items ?? []) store.reviewAcceptancePoint({ threadId, pointId: item.id, status: "accepted" });
-  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "New work", requestedAt: 2 });
-  await agent.notifyDirectCodexMessage({ threadId, text: "New work", requestedAt: 2, callbackAlreadyRegistered: true }, reservation);
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "New work", requestedAt: 2, scopeDisposition: "replace" });
+  await agent.notifyDirectCodexMessage({ threadId, text: "New work", requestedAt: 2, callbackAlreadyRegistered: true, scopeDisposition: "replace" }, reservation);
   const replacementPayload = structuredClone(store.getThreadJobPayload(threadId));
   await rm(path.join(sessionDir, "job-payloads"), { recursive: true, force: true });
   await writeFile(path.join(sessionDir, "job-payloads"), "blocks payload persistence", "utf8");

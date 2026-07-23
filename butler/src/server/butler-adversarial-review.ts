@@ -426,6 +426,7 @@ export async function ensureButlerAdversarialReview(input: {
   piAuthPath: string;
   thinkingLevel: ButlerThinkingLevel;
   minimumReportUpdatedAt?: number | null;
+  expectedReportTurnId?: string | null;
   reviewBrief?: string | null;
   timeoutMs?: number;
   watchdogs: ActivityWatchdogService;
@@ -443,8 +444,17 @@ export async function ensureButlerAdversarialReview(input: {
     !report ||
     report.status !== "completed" ||
     !model ||
+    (input.expectedReportTurnId && report.turnId !== input.expectedReportTurnId) ||
     (typeof input.minimumReportUpdatedAt === "number" && report.updatedAt < input.minimumReportUpdatedAt)
   ) return [];
+
+  const reportIsCurrent = (): boolean => {
+    const current = input.store.getWorkerReport(input.threadId);
+    return input.isCurrent?.() !== false &&
+      current?.turnId === report.turnId &&
+      current.updatedAt === report.updatedAt &&
+      (!input.expectedReportTurnId || current.turnId === input.expectedReportTurnId);
+  };
 
   const existing = (thread.executionContract?.reviewResults ?? []).filter((result) =>
     result.turnId === report.turnId &&
@@ -521,7 +531,7 @@ export async function ensureButlerAdversarialReview(input: {
       scopedReview ? null : baselineTreeSha,
       scopedReview ? null : baselineObjectDir
     );
-    if (input.isCurrent?.() === false) return [];
+    if (!reportIsCurrent()) return [];
     const workspaceSnapshot = scopedReview ? `${scopedReview.scopeNote}\n\n${rawWorkspaceSnapshot}` : rawWorkspaceSnapshot;
     const payload = input.store.getThreadJobPayload(input.threadId);
     const outputManifest = payload ? await formatResolvedJobOutputManifestForReview(payload, input.store) : null;
@@ -547,7 +557,7 @@ export async function ensureButlerAdversarialReview(input: {
       isCurrent: input.isCurrent,
       inspectJobOutput
     }));
-    if (input.isCurrent?.() === false) return [];
+    if (!reportIsCurrent()) return [];
     let results = normalizeWorkerReviewResults({
       raw,
       threadId: input.threadId,
@@ -601,8 +611,12 @@ export async function ensureButlerAdversarialReview(input: {
         updatedAt: now
       }];
     }
-    if (input.isCurrent?.() === false) return [];
-    input.store.recordWorkerReviewResults(input.threadId, results);
+    if (!reportIsCurrent()) return [];
+    const stored = input.store.recordWorkerReviewResults(input.threadId, results, {
+      turnId: report.turnId,
+      reportUpdatedAt: report.updatedAt
+    });
+    if (!stored || !reportIsCurrent()) return [];
     return results;
   } catch (error) {
     if (input.isCurrent?.() === false) return [];

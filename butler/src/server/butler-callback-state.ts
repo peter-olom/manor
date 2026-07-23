@@ -8,6 +8,74 @@ import type { CodexThreadRecord } from "./types.js";
 const RESERVED_CALLBACK_RECOVERY_GRACE_MS = 5 * 60_000;
 const REVIEW_STAGES = new Set(["queued", "preparing", "reviewing_changes", "supervising_closeout", "retry_wait", "blocked"]);
 
+export function buildPendingChatCallback(input: {
+  threadId: string;
+  requestedAt: number;
+  now: number;
+  existing?: PendingChatCallback;
+  existingOutstanding: boolean;
+  options?: {
+    privateSteerText?: string | null;
+    preservePrivateSteer?: boolean;
+    operatorRequestText?: string | null;
+    nextWorkerReportAction?: "review" | "reply_to_operator";
+    dispatchState?: "ready" | "reserving";
+    scopeDisposition?: "preserve" | "replace";
+    workSliceNodeId?: string | null;
+  };
+  currentScopeId: string | null;
+  workerStatus: PendingChatCallback["lastWorkerStatusSeen"];
+  reviewModelProvider: string | null;
+  reviewModelId: string | null;
+  reviewReasoningLevel: PendingChatCallback["reviewReasoningLevel"];
+}): PendingChatCallback {
+  const suppliedPrivateSteer = input.options?.privateSteerText?.trim() || null;
+  const preservePrivateSteer = input.options?.preservePrivateSteer === true && input.existingOutstanding;
+  const privateSteerText = suppliedPrivateSteer ?? (preservePrivateSteer ? input.existing?.lastPrivateSteerText ?? null : null);
+  const suppliedOperatorRequest = input.options?.operatorRequestText?.trim() || null;
+  const operatorRequestText = suppliedOperatorRequest ?? (input.existingOutstanding ? input.existing?.operatorRequestText ?? null : null);
+  const scopeDisposition = input.options?.scopeDisposition === "replace" ? "replace" : "preserve";
+  const workSliceNodeId = input.options && "workSliceNodeId" in input.options
+    ? input.options.workSliceNodeId ?? null
+    : input.existing?.workSliceNodeId ?? input.currentScopeId;
+  return {
+    threadId: input.threadId, callbackState: "waiting", dispatchState: input.options?.dispatchState ?? "ready", resolutionState: null,
+    requestedAt: input.requestedAt, operatorRequestText, workSliceNodeId, scopeDisposition,
+    scopeLabel: suppliedOperatorRequest ??
+      (scopeDisposition === "preserve" && input.existingOutstanding ? input.existing?.scopeLabel ?? null : null) ??
+      suppliedPrivateSteer ??
+      null,
+    lastEventAt: input.requestedAt, lastWorkerStatusSeen: input.workerStatus, lastTerminalReportAt: null,
+    acceptedWorkerTurnId: null, lastPrivateSteerText: privateSteerText,
+    lastPrivateSteerAt: suppliedPrivateSteer ? input.requestedAt : preservePrivateSteer ? input.existing?.lastPrivateSteerAt ?? null : null,
+    nextWorkerReportAction: input.options?.nextWorkerReportAction === "reply_to_operator" ? "reply_to_operator" : "review",
+    operatorCloseoutStatus: "owed", owesOperatorReply: true, closeoutChannel: "none", reviewState: "idle", reviewReason: null,
+    reviewModelProvider: input.reviewModelProvider, reviewModelId: input.reviewModelId, reviewReasoningLevel: input.reviewReasoningLevel,
+    blockedCloseoutReason: null, blockedCloseoutReportAt: null, closedAt: null, updatedAt: input.now
+  };
+}
+
+export function closePendingChatCallbackForOperatorStop(input: {
+  threadId: string;
+  now: number;
+  existing?: PendingChatCallback;
+  currentScopeId: string | null;
+  workerStatus: PendingChatCallback["lastWorkerStatusSeen"];
+  reviewModelProvider: string | null;
+  reviewModelId: string | null;
+  reviewReasoningLevel: PendingChatCallback["reviewReasoningLevel"];
+}): PendingChatCallback {
+  const callback = input.existing ?? buildPendingChatCallback({ ...input, requestedAt: input.now, existingOutstanding: false });
+  Object.assign(callback, {
+    callbackState: "closed", resolutionState: null, lastWorkerStatusSeen: input.workerStatus,
+    lastEventAt: input.now, operatorCloseoutStatus: "not_required", owesOperatorReply: false,
+    closeoutChannel: "none", reviewState: "idle", reviewReason: null, reviewStage: null,
+    reviewStartedAt: null, reviewDeadlineAt: null, reviewNextAttemptAt: null,
+    blockedCloseoutReason: null, blockedCloseoutReportAt: null, closedAt: input.now, updatedAt: input.now
+  } satisfies Partial<PendingChatCallback>);
+  return callback;
+}
+
 export function directWorkerDispatchMarker(threadId: string, requestedAt: number): string {
   return `<!-- manor-direct-dispatch:${threadId}:${requestedAt} -->`;
 }
@@ -80,6 +148,9 @@ function normalizeCallbackEntry(entry: PendingChatCallback): PendingChatCallback
     resolutionState,
     requestedAt,
     operatorRequestText: typeof entry.operatorRequestText === "string" && entry.operatorRequestText.trim() ? entry.operatorRequestText.trim() : null,
+    workSliceNodeId: typeof entry.workSliceNodeId === "string" && entry.workSliceNodeId.trim() ? entry.workSliceNodeId.trim() : null,
+    scopeDisposition: entry.scopeDisposition === "replace" ? "replace" : "preserve",
+    scopeLabel: typeof entry.scopeLabel === "string" && entry.scopeLabel.trim() ? entry.scopeLabel.trim().slice(0, 300) : null,
     lastEventAt: repairEpochMilliseconds(entry.lastEventAt, updatedAt, now),
     lastWorkerStatusSeen:
       entry.lastWorkerStatusSeen === "active" || entry.lastWorkerStatusSeen === "idle" || entry.lastWorkerStatusSeen === "unknown"

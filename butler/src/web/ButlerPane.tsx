@@ -717,8 +717,9 @@ export const ReviewActivityBubble = memo(function ReviewActivityBubble({ review,
     <article className={`bubble is-butler review-activity is-${review.state}`} aria-label="Adversarial review activity">
       <header className="bubble-head">
         <span>Butler review</span>
-        <time className="bubble-time">{attemptLabel}</time>
+        <time className="bubble-time">Reviewer · {attemptLabel}</time>
       </header>
+      {review.scopeLabel ? <p className="review-activity-scope" title={review.scopeLabel}>Reviewing: {review.scopeLabel}</p> : null}
       <div className="review-activity-status" role="status">
         {review.state !== "blocked" ? <SandSpinner /> : null}
         <strong>{REVIEW_STAGE_LABELS[review.stage]}</strong>

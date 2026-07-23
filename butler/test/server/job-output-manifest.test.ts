@@ -12,7 +12,7 @@ import { handleHarnessArtifactPolicyAction } from "../../src/server/codex-harnes
 import { handleHarnessPayloadAction } from "../../src/server/codex-harness-instructions.js";
 import { buildJobOutputManifestEntry, reconcileJobOutputManifest, updatePayloadFromWorkerReport } from "../../src/server/codex-harness-payload.js";
 import { handleHarnessProofAction } from "../../src/server/codex-harness-proof.js";
-import { appendJobOutputManifestEntries, buildJobPayload, jobPayloadsRoot, persistJobPayload, readCurrentJobPayload, removeCurrentJobPayload } from "../../src/server/job-instruction-artifacts.js";
+import { appendJobOutputManifestEntries, bindJobPayloadDelivery, buildJobPayload, jobPayloadsRoot, persistJobPayload, readCurrentJobPayload, removeCurrentJobPayload, updateJobPayload } from "../../src/server/job-instruction-artifacts.js";
 import {
   buildJobOutputManifestUiView,
   formatResolvedJobOutputManifestForReview,
@@ -38,7 +38,10 @@ test("job manifest registers and resolves artifacts, proofs, and Worker reports"
     taskText: "Research and report",
     notes: []
   });
-  const payload = buildJobPayload({ threadId, kind: "delegation", instruction: "Research and report", contract });
+  const payload = bindJobPayloadDelivery(
+    buildJobPayload({ threadId, kind: "delegation", instruction: "Research and report", contract }),
+    { turnId: "turn-1" }
+  );
   await persistJobPayload(jobPayloadsRoot(artifactsDir), payload);
   store.setThreadJobPayload(payload);
   await removeCurrentJobPayload(jobPayloadsRoot(artifactsDir), threadId);
@@ -273,9 +276,10 @@ test("job output reconciliation imports deterministic nested files and is idempo
   assert.deepEqual(empty.outputs, []);
   assert.equal(await stat(outputsDir).then((entry) => entry.mode & 0o777), 0o555);
   await chmod(outputsDir, 0o755);
-  await mkdir(path.join(outputsDir, threadId, "nested"), { recursive: true });
-  await writeFile(path.join(outputsDir, threadId, "z.txt"), "z", "utf8");
-  await writeFile(path.join(outputsDir, threadId, "nested", "a.txt"), "a", "utf8");
+  const scopedOutputDir = path.join(outputsDir, payload.workspace.outputDir.replace(/^\/outputs\//, ""));
+  await mkdir(path.join(scopedOutputDir, "nested"), { recursive: true });
+  await writeFile(path.join(scopedOutputDir, "z.txt"), "z", "utf8");
+  await writeFile(path.join(scopedOutputDir, "nested", "a.txt"), "a", "utf8");
 
   const first = await reconcileJobOutputManifest({ artifactsDir, outputsDir, store, threadId });
   assert.deepEqual(first.outputs.map((output) => output.relativePath), ["nested/a.txt", "z.txt"]);
@@ -292,7 +296,7 @@ test("job output reconciliation imports deterministic nested files and is idempo
   assert.equal(second.outputs.every((output) => output.reused), true);
   assert.equal(second.payload.outputManifest.entries.length, 2);
 
-  await writeFile(path.join(outputsDir, threadId, "z.txt"), "changed", "utf8");
+  await writeFile(path.join(scopedOutputDir, "z.txt"), "changed", "utf8");
   const third = await reconcileJobOutputManifest({ artifactsDir, outputsDir, store, threadId });
   assert.notEqual(third.outputs.find((output) => output.relativePath === "z.txt")?.artifactId, first.outputs.find((output) => output.relativePath === "z.txt")?.artifactId);
   assert.equal(third.payload.outputManifest.entries.length, 3);
@@ -308,9 +312,10 @@ test("job output reconciliation rejects symlinks and hard links", async (t) => {
   const payload = buildJobPayload({ threadId, kind: "delegation", instruction: "Reject unsafe outputs" });
   await persistJobPayload(jobPayloadsRoot(artifactsDir), payload);
   store.setThreadJobPayload(payload);
-  await mkdir(path.join(outputsDir, threadId), { recursive: true });
+  const scopedOutputDir = path.join(outputsDir, payload.workspace.outputDir.replace(/^\/outputs\//, ""));
+  await mkdir(scopedOutputDir, { recursive: true });
   const outside = path.join(dir, "outside.txt");
-  const candidate = path.join(outputsDir, threadId, "candidate.txt");
+  const candidate = path.join(scopedOutputDir, "candidate.txt");
   await writeFile(outside, "outside", "utf8");
   await symlink(outside, candidate);
   await assert.rejects(reconcileJobOutputManifest({ artifactsDir, outputsDir, store, threadId }), /symbolic link/);
@@ -320,7 +325,7 @@ test("job output reconciliation rejects symlinks and hard links", async (t) => {
   assert.equal(store.getThreadJobPayload(threadId)?.outputManifest.entries.length, 0);
 });
 
-test("review formatting always includes the complete current-attempt inventory", async () => {
+test("review formatting selects only the newest report from the current work scope", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-job-output-review-"));
   const store = new ButlerStateStore(path.join(dir, "state.json"));
   const payload = buildJobPayload({ threadId: "thread-review", kind: "delegation", instruction: "Review all outputs" });
@@ -337,9 +342,139 @@ test("review formatting always includes the complete current-attempt inventory",
     inventory: Array<{ referenceId: string }>;
     details: unknown[];
   };
-  assert.equal(formatted.entryCount, 30);
-  assert.equal(formatted.inventory[0]?.referenceId, "turn-1");
-  assert.equal(formatted.inventory.at(-1)?.referenceId, "turn-30");
-  assert.equal(formatted.details.length, 24);
+  assert.equal(formatted.entryCount, 1);
+  assert.equal(formatted.inventory[0]?.referenceId, "turn-30");
+  assert.equal(formatted.details.length, 1);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("output UI separates the current report, unclaimed current outputs, and earlier task scopes", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-job-output-scope-ui-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  const initial = buildJobPayload({ threadId: "thread-scope-ui", kind: "delegation", instruction: "Run the old preview" });
+  const oldScopeId = initial.protocol.currentScopeId;
+  const withOldOutputs = appendJobOutputManifestEntries(initial, [
+    buildJobOutputManifestEntry(initial, { kind: "project_artifact", referenceId: "old-log", title: "Old preview log", logicalPath: "preview.log", createdAt: 1 }),
+    buildJobOutputManifestEntry(initial, { kind: "worker_report", referenceId: "turn-old", title: "Old Worker report", createdAt: 2 })
+  ]);
+  const replacement = updateJobPayload(withOldOutputs, { kind: "steering", instruction: "Push the current branch", replaceOutputScope: true });
+  const current = appendJobOutputManifestEntries(replacement, [
+    buildJobOutputManifestEntry(replacement, { kind: "project_artifact", referenceId: "push-log", title: "Push log", logicalPath: "push.log", createdAt: 3 }),
+    buildJobOutputManifestEntry(replacement, { kind: "worker_report", referenceId: "turn-push", title: "Push report", createdAt: 4 })
+  ]);
+
+  const view = await buildJobOutputManifestUiView(current, store);
+  assert.notEqual(view.currentScopeId, oldScopeId);
+  assert.deepEqual(view.entries.map((entry) => entry.referenceId), ["turn-push"]);
+  assert.deepEqual(view.otherCurrentScopeEntries.map((entry) => entry.referenceId), ["push-log"]);
+  assert.deepEqual(view.historicalEntries.map((entry) => entry.referenceId), ["old-log", "turn-old"]);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("a late report stays with its dispatched scope after another task replaces it", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-job-output-late-report-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const artifactsDir = path.join(dir, "artifacts");
+  const threadId = "thread-late-report";
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  const initial = bindJobPayloadDelivery(buildJobPayload({
+    threadId,
+    kind: "delegation",
+    instruction: "Run task A",
+    report: { status: "completed", summary: "Earlier A report", details: null, updatedAt: 1, evidence: [] }
+  }), { turnId: "turn-a" });
+  const scopeA = initial.protocol.currentScopeId;
+  const replacement = bindJobPayloadDelivery(updateJobPayload(initial, {
+    kind: "steering",
+    instruction: "Run task B",
+    replaceOutputScope: true
+  }), { turnId: "turn-b" });
+  const scopeB = replacement.protocol.currentScopeId;
+  assert.notEqual(scopeB, scopeA);
+  assert.equal(replacement.report, null);
+  await persistJobPayload(jobPayloadsRoot(artifactsDir), replacement);
+  store.setThreadJobPayload(replacement);
+
+  const reportB = store.recordWorkerReport(threadId, {
+    turnId: "turn-b",
+    status: "completed",
+    summary: "Task B complete",
+    details: null,
+    evidence: []
+  });
+  await updatePayloadFromWorkerReport({ artifactsDir, store, report: reportB });
+  const reportA = store.recordWorkerReport(threadId, {
+    turnId: "turn-a",
+    status: "completed",
+    summary: "Task A arrived late",
+    details: null,
+    evidence: []
+  });
+  await updatePayloadFromWorkerReport({ artifactsDir, store, report: reportA });
+
+  const current = await readCurrentJobPayload(jobPayloadsRoot(artifactsDir), threadId);
+  assert.ok(current);
+  assert.equal(current.protocol.currentScopeId, scopeB);
+  assert.equal(current.report?.summary, "Task B complete");
+  const reportAEntry = current.outputManifest.entries.find((entry) => entry.reportTurnId === "turn-a");
+  const reportBEntry = current.outputManifest.entries.find((entry) => entry.reportTurnId === "turn-b");
+  assert.equal(reportAEntry?.scopeId, scopeA);
+  assert.equal(reportBEntry?.scopeId, scopeB);
+  const view = await buildJobOutputManifestUiView(current, store);
+  assert.deepEqual(view.entries.map((entry) => entry.referenceId), ["turn-b"]);
+  assert.deepEqual(view.historicalEntries.map((entry) => entry.referenceId), ["turn-a"]);
+});
+
+test("an explicitly captured current scope binds a report from a later Worker turn", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-job-output-explicit-report-scope-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const artifactsDir = path.join(dir, "artifacts");
+  const threadId = "thread-explicit-report-scope";
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  const payload = bindJobPayloadDelivery(buildJobPayload({
+    threadId,
+    kind: "delegation",
+    instruction: "Run the current task"
+  }), { turnId: "turn-dispatch" });
+  await persistJobPayload(jobPayloadsRoot(artifactsDir), payload);
+  store.setThreadJobPayload(payload);
+
+  const report = store.recordWorkerReport(threadId, {
+    turnId: "turn-report-later",
+    status: "completed",
+    summary: "Current task complete",
+    details: null,
+    evidence: []
+  });
+  await updatePayloadFromWorkerReport({ artifactsDir, store, report, scopeId: payload.protocol.currentScopeId });
+
+  const current = await readCurrentJobPayload(jobPayloadsRoot(artifactsDir), threadId);
+  assert.equal(current?.report?.summary, "Current task complete");
+  assert.equal(current?.outputManifest.entries.at(-1)?.scopeId, payload.protocol.currentScopeId);
+});
+
+test("manifest current returns the same selected current-scope entries in text and structured data", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-job-output-current-manifest-"));
+  const artifactsDir = path.join(dir, "artifacts");
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  const initial = buildJobPayload({ threadId: "thread-current-manifest", kind: "delegation", instruction: "Prepare the first report" });
+  const withOldReport = appendJobOutputManifestEntries(initial, [
+    buildJobOutputManifestEntry(initial, { kind: "worker_report", referenceId: "turn-old", title: "Old report", createdAt: 1 })
+  ]);
+  const replacement = updateJobPayload(withOldReport, { kind: "steering", instruction: "Prepare a replacement report", replaceOutputScope: true });
+  const current = appendJobOutputManifestEntries(replacement, [
+    buildJobOutputManifestEntry(replacement, { kind: "project_artifact", referenceId: "artifact-old", title: "Superseded draft", logicalPath: "report.md", createdAt: 2 }),
+    buildJobOutputManifestEntry(replacement, { kind: "project_artifact", referenceId: "artifact-current", title: "Current draft", logicalPath: "report.md", createdAt: 3 }),
+    buildJobOutputManifestEntry(replacement, { kind: "worker_report", referenceId: "turn-current", title: "Current report", createdAt: 4 })
+  ]);
+  await persistJobPayload(jobPayloadsRoot(artifactsDir), current);
+  store.setThreadJobPayload(current);
+
+  const result = await handleHarnessPayloadAction({ action: "manifest.current", params: {}, threadId: current.threadId, artifactsDir, store });
+  const entries = (result?.data?.manifest as { entries: Array<{ artifactId: string | null; reportTurnId: string | null }> }).entries;
+  assert.deepEqual(entries.map((entry) => entry.artifactId ?? entry.reportTurnId), ["artifact-current", "turn-current"]);
+  assert.match(result?.text ?? "", /Current draft/);
+  assert.match(result?.text ?? "", /Current report/);
+  assert.doesNotMatch(result?.text ?? "", /Old report|Superseded draft/);
   await rm(dir, { recursive: true, force: true });
 });

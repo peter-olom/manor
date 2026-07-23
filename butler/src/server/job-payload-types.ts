@@ -7,6 +7,7 @@ export interface JobOutputManifestEntryView {
   threadId: string;
   projectId: string;
   attemptId: string;
+  scopeId: string;
   sourceTurnId: string | null;
   artifactId: string | null;
   proofRunId: string | null;
@@ -35,6 +36,8 @@ export interface JobPayloadView {
     butlerThreadId: string | null;
     workerThreadId: string;
     currentAttemptId: string;
+    currentScopeId: string;
+    currentScopeStartedAt: number;
     attempt: number;
     version: number;
     parentThreadId: string | null;
@@ -48,7 +51,7 @@ export interface JobPayloadView {
   status: string;
   createdAt: number;
   updatedAt: number;
-  workspace: { cwd: string | null; branch: string | null };
+  workspace: { cwd: string | null; branch: string | null; outputDir: string };
   project: { id: string; label: string };
   display: { summary: string; tags: string[] };
   workerDirective: string;
@@ -62,6 +65,7 @@ export interface JobPayloadView {
   outputManifest: JobOutputManifestView;
   snapshots: Array<{
     nodeId: string;
+    scopeId: string;
     revision: number;
     kind: string;
     status: string;
@@ -78,6 +82,7 @@ export interface JobPayloadView {
   }>;
   nodes: Array<{
     id: string;
+    scopeId: string;
     kind: string;
     parentId: string | null;
     turnId: string | null;

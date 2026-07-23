@@ -149,6 +149,9 @@ test("a worker handoff remaps the complete live payload without flattening its r
   assert.equal(remapped.protocol.attempt, current.protocol.attempt + 1);
   assert.equal(remapped.protocol.parentThreadId, "source-worker");
   assert.equal(remapped.protocol.workerThreadId, "replacement-worker");
+  assert.equal(remapped.protocol.currentScopeId, current.protocol.currentScopeId);
+  assert.equal(remapped.protocol.currentScopeStartedAt, current.protocol.currentScopeStartedAt);
+  assert.equal(remapped.workspace.outputDir, `/outputs/replacement-worker/${current.protocol.currentScopeId}`);
   assert.deepEqual(remapped.delivery, { threadId: "replacement-worker", turnId: null, messageId: null });
 });
 

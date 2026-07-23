@@ -770,8 +770,8 @@ export function isCallbackOutstanding(callback: PendingChatCallback): boolean {
   return callback.owesOperatorReply && !isCallbackClosed(callback);
 }
 
-export function buildCloseoutId(threadId: string, turnId: string): string {
-  return `${threadId}:${turnId}`;
+export function buildCloseoutId(threadId: string, turnId: string, workSliceNodeId?: string | null): string {
+  return workSliceNodeId ? `${threadId}:${workSliceNodeId}:${turnId}` : `${threadId}:${turnId}`;
 }
 
 export function getFallbackTurnId(thread: ReturnType<ButlerStateStore["getThread"]>): string | null {
@@ -818,7 +818,11 @@ export function buildCallbackReviewPrompt(
 ): string {
   const thread = store.getThread(callback.threadId);
   const workerReport = store.getWorkerReport(callback.threadId);
-  const relevantWorkerReport = workerReport && workerReport.updatedAt >= callback.requestedAt ? workerReport : null;
+  const relevantWorkerReport = workerReport &&
+    workerReport.updatedAt >= callback.requestedAt &&
+    (!callback.acceptedWorkerTurnId || workerReport.turnId === callback.acceptedWorkerTurnId)
+    ? workerReport
+    : null;
   const operatorRequestText = callback.operatorRequestText?.trim() || null;
   let alreadyQueuedSelfImprovement = false;
   try {
@@ -881,6 +885,8 @@ export function buildCallbackReviewPrompt(
     `Project: ${thread?.supervisor.projectLabel ?? "unknown"}`,
     `Current thread status: ${thread?.status ?? "unknown"}`,
     `Callback state: ${callback.callbackState}`,
+    callback.workSliceNodeId ? `Review work slice: ${callback.workSliceNodeId}` : null,
+    callback.acceptedWorkerTurnId ? `Accepted Worker turn: ${callback.acceptedWorkerTurnId}` : null,
     contract ? `${operatorRequestText ? "Governing Worker review scope" : "Requested task"}: ${contract.requestedTask}` : "Requested task: unknown",
     acceptancePoints.length > 0
       ? `Acceptance points:\n${acceptancePoints.map((point, index) => `${index + 1}. ${point}`).join("\n")}`
@@ -995,10 +1001,10 @@ export function buildSystemPrompt(store: ButlerStateStore, callbackSummary: stri
     "After delegate_to_worker returns, use its real result to acknowledge the real job id. Never invent or predict a job id.",
     "For operator follow-up on an existing valid worker job, default to message_job when it is the same workspace and task context and the job needs new instructions outside checklist rejection review; answer directly when the request can be handled from existing state.",
     "Start a new worker job for a same-workspace follow-up only when isolation is clearly warranted, such as conflicting branch/worktree requirements, a stale or invalid thread, parallel-risk, or a materially different task; surface and record that reason when you delegate anew.",
-    "Use message_job with refreshChecklist when an existing job receives a genuine new work slice or a material scope or acceptance change, even if the current checklist still has pending or rejected items. Because refreshChecklist replaces the review scope, the message text must state the complete resulting scope, including every criterion that should remain.",
+    "Every message_job call must set reviewScope explicitly. Use replace for a genuine new operator work slice or material acceptance change, even if older points are pending or rejected. Use preserve only for rework or clarification within the current acceptance scope. A replacement message must state the complete resulting scope, including every criterion that should remain.",
     "When the operator gives newer context for an active job, choose deliberately: use message_job immediately if the worker should change course now, or hold_job_context if Butler should wait for the current turn and apply that context during review.",
     "Do not merely acknowledge newer active-job context unless no valid job can be identified or the context is already satisfied by known state.",
-    "Do not refresh a checklist for small clarifications, thank-you messages, or rejected-checklist follow-up; only refresh it for a genuine new slice of work.",
+    "Preserve the current review scope for small clarifications and rejected-checklist rework. Replace it for a new operator task so older acceptance state cannot govern the new result.",
     "Never say you delegated, started, asked, messaged, or handed off work unless the corresponding tool call has completed successfully.",
     "Do not expose private Butler-to-worker steering verbatim in the Butler chat.",
     "Worker callbacks and thread recovery are background supervision signals, not operator-visible chat by themselves.",

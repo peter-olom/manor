@@ -157,10 +157,15 @@ export function listStateStoreWorkerReports(access: StateStoreInternalAccess, th
 export function recordStateStoreWorkerReviewResults(
   access: StateStoreInternalAccess,
   threadId: string,
-  results: WorkerReviewResultRecordView[]
+  results: WorkerReviewResultRecordView[],
+  expectedReport?: { turnId: string; reportUpdatedAt: number }
 ): CodexThreadExecutionContractView | null {
   const thread = access.getOrCreateThread(threadId);
   if (!thread.executionContract) return null;
+  if (expectedReport && (
+    thread.workerReport?.turnId !== expectedReport.turnId ||
+    thread.workerReport.updatedAt !== expectedReport.reportUpdatedAt
+  )) return null;
   const byId = new Map<string, WorkerReviewResultRecordView>();
   for (const result of thread.executionContract.reviewResults ?? []) byId.set(result.id, result);
   for (const result of results) byId.set(result.id, result);

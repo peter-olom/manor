@@ -398,6 +398,7 @@ export async function runCallbackAdversarialReview(input: {
     piAuthPath: input.piAuthPath,
     thinkingLevel,
     minimumReportUpdatedAt: callback.requestedAt,
+    expectedReportTurnId: callback.acceptedWorkerTurnId,
     reviewBrief: buildCallbackAdversarialReviewBrief(input.store, callback),
     watchdogs: input.watchdogs,
     isCurrent,

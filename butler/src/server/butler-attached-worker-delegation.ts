@@ -19,7 +19,7 @@ export async function continueAttachedWorkerDelegation(input: {
     text: input.goal ? `${input.task}\n\nGoal: ${input.goal}` : input.task,
     imageReferenceIds: input.imageReferenceIds,
     fileReferenceIds: input.fileReferenceIds,
-    refreshChecklist: true,
+    reviewScope: "replace",
     nextWorkerReportAction: "review"
   });
   if (continuation.details.dispatched === false) return continuation;

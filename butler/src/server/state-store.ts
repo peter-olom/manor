@@ -1052,7 +1052,7 @@ export class ButlerStateStore extends EventEmitter {
     return recordStateStoreWorkerReport(this.getInternalAccess(), threadId, report);
   }
 
-  recordWorkerReviewResults(threadId: string, results: WorkerReviewResultRecordView[]): CodexThreadExecutionContractView | null { const contract = recordStateStoreWorkerReviewResults(this.getInternalAccess(), threadId, results); if (contract) this.addEvent(threadId, "butler.adversarial_review.recorded", `Recorded ${results.length} adversarial review finding${results.length === 1 ? "" : "s"}.`); return contract; }
+  recordWorkerReviewResults(threadId: string, results: WorkerReviewResultRecordView[], expectedReport?: { turnId: string; reportUpdatedAt: number }): CodexThreadExecutionContractView | null { const contract = recordStateStoreWorkerReviewResults(this.getInternalAccess(), threadId, results, expectedReport); if (contract) this.addEvent(threadId, "butler.adversarial_review.recorded", `Recorded ${results.length} adversarial review finding${results.length === 1 ? "" : "s"}.`); return contract; }
   recordWorkerReviewPeerContext(threadId: string, context: NonNullable<CodexThreadExecutionContractView["reviewPeerContexts"]>[number]): void { recordStateStoreWorkerReviewPeerContext(this.getInternalAccess(), threadId, context); }
   replaceWorkerReviewBaseline(threadId: string, baseline: WorkerReviewBaselineState): void { replaceStateStoreWorkerReviewBaseline(this.getInternalAccess(), threadId, baseline); }
   getWorkerReport(threadId: string, turnId?: string | null): CodexWorkerReportView | null {

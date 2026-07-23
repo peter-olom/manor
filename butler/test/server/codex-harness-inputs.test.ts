@@ -10,12 +10,22 @@ import { ImageReferenceStore } from "../../src/server/image-store.js";
 import { deleteReference } from "../../src/server/reference-library.js";
 import { ReferenceMutationQueue } from "../../src/server/reference-mutation-queue.js";
 
+function legacyJobPayload(threadId: string, imageIds: string[], fileIds: string[]) {
+  const currentAttemptId = `attempt-${threadId}-1`;
+  return {
+    threadId,
+    protocol: { currentAttemptId, currentScopeId: `scope-legacy-${currentAttemptId}` },
+    workspace: { outputDir: `/outputs/${threadId}` },
+    attachments: { images: imageIds, files: fileIds }
+  };
+}
+
 test("Worker guidance names immutable inputs, job outputs, and publishing", () => {
   const guidance = formatHarnessRuntimeModel().join("\n");
   assert.match(guidance, /Worker shell is a normal development environment/);
   assert.match(guidance, /Use previews when a clean runtime, service lifecycle, isolation, or browser proof is useful/);
   assert.match(guidance, /read-only at \/inputs/);
-  assert.match(guidance, /\/outputs\/<jobId>/);
+  assert.match(guidance, /exact workspace\.outputDir/);
   assert.match(guidance, /manor-harness input publish <path> --from <referenceId>/);
 });
 
@@ -34,7 +44,7 @@ test("Worker outputs publish as linked immutable file and image versions", async
   const events: string[] = [];
   const store = {
     addEvent: (_threadId: string, _type: string, message: string) => events.push(message),
-    getThreadJobPayload: () => ({ attachments: { images: [sourceImage.id], files: [sourceFile.id] } })
+    getThreadJobPayload: () => legacyJobPayload("thread-1", [sourceImage.id], [sourceFile.id])
   };
 
   const revisedPdf = path.join(jobDir, "cv-v2.pdf");
@@ -94,10 +104,41 @@ test("publishing rejects files outside the job output directory", async (t) => {
       fileStore,
       imageStore,
       referenceMutations,
-      store: { addEvent: () => undefined, getThreadJobPayload: () => ({ attachments: { images: [], files: [source.id] } }) } as never
+      store: { addEvent: () => undefined, getThreadJobPayload: () => legacyJobPayload("thread-1", [], [source.id]) } as never
     }),
     /must be inside/
   );
+});
+
+test("publishing rejects a payload output directory outside its current thread scope", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "manor-publish-payload-escape-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const outputsDir = path.join(root, "outputs");
+  const escapedDir = path.join(root, "escaped");
+  await fs.mkdir(escapedDir, { recursive: true });
+  const referenceMutations = new ReferenceMutationQueue();
+  const fileStore = new FileReferenceStore(path.join(root, "inputs", "files"), "/api/files", referenceMutations);
+  const imageStore = new ImageReferenceStore(path.join(root, "inputs", "images"), "/api/images", referenceMutations);
+  await Promise.all([fileStore.load(), imageStore.load()]);
+  const source = await fileStore.createFromBuffer({ name: "source.txt", mimeType: "text/plain", buffer: Buffer.from("source") });
+  const output = path.join(escapedDir, "changed.txt");
+  await fs.writeFile(output, "changed");
+  const malformed = {
+    ...legacyJobPayload("thread-1", [], [source.id]),
+    protocol: { currentAttemptId: "attempt-thread-1-1", currentScopeId: "scope-current" },
+    workspace: { outputDir: "/outputs/../escaped" }
+  };
+
+  await assert.rejects(handleHarnessInputAction({
+    action: "input.publish_version",
+    threadId: "thread-1",
+    params: { filePath: output, sourceReferenceId: source.id },
+    outputsDir,
+    fileStore,
+    imageStore,
+    referenceMutations,
+    store: { addEvent: () => undefined, getThreadJobPayload: () => malformed } as never
+  }), /does not match the current job scope/);
 });
 
 test("publishing rejects source references not granted to the job", async (t) => {
@@ -120,7 +161,7 @@ test("publishing rejects source references not granted to the job", async (t) =>
     fileStore,
     imageStore,
     referenceMutations,
-    store: { addEvent: () => undefined, getThreadJobPayload: () => ({ attachments: { images: [], files: [] } }) } as never
+    store: { addEvent: () => undefined, getThreadJobPayload: () => legacyJobPayload("thread-1", [], []) } as never
   }), /is not granted to job/);
 });
 
@@ -137,7 +178,7 @@ test("concurrent publications allocate unique monotonic lineage versions", async
   const source = await fileStore.createFromBuffer({ name: "source.txt", mimeType: "text/plain", buffer: Buffer.from("v1") });
   const paths = [path.join(jobDir, "v2.txt"), path.join(jobDir, "v3.txt")];
   await Promise.all(paths.map((filePath, index) => fs.writeFile(filePath, `v${index + 2}`)));
-  const store = { addEvent: () => undefined, getThreadJobPayload: () => ({ attachments: { images: [], files: [source.id] } }) };
+  const store = { addEvent: () => undefined, getThreadJobPayload: () => legacyJobPayload("thread-1", [], [source.id]) };
   const results = await Promise.all(paths.map((filePath) => handleHarnessInputAction({
     action: "input.publish_version", threadId: "thread-1", params: { filePath, sourceReferenceId: source.id },
     outputsDir, fileStore, imageStore, referenceMutations, store: store as never
@@ -182,7 +223,7 @@ test("deleting a source while publication is queued cannot create an orphaned ve
     fileStore,
     imageStore,
     referenceMutations,
-    store: { addEvent: () => undefined, getThreadJobPayload: () => ({ attachments: { images: [], files: [source.id] } }) } as never
+    store: { addEvent: () => undefined, getThreadJobPayload: () => legacyJobPayload("thread-1", [], [source.id]) } as never
   });
 
   await publicationQueued;
@@ -212,7 +253,7 @@ test("oversized outputs are rejected from stat metadata before publication", asy
   await assert.rejects(handleHarnessInputAction({
     action: "input.publish_version", threadId: "thread-1", params: { filePath: output, sourceReferenceId: source.id },
     outputsDir, fileStore, imageStore, referenceMutations,
-    store: { addEvent: () => undefined, getThreadJobPayload: () => ({ attachments: { images: [], files: [source.id] } }) } as never
+    store: { addEvent: () => undefined, getThreadJobPayload: () => legacyJobPayload("thread-1", [], [source.id]) } as never
   }), /exceeds the 40 MB file limit/);
   assert.equal(fileStore.list().length, 1);
 });

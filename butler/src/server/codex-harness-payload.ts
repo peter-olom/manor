@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 import {
   appendJobOutputManifestEntries,
   assertJobPayloadWorkerAuthority,
@@ -17,6 +19,7 @@ export type JobOutputManifestRegistration = {
   kind: JobOutputManifestKind;
   referenceId: string;
   title: string;
+  scopeId?: string | null;
   projectId?: string | null;
   sourceTurnId?: string | null;
   logicalPath?: string | null;
@@ -90,13 +93,15 @@ export function buildJobOutputManifestEntry(
   if (!referenceId) {
     throw new Error("Job output reference ID is required.");
   }
+  const scopeId = input.scopeId?.trim() || payload.protocol.currentScopeId;
   return {
-    id: `${payload.protocol.currentAttemptId}:${input.kind}:${referenceId}`,
+    id: `${payload.protocol.currentAttemptId}:${scopeId}:${input.kind}:${referenceId}`,
     kind: input.kind,
     title: input.title.trim() || referenceId,
     threadId: payload.threadId,
     projectId: input.projectId?.trim() || payload.project.id,
     attemptId: payload.protocol.currentAttemptId,
+    scopeId,
     sourceTurnId: input.sourceTurnId?.trim() || null,
     artifactId: input.kind === "project_artifact" ? referenceId : null,
     proofRunId: input.kind === "proof" ? referenceId : null,
@@ -110,6 +115,24 @@ export function buildJobOutputManifestEntry(
     integrityCheckedAt: input.integrityCheckedAt ?? (input.kind === "project_artifact" ? input.createdAt ?? Date.now() : null),
     createdAt: input.createdAt ?? Date.now()
   };
+}
+
+function scopeIdForWorkerReport(payload: JobPayloadView, turnId: string, explicitScopeId?: string | null): string {
+  const requestedScopeId = explicitScopeId?.trim();
+  if (requestedScopeId) {
+    const knownScope = requestedScopeId === payload.protocol.currentScopeId
+      || payload.nodes.some((candidate) => candidate.scopeId === requestedScopeId)
+      || payload.snapshots.some((candidate) => candidate.scopeId === requestedScopeId)
+      || payload.outputManifest.entries.some((candidate) => candidate.scopeId === requestedScopeId);
+    if (!knownScope) throw new Error("Worker report scope is not part of the current job payload.");
+    return requestedScopeId;
+  }
+  const node = [...payload.nodes].reverse().find((candidate) => candidate.turnId === turnId);
+  if (node?.scopeId) return node.scopeId;
+  const snapshot = [...payload.snapshots].reverse().find((candidate) => candidate.delivery.turnId === turnId);
+  if (snapshot?.scopeId) return snapshot.scopeId;
+  const digest = crypto.createHash("sha256").update(turnId).digest("hex").slice(0, 24);
+  return `scope-unbound-${digest}`;
 }
 
 export async function registerJobOutput(input: {
@@ -203,6 +226,7 @@ export async function updatePayloadFromWorkerReport(input: {
   artifactsDir: string;
   store: ButlerStateStore;
   report: CodexWorkerReportView;
+  scopeId?: string | null;
 }): Promise<void> {
   await runSerializedJobMutation(input.report.threadId, async () => {
     const payloadRoot = jobPayloadsRoot(input.artifactsDir);
@@ -213,25 +237,30 @@ export async function updatePayloadFromWorkerReport(input: {
       fallbackInstruction: input.report.summary || "Record the Worker report for this job."
     });
     assertJobPayloadWorkerAuthority(currentPayload, input.report.threadId);
-    let nextPayload = updateJobPayload(currentPayload, {
-      kind: "worker_report",
-      instruction: [input.report.summary, input.report.details].filter(Boolean).join("\n\n"),
-      summary: input.report.summary,
-      status: input.report.status,
-      turnId: input.report.turnId,
-      report: {
-        status: input.report.status,
-        summary: input.report.summary,
-        details: input.report.details,
-        updatedAt: input.report.updatedAt,
-        evidence: input.report.evidence
-      }
-    });
+    const reportScopeId = scopeIdForWorkerReport(currentPayload, input.report.turnId, input.scopeId);
+    const reportIsCurrent = reportScopeId === currentPayload.protocol.currentScopeId;
+    let nextPayload = reportIsCurrent
+      ? updateJobPayload(currentPayload, {
+          kind: "worker_report",
+          instruction: [input.report.summary, input.report.details].filter(Boolean).join("\n\n"),
+          summary: input.report.summary,
+          status: input.report.status,
+          turnId: input.report.turnId,
+          report: {
+            status: input.report.status,
+            summary: input.report.summary,
+            details: input.report.details,
+            updatedAt: input.report.updatedAt,
+            evidence: input.report.evidence
+          }
+        })
+      : currentPayload;
     const outputEntries = [
       buildJobOutputManifestEntry(nextPayload, {
         kind: "worker_report",
         referenceId: input.report.turnId,
         title: input.report.summary,
+        scopeId: reportScopeId,
         projectId: nextPayload.project.id,
         sourceTurnId: input.report.turnId,
         createdAt: input.report.updatedAt
@@ -247,6 +276,7 @@ export async function updatePayloadFromWorkerReport(input: {
             kind: "proof",
             referenceId: proof.verification.runId,
             title: proof.previewTitle,
+            scopeId: reportScopeId,
             projectId: proof.projectId,
             sourceTurnId: input.report.turnId,
             createdAt: proof.createdAt

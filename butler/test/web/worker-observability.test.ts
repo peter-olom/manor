@@ -267,7 +267,7 @@ test("the Worker lane renders durable job outputs with provenance, integrity, an
     }
   }));
 
-  assert.match(markup, /aria-label="Current Worker job outputs"/);
+  assert.match(markup, /aria-label="Current task outputs"/);
   assert.match(markup, /Job 3ebf4711d2d4 · Attempt 2/);
   assert.match(markup, /Relocation options report/);
   assert.match(markup, /Attempt 2/);
@@ -294,7 +294,53 @@ test("the Worker job output surface makes an empty manifest explicit", () => {
   }));
 
   assert.match(markup, /0 outputs/);
-  assert.match(markup, /No durable outputs registered yet/);
+  assert.match(markup, /No outputs claimed by the current Worker report/);
+});
+
+test("the Worker output surface keeps unclaimed and earlier task outputs collapsed", () => {
+  const entry = (id: string, currentScope: boolean, attempt = 3) => ({
+    id,
+    kind: "worker_report" as const,
+    title: id,
+    threadId: "pi-job-scoped",
+    projectId: "workspace:shared",
+    attemptId: `attempt-pi-job-scoped-${attempt}`,
+    scopeId: currentScope ? "scope-current" : "scope-old",
+    currentAttempt: attempt === 3,
+    currentScope,
+    sourceTurnId: id,
+    referenceId: id,
+    logicalPath: null,
+    createdAt: currentScope ? 2 : 1,
+    available: true,
+    integrity: "unverified" as const,
+    checksumSha256: null,
+    checksumStatus: "unverified" as const,
+    integrityCheckedAt: null,
+    status: "completed",
+    fileName: null,
+    contentType: null,
+    openUrl: null,
+    downloadUrl: null
+  });
+  const markup = renderToStaticMarkup(React.createElement(WorkerJobOutputManifestPanel, {
+    manifest: {
+      jobId: "pi-job-scoped",
+      projectId: "workspace:shared",
+      currentAttemptId: "attempt-pi-job-scoped-3",
+      currentScopeId: "scope-current",
+      attempt: 3,
+      entries: [entry("Current report", true)],
+      otherCurrentScopeEntries: [entry("Unclaimed log", true)],
+      historicalEntries: [entry("Old preview report", false, 1)]
+    }
+  }));
+
+  assert.match(markup, /Current task outputs/);
+  assert.match(markup, /Other outputs from this task \(1\)/);
+  assert.match(markup, /Earlier task outputs \(1\)/);
+  assert.match(markup, /<details class="worker-output-history">/);
+  assert.match(markup, /Old preview report[\s\S]*Attempt 1/);
 });
 
 test("the Worker output surface separates failed proof outcome and suppresses missing artifact actions", () => {

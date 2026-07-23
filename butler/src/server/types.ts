@@ -78,6 +78,7 @@ export type ButlerCallbackResolutionState = "received_worker_callback" | "recove
 export type ButlerOperatorCloseoutStatus = "not_required" | "owed" | "posted";
 export type ButlerCloseoutChannel = "none" | "main_chat";
 export type ButlerNextWorkerReportAction = "review" | "reply_to_operator";
+export type ButlerReviewScopeDisposition = "preserve" | "replace";
 export type ButlerCallbackReviewState = "idle" | "queued" | "running" | "blocked";
 export type ButlerCallbackReviewReason = "worker_callback" | "thread_recovery" | null; export type ButlerCallbackReviewStage = "queued" | "preparing" | "reviewing_changes" | "supervising_closeout" | "retry_wait" | "blocked";
 export interface MissionContractView {
@@ -136,6 +137,9 @@ export interface ButlerThreadCallbackView {
   resolutionState: ButlerCallbackResolutionState;
   requestedAt: number;
   operatorRequestText?: string | null;
+  workSliceNodeId?: string | null;
+  scopeDisposition?: ButlerReviewScopeDisposition;
+  scopeLabel?: string | null;
   lastEventAt: number | null;
   lastWorkerStatusSeen: CodexThreadStatus | null;
   lastTerminalReportAt: number | null;

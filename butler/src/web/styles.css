@@ -2951,6 +2951,16 @@ a:hover {
   font-size: 11.5px;
 }
 
+.review-activity-scope {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .review-activity-model,
 .review-activity-last {
   margin: 0;
@@ -4143,6 +4153,21 @@ a:hover {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.worker-output-history {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.worker-output-history > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+
+.worker-output-history[open] > summary {
+  margin-bottom: 8px;
 }
 
 .worker-output-manifest-entry {

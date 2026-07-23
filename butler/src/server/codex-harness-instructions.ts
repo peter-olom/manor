@@ -6,6 +6,7 @@ import {
   jobPayloadsRoot,
   persistJobPayload,
   readCurrentJobPayload,
+  selectCurrentJobOutputEntries,
   updateJobPayload
 } from "./job-instruction-artifacts.js";
 import { normalizeString } from "./codex-harness-helpers.js";
@@ -76,7 +77,7 @@ async function handleHarnessPayloadActionLocked(input: HarnessPayloadActionInput
   }
 
   if (input.action === "manifest.current") {
-    const entries = current?.outputManifest.entries.filter((entry) => entry.attemptId === current.protocol.currentAttemptId) ?? [];
+    const entries = current ? selectCurrentJobOutputEntries(current) : [];
     return {
       text: formatJobOutputManifestText(current),
       data: { manifest: { version: 1, entries } }

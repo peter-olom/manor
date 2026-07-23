@@ -235,7 +235,9 @@ function mapReviewActivity(
     modelProvider: callback.reviewModelProvider ?? null,
     modelId: callback.reviewModelId ?? null,
     thinkingLevel: callback.reviewReasoningLevel ?? null,
-    retryable: isCallbackReviewRetryablePause(callback)
+    retryable: isCallbackReviewRetryablePause(callback),
+    workSliceNodeId: callback.workSliceNodeId ?? null,
+    scopeLabel: callback.scopeLabel ?? callback.operatorRequestText ?? null
   };
 }
 

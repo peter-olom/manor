@@ -43,6 +43,7 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
   const started: string[] = [];
   const stopped: string[] = [];
   const removedCallbacks: string[] = [];
+  const closedCallbacks: string[] = [];
   const payloads: JobPayloadView[] = [];
   const callbackDispatches: Array<{ requestedAt: number; turnId: string | null }> = [];
   const reservedInputs: Parameters<ButlerAgentToolAccess["reserveDirectCodexMessage"]>[0][] = [];
@@ -161,11 +162,12 @@ async function createHarness(options: { attachedWorkerThreadId?: string | null; 
       if (reservation.reviewScopeReplacement && ownsPayload && ownsScope) store.restoreThreadReviewScope(_threadId, reservation.executionContract, reservation.supervisionChecklist);
     },
     registerPendingChatCallback: () => undefined,
+    closeExternalWorkerDelegation: async (workerThreadId: string) => { closedCallbacks.push(workerThreadId); },
     removeExternalWorkerDelegation: async (workerThreadId: string) => { removedCallbacks.push(workerThreadId); },
     noteThreadFocus: () => undefined
   } as unknown as ButlerAgentToolAccess;
   const tools = buildButlerCodexTools(access);
-  return { access, store, threadId, sent, started, stopped, removedCallbacks, payloads, callbackDispatches, reservedInputs, dispatchOrder, tools, watchdogs, maxConcurrentSends: () => maxConcurrentSends, workspacePreparations: () => workspacePreparations };
+  return { access, store, threadId, sent, started, stopped, closedCallbacks, removedCallbacks, payloads, callbackDispatches, reservedInputs, dispatchOrder, tools, watchdogs, maxConcurrentSends: () => maxConcurrentSends, workspacePreparations: () => workspacePreparations };
 }
 
 async function createReadySelfImprovementState(threadId: string) {
@@ -215,7 +217,8 @@ test("message_job cannot steer a Worker attached to another Butler session", asy
   await assert.rejects(
     () => accessTool.execute("call-cross-session", {
       threadId,
-      text: "Reuse this idle Worker for an unrelated session."
+      text: "Reuse this idle Worker for an unrelated session.",
+      reviewScope: "preserve"
     }),
     /another Butler session/
   );
@@ -391,6 +394,7 @@ test("message_job updates the job payload and sends readable chat", async () => 
     text: "Please retry the browser proof.",
     imageReferenceIds: [],
     fileReferenceIds: ["file-explicit"],
+    reviewScope: "preserve",
     nextWorkerReportAction: "review"
   });
 
@@ -406,6 +410,7 @@ test("message_job updates the job payload and sends readable chat", async () => 
   await tool(tools, "message_job").execute("call-direct-reply", {
     threadId,
     text: "Return this result directly to the operator.",
+    reviewScope: "preserve",
     nextWorkerReportAction: "reply_to_operator"
   });
   assert.equal(store.getThreadSupervision(threadId).butlerTurnsUsed, 2);
@@ -417,7 +422,8 @@ test("continuing a self-improvement Worker reactivates its tracked request", asy
 
   await tool(tools, "message_job").execute("call-self-improvement", {
     threadId,
-    text: "Retry the restart verification."
+    text: "Retry the restart verification.",
+    reviewScope: "preserve"
   });
 
   assert.equal(state.get(request.id)?.status, "running");
@@ -431,7 +437,8 @@ test("a definitely rejected self-improvement continuation restores changes-ready
 
   await assert.rejects(() => tool(tools, "message_job").execute("call-self-improvement-failed", {
     threadId,
-    text: "Retry the restart verification."
+    text: "Retry the restart verification.",
+    reviewScope: "preserve"
   }), /send rejected/);
 
   assert.equal(state.get(request.id)?.status, "changes_ready");
@@ -450,7 +457,8 @@ test("an ambiguously accepted self-improvement continuation stays running", asyn
 
   await assert.rejects(() => tool(tools, "message_job").execute("call-self-improvement-ambiguous", {
     threadId,
-    text: "Retry the restart verification."
+    text: "Retry the restart verification.",
+    reviewScope: "preserve"
   }), /timed out/);
 
   assert.equal(state.get(request.id)?.status, "running");
@@ -464,7 +472,8 @@ test("a self-improvement continuation stays running after post-dispatch persiste
 
   await assert.rejects(() => tool(tools, "message_job").execute("call-self-improvement-bind-failed", {
     threadId,
-    text: "Retry the restart verification."
+    text: "Retry the restart verification.",
+    reviewScope: "preserve"
   }), /payload binding failed/);
 
   assert.equal(sent.length, 1);
@@ -481,7 +490,8 @@ test("a failed self-improvement reactivation save rolls back before dispatch", a
 
   await assert.rejects(() => tool(tools, "message_job").execute("call-self-improvement-save-failed", {
     threadId,
-    text: "Retry the restart verification."
+    text: "Retry the restart verification.",
+    reviewScope: "preserve"
   }), /self-improvement save failed/);
 
   assert.equal(sent.length, 0);
@@ -498,7 +508,8 @@ test("published self-improvement sessions reject further Worker mutation", async
 
   await assert.rejects(() => tool(tools, "message_job").execute("call-self-improvement-published", {
     threadId,
-    text: "Make another change."
+    text: "Make another change.",
+    reviewScope: "preserve"
   }), /already been published/);
 
   assert.equal(sent.length, 0);
@@ -511,7 +522,8 @@ test("concurrent self-improvement continuation and close cannot deadlock", async
   const { state, request } = await createReadySelfImprovementState(threadId);
   const continuation = tool(tools, "message_job").execute("call-self-improvement-concurrent", {
     threadId,
-    text: "Retry the restart verification."
+    text: "Retry the restart verification.",
+    reviewScope: "preserve"
   });
   const close = discardSelfImprovementRequest(state, access, request.id);
 
@@ -524,7 +536,7 @@ test("concurrent self-improvement continuation and close cannot deadlock", async
   await resetSelfImprovementRequestState();
 });
 
-test("message_job forced refresh replaces stale rejected scope before building its payload", async () => {
+test("message_job replace scope replaces stale rejected scope before building its payload", async () => {
   const { store, threadId, payloads, tools } = await createHarness();
   store.reviewAcceptancePoint({
     threadId,
@@ -536,7 +548,7 @@ test("message_job forced refresh replaces stale rejected scope before building i
   await tool(tools, "message_job").execute("call-refresh", {
     threadId,
     text: "- Second point\n- Implement passwordless authentication\n- Add capability overrides",
-    refreshChecklist: true
+    reviewScope: "replace"
   });
 
   assert.deepEqual(
@@ -559,13 +571,14 @@ test("message_job forced refresh replaces stale rejected scope before building i
   assert.doesNotMatch(JSON.stringify(executionContract), /First point/);
 });
 
-test("message_job without refresh keeps the existing review contract", async () => {
+test("message_job preserve scope keeps the existing review contract", async () => {
   const { store, threadId, payloads, tools } = await createHarness();
   const before = store.getThread(threadId)?.executionContract;
 
   await tool(tools, "message_job").execute("call-no-refresh", {
     threadId,
-    text: "Clarify how to verify the first point."
+    text: "Clarify how to verify the first point.",
+    reviewScope: "preserve"
   });
 
   assert.deepEqual(store.getThread(threadId)?.executionContract, before);
@@ -573,7 +586,7 @@ test("message_job without refresh keeps the existing review contract", async () 
   assert.deepEqual(payloads[0]?.checklist.map((item) => item.text), before?.acceptancePoints);
 });
 
-test("message_job automatically replaces a completed review scope for a new follow-up", async () => {
+test("message_job explicitly replaces a completed review scope for a new follow-up", async () => {
   const operatorRequestText = "See if you and the Worker have here.now egress.";
   const { store, threadId, payloads, reservedInputs, tools } = await createHarness({ activeOperatorRequestText: operatorRequestText });
   for (const item of store.getSupervisionChecklist(threadId)?.items ?? []) {
@@ -582,7 +595,8 @@ test("message_job automatically replaces a completed review scope for a new foll
 
   await tool(tools, "message_job").execute("call-implicit-refresh", {
     threadId,
-    text: "Check here.now reachability from the Worker shell and report the exact HTTP result."
+    text: "Check here.now reachability from the Worker shell and report the exact HTTP result.",
+    reviewScope: "replace"
   });
 
   const contract = store.getThread(threadId)?.executionContract;
@@ -625,7 +639,7 @@ test("message_job automatically replaces a completed review scope for a new foll
 test("message_job reserves its callback before a steered turn can settle", async () => {
   const { callbackDispatches, dispatchOrder, store, threadId, tools } = await createHarness({ settleDuringSend: true });
 
-  await tool(tools, "message_job").execute("call-race", { threadId, text: "Finish the document." });
+  await tool(tools, "message_job").execute("call-race", { threadId, text: "Finish the document.", reviewScope: "preserve" });
 
   assert.deepEqual(dispatchOrder, ["reserve", "send", "mark"]);
   assert.equal(callbackDispatches[0]?.turnId, "turn-sent");
@@ -640,7 +654,7 @@ test("message_job preserves supervision when a timed-out dispatch may have been 
     stopError: new Error("interrupt transport unavailable")
   });
 
-  await assert.rejects(() => tool(tools, "message_job").execute("call-ambiguous", { threadId, text: "Finish the document." }), /timed out/);
+  await assert.rejects(() => tool(tools, "message_job").execute("call-ambiguous", { threadId, text: "Finish the document.", reviewScope: "preserve" }), /timed out/);
 
   assert.deepEqual(dispatchOrder, ["reserve", "send", "mark"]);
   assert.equal(callbackDispatches[0]?.turnId, null);
@@ -655,7 +669,7 @@ test("failed refreshed follow-up restores the prior review scope and payload", a
   await assert.rejects(() => tool(tools, "message_job").execute("call-refresh-failure", {
     threadId,
     text: "- Replace the old scope\n- Verify the replacement",
-    refreshChecklist: true
+    reviewScope: "replace"
   }), /send failed/);
 
   assert.deepEqual(store.getThread(threadId)?.executionContract, priorContract);
@@ -666,25 +680,13 @@ test("failed refreshed follow-up restores the prior review scope and payload", a
   assert.deepEqual(dispatchOrder, ["reserve", "send", "rollback"]);
 });
 
-test("failed implicit follow-up refresh restores the prior completed scope and payload", async () => {
-  const { store, threadId, dispatchOrder, tools } = await createHarness({ dispatchError: new Error("send failed") });
-  for (const item of store.getSupervisionChecklist(threadId)?.items ?? []) {
-    store.reviewAcceptancePoint({ threadId, pointId: item.id, status: "accepted", note: "Original work is complete." });
-  }
-  const priorContract = structuredClone(store.getThread(threadId)?.executionContract ?? null);
-  const priorChecklist = structuredClone(store.getSupervisionChecklist(threadId));
-
-  await assert.rejects(() => tool(tools, "message_job").execute("call-implicit-refresh-failure", {
+test("message_job rejects an omitted review scope before dispatch", async () => {
+  const { threadId, dispatchOrder, tools } = await createHarness();
+  await assert.rejects(() => tool(tools, "message_job").execute("call-missing-scope", {
     threadId,
     text: "Check here.now reachability."
-  }), /send failed/);
-
-  assert.deepEqual(store.getThread(threadId)?.executionContract, priorContract);
-  assert.equal(store.getSupervisionChecklist(threadId)?.requestedTask, priorChecklist?.requestedTask);
-  assert.deepEqual(store.getSupervisionChecklist(threadId)?.items, priorChecklist?.items);
-  assert.equal(store.getSupervisionChecklist(threadId)?.reviewState, priorChecklist?.reviewState);
-  assert.equal(store.getThreadJobPayload(threadId), null);
-  assert.deepEqual(dispatchOrder, ["reserve", "send", "rollback"]);
+  }), /explicit reviewScope/);
+  assert.deepEqual(dispatchOrder, []);
 });
 
 test("rejected checklist flush updates payload and clears the queue", async () => {
@@ -772,15 +774,16 @@ test("hold_job_context persists held context in the payload without sending a tu
   assert.equal(sent.length, 0);
 });
 
-test("stop_job immediately stops the Worker and removes its pending callback", async () => {
-  const { threadId, stopped, removedCallbacks, tools } = await createHarness();
+test("stop_job immediately stops the Worker and closes its pending callback", async () => {
+  const { threadId, stopped, closedCallbacks, removedCallbacks, tools } = await createHarness();
   const definition = tools.find((entry) => entry.name === "stop_job");
   assert.match(definition?.promptSnippet ?? "", /operator says stop, cancel, interrupt, or pause/);
 
   const result = await tool(tools, "stop_job").execute("call-stop", { threadId });
 
   assert.deepEqual(stopped, [threadId]);
-  assert.deepEqual(removedCallbacks, [threadId]);
+  assert.deepEqual(closedCallbacks, [threadId]);
+  assert.deepEqual(removedCallbacks, []);
   assert.match(JSON.stringify(result), /Stopped job thread-tools/);
 });
 

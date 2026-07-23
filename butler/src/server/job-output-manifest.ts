@@ -7,6 +7,7 @@ import {
   jobPayloadsRoot,
   persistJobPayload,
   readCurrentJobPayload,
+  selectCurrentJobOutputEntries,
   updateJobOutputManifestIntegrity
 } from "./job-instruction-artifacts.js";
 import { runSerializedJobMutation } from "./butler-job-mutation-guard.js";
@@ -42,14 +43,37 @@ const MAX_JOB_OUTPUT_TOTAL_BYTES = 512 * 1024 * 1024;
 const MAX_JOB_OUTPUT_DIRECTORY_ENTRIES = 512;
 const MAX_ARTIFACT_INSPECTION_BYTES = 100 * 1024 * 1024;
 
-function assertSafeJobOutputThreadId(threadId: string): void {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(threadId) || threadId === "." || threadId === "..") {
-    throw new Error(`Job ${threadId} cannot be mapped to a safe durable output directory.`);
+function assertSafeJobOutputPathSegment(value: string, label: string, maxLength = 200): void {
+  if (value.length > maxLength || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value) || value === "." || value === "..") {
+    throw new Error(`${label} cannot be mapped to a safe durable output directory.`);
   }
+}
+
+function assertSafeJobOutputThreadId(threadId: string): void {
+  assertSafeJobOutputPathSegment(threadId, `Job ${threadId}`);
 }
 
 function withinRoot(candidate: string, root: string): boolean {
   return candidate === root || candidate.startsWith(`${root}${path.sep}`);
+}
+
+export function resolveDurableJobOutputDirectory(payload: JobPayloadView, outputsDir: string): string {
+  assertSafeJobOutputThreadId(payload.threadId);
+  assertSafeJobOutputPathSegment(payload.protocol.currentScopeId, "The current job scope", 240);
+  const scopedOutputDir = `/outputs/${payload.threadId}/${payload.protocol.currentScopeId}`;
+  const legacyOutputDir = `/outputs/${payload.threadId}`;
+  const migratedLegacyScope = payload.protocol.currentScopeId === `scope-legacy-${payload.protocol.currentAttemptId}`;
+  if (payload.workspace.outputDir !== scopedOutputDir && !(migratedLegacyScope && payload.workspace.outputDir === legacyOutputDir)) {
+    throw new Error("Durable job output directory does not match the current job scope.");
+  }
+  const outputsRoot = path.resolve(outputsDir);
+  const jobRoot = payload.workspace.outputDir === legacyOutputDir
+    ? path.join(outputsRoot, payload.threadId)
+    : path.join(outputsRoot, payload.threadId, payload.protocol.currentScopeId);
+  if (!withinRoot(jobRoot, outputsRoot)) {
+    throw new Error("Durable job output directory escaped the configured output root.");
+  }
+  return jobRoot;
 }
 
 async function listJobOutputFiles(root: string): Promise<Array<{ filePath: string; relativePath: string; sizeBytes: number }>> {
@@ -151,17 +175,13 @@ export async function reconcileDurableJobOutputFiles(input: {
   artifactsDir: string;
   store: ButlerStateStore;
 }): Promise<ReconciledJobOutputFile[]> {
-  assertSafeJobOutputThreadId(input.payload.threadId);
   const outputsRoot = path.resolve(input.outputsDir);
   const outputsRootEntry = await fs.lstat(outputsRoot).catch(() => null);
   if (!outputsRootEntry?.isDirectory() || outputsRootEntry.isSymbolicLink()) {
     throw new Error("Durable job output storage is unavailable.");
   }
   const realOutputsRoot = await fs.realpath(outputsRoot);
-  const jobRoot = path.resolve(outputsRoot, input.payload.threadId);
-  if (!withinRoot(jobRoot, outputsRoot)) {
-    throw new Error("Durable job output directory escaped the configured output root.");
-  }
+  const jobRoot = resolveDurableJobOutputDirectory(input.payload, outputsRoot);
   const existingJobRoot = await fs.lstat(jobRoot).catch(() => null);
   if (existingJobRoot?.isSymbolicLink()) {
     throw new Error("Durable job output directory cannot be a symbolic link.");
@@ -180,6 +200,7 @@ export async function reconcileDurableJobOutputFiles(input: {
   const existingArtifacts = input.store.listProjectArtifacts(input.payload.project.id).filter((artifact) =>
     artifact.source.createdByThreadId === input.payload.threadId &&
     artifact.metadata.jobOutputAttemptId === attemptId &&
+    artifact.metadata.jobOutputScopeId === input.payload.protocol.currentScopeId &&
     Boolean(artifact.metadata.jobOutputRelativePath)
   );
   const byPathAndChecksum = new Map(existingArtifacts.map((artifact) => [
@@ -208,6 +229,7 @@ export async function reconcileDurableJobOutputFiles(input: {
           origin: "job-output",
           jobOutputThreadId: input.payload.threadId,
           jobOutputAttemptId: attemptId,
+          jobOutputScopeId: input.payload.protocol.currentScopeId,
           jobOutputRelativePath: file.relativePath
         }
       });
@@ -250,7 +272,9 @@ export type JobOutputManifestEntryUiView = {
   threadId: string;
   projectId: string;
   attemptId: string;
+  scopeId: string;
   currentAttempt: boolean;
+  currentScope: boolean;
   sourceTurnId: string | null;
   referenceId: string;
   logicalPath: string | null;
@@ -272,8 +296,11 @@ export type JobOutputManifestUiView = {
   jobId: string;
   projectId: string;
   currentAttemptId: string;
+  currentScopeId: string;
   attempt: number;
   entries: JobOutputManifestEntryUiView[];
+  otherCurrentScopeEntries: JobOutputManifestEntryUiView[];
+  historicalEntries: JobOutputManifestEntryUiView[];
 };
 
 export async function resolveJobOutputManifest(
@@ -336,46 +363,66 @@ export async function buildJobOutputManifestUiView(
   payload: JobPayloadView,
   store: ButlerStateStore
 ): Promise<JobOutputManifestUiView> {
-  const entries = (await resolveJobOutputManifest(payload, store))
-    .filter(({ entry }) => entry.attemptId === payload.protocol.currentAttemptId);
+  const resolved = await resolveJobOutputManifest(payload, store);
+  const selectedIds = new Set(selectCurrentJobOutputEntries(payload).map((entry) => entry.id));
+  const current = resolved.filter(({ entry }) => selectedIds.has(entry.id));
+  const latestReport = [...current].reverse().find(({ entry }) => entry.kind === "worker_report")?.report ?? null;
+  const referencedIds = new Set((latestReport?.evidence ?? []).flatMap((evidence) =>
+    [evidence.artifactId, evidence.proofRunId].filter((id): id is string => Boolean(id))
+  ));
+  const primary = current.filter(({ entry }) =>
+    entry.kind === "worker_report" ||
+    (entry.artifactId ? referencedIds.has(entry.artifactId) : false) ||
+    (entry.proofRunId ? referencedIds.has(entry.proofRunId) : false)
+  );
+  const other = current.filter(({ entry }) => !primary.some((candidate) => candidate.entry.id === entry.id));
+  const historical = resolved.filter(({ entry }) =>
+    entry.attemptId !== payload.protocol.currentAttemptId || entry.scopeId !== payload.protocol.currentScopeId
+  ).slice(-128);
+  const mapEntry = ({ entry, available, integrity, checksumStatus, integrityCheckedAt, proofOutcome, artifact, proof, report }: ResolvedJobOutputManifestEntry): JobOutputManifestEntryUiView => {
+    const proofArtifact = proof?.verification.artifacts.find((candidate) =>
+      candidate.availability === "available" && Boolean(candidate.url || candidate.downloadUrl)
+    ) ?? null;
+    return {
+      id: entry.id,
+      kind: entry.kind,
+      title: entry.title,
+      threadId: entry.threadId,
+      projectId: entry.projectId,
+      attemptId: entry.attemptId,
+      scopeId: entry.scopeId,
+      currentAttempt: entry.attemptId === payload.protocol.currentAttemptId,
+      currentScope: entry.attemptId === payload.protocol.currentAttemptId && entry.scopeId === payload.protocol.currentScopeId,
+      sourceTurnId: entry.sourceTurnId,
+      referenceId: entry.artifactId ?? entry.proofRunId ?? entry.reportTurnId ?? entry.id,
+      logicalPath: entry.logicalPath,
+      createdAt: entry.createdAt,
+      available,
+      integrity: entry.kind === "project_artifact" ? integrity : available ? "unverified" : "missing",
+      checksumSha256: entry.checksumSha256,
+      checksumStatus,
+      integrityCheckedAt,
+      proofOutcome,
+      status: report?.status ?? proofOutcome,
+      fileName: artifact?.fileName ?? proofArtifact?.fileName ?? null,
+      contentType: artifact?.contentType ?? proofArtifact?.contentType ?? null,
+      openUrl: available && artifact
+        ? getProjectArtifactUserUrl(artifact)
+        : available ? proofArtifact?.url ?? null : null,
+      downloadUrl: available && artifact
+        ? getProjectArtifactUserDownloadUrl(artifact)
+        : available ? proofArtifact?.downloadUrl ?? null : null
+    };
+  };
   return {
     jobId: payload.threadId,
     projectId: payload.project.id,
     currentAttemptId: payload.protocol.currentAttemptId,
+    currentScopeId: payload.protocol.currentScopeId,
     attempt: payload.protocol.attempt,
-    entries: entries.map(({ entry, available, integrity, checksumStatus, integrityCheckedAt, proofOutcome, artifact, proof, report }) => {
-      const proofArtifact = proof?.verification.artifacts.find((candidate) =>
-        candidate.availability === "available" && Boolean(candidate.url || candidate.downloadUrl)
-      ) ?? null;
-      return {
-        id: entry.id,
-        kind: entry.kind,
-        title: entry.title,
-        threadId: entry.threadId,
-        projectId: entry.projectId,
-        attemptId: entry.attemptId,
-        currentAttempt: entry.attemptId === payload.protocol.currentAttemptId,
-        sourceTurnId: entry.sourceTurnId,
-        referenceId: entry.artifactId ?? entry.proofRunId ?? entry.reportTurnId ?? entry.id,
-        logicalPath: entry.logicalPath,
-        createdAt: entry.createdAt,
-        available,
-        integrity: entry.kind === "project_artifact" ? integrity : available ? "unverified" : "missing",
-        checksumSha256: entry.checksumSha256,
-        checksumStatus,
-        integrityCheckedAt,
-        proofOutcome,
-        status: report?.status ?? proofOutcome,
-        fileName: artifact?.fileName ?? proofArtifact?.fileName ?? null,
-        contentType: artifact?.contentType ?? proofArtifact?.contentType ?? null,
-        openUrl: available && artifact
-          ? getProjectArtifactUserUrl(artifact)
-          : available ? proofArtifact?.url ?? null : null,
-        downloadUrl: available && artifact
-          ? getProjectArtifactUserDownloadUrl(artifact)
-          : available ? proofArtifact?.downloadUrl ?? null : null
-      };
-    })
+    entries: primary.map(mapEntry),
+    otherCurrentScopeEntries: other.map(mapEntry),
+    historicalEntries: historical.map(mapEntry)
   };
 }
 
@@ -416,8 +463,9 @@ export async function inspectCurrentJobOutputForReview(input: {
 }): Promise<string> {
   const outputId = input.outputId.trim();
   if (!outputId) throw new Error("A current job output ID is required.");
+  const currentIds = new Set(selectCurrentJobOutputEntries(input.payload).map((entry) => entry.id));
   const resolved = (await resolveJobOutputManifest(input.payload, input.store)).find(({ entry }) =>
-    entry.attemptId === input.payload.protocol.currentAttemptId &&
+    currentIds.has(entry.id) &&
     entry.threadId === input.payload.threadId &&
     entry.projectId === input.payload.project.id &&
     (entry.id === outputId || entry.artifactId === outputId || entry.proofRunId === outputId || entry.reportTurnId === outputId)
@@ -467,8 +515,10 @@ export async function formatResolvedJobOutputManifestForReview(
   store: ButlerStateStore
 ): Promise<string> {
   const currentAttemptId = payload.protocol.currentAttemptId;
+  const currentScopeId = payload.protocol.currentScopeId;
+  const currentIds = new Set(selectCurrentJobOutputEntries(payload).map((entry) => entry.id));
   const currentOutputs = (await resolveJobOutputManifest(payload, store))
-    .filter(({ entry }) => entry.attemptId === currentAttemptId);
+    .filter(({ entry }) => currentIds.has(entry.id));
   const inventory = currentOutputs.map(({ entry, availability, checksumStatus, integrityCheckedAt, proofOutcome }) => ({
     id: entry.id,
     kind: entry.kind,
@@ -530,7 +580,7 @@ export async function formatResolvedJobOutputManifestForReview(
     }));
   return inventory.length === 0
     ? "No outputs are registered for the current job attempt."
-    : JSON.stringify({ currentAttemptId, entryCount: inventory.length, inventory, details }, null, 2);
+    : JSON.stringify({ currentAttemptId, currentScopeId, entryCount: inventory.length, inventory, details }, null, 2);
 }
 
 export async function validateReportedArtifactManifestRefs(input: {
@@ -549,8 +599,7 @@ export async function validateReportedArtifactManifestRefs(input: {
     const payload = payloadRoot
       ? await readCurrentJobPayload(payloadRoot, input.payload!.threadId) ?? input.payload!
       : input.payload!;
-    const currentEntries = payload.outputManifest.entries.filter((entry) =>
-      entry.attemptId === payload.protocol.currentAttemptId &&
+    const currentEntries = selectCurrentJobOutputEntries(payload).filter((entry) =>
       entry.kind === "project_artifact" &&
       entry.projectId === payload.project.id &&
       Boolean(entry.artifactId)

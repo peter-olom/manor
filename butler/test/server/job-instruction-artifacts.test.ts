@@ -134,6 +134,46 @@ test("job payloads migrate old records and preserve registered outputs across up
   assert.notEqual(updated.checksum, payload.checksum);
 });
 
+test("legacy payload migration binds its durable directory and manifest entries to one explicit scope", () => {
+  const payload = buildJobPayload({ threadId: "thread-legacy-scope", kind: "delegation", instruction: "Preserve the legacy output" });
+  const withOutput = appendJobOutputManifestEntries(payload, [{
+    id: "legacy-output",
+    kind: "worker_report",
+    title: "Legacy report",
+    threadId: payload.threadId,
+    projectId: payload.project.id,
+    attemptId: payload.protocol.currentAttemptId,
+    scopeId: payload.protocol.currentScopeId,
+    sourceTurnId: "turn-1",
+    artifactId: null,
+    proofRunId: null,
+    reportTurnId: "turn-1",
+    logicalPath: null,
+    contentType: null,
+    sizeBytes: null,
+    checksumSha256: null,
+    availability: "available",
+    checksumStatus: "unverified",
+    integrityCheckedAt: null,
+    createdAt: 1
+  }]);
+  const legacy = structuredClone(withOutput) as unknown as Record<string, unknown>;
+  const protocol = legacy.protocol as Record<string, unknown>;
+  const workspace = legacy.workspace as Record<string, unknown>;
+  const outputManifest = legacy.outputManifest as { entries: Array<Record<string, unknown>> };
+  delete protocol.currentScopeId;
+  delete protocol.currentScopeStartedAt;
+  delete workspace.outputDir;
+  delete outputManifest.entries[0]?.scopeId;
+  legacy.checksum = "legacy-checksum";
+
+  const migrated = parseJobPayload(legacy);
+  assert.ok(migrated);
+  assert.equal(migrated.protocol.currentScopeId, `scope-legacy-${migrated.protocol.currentAttemptId}`);
+  assert.equal(migrated.workspace.outputDir, `/outputs/${migrated.threadId}`);
+  assert.equal(migrated.outputManifest.entries[0]?.scopeId, migrated.protocol.currentScopeId);
+});
+
 test("job output manifest rejects current-attempt overflow", () => {
   const payload = buildJobPayload({ threadId: "thread-cap", kind: "delegation", instruction: "Bound outputs" });
   const entries = Array.from({ length: 513 }, (_, index) => ({

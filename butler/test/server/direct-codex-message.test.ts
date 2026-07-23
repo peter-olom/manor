@@ -6,9 +6,11 @@ import assert from "node:assert/strict";
 
 import { ButlerAgentService } from "../../src/server/butler-agent.js";
 import { directWorkerDispatchMarker } from "../../src/server/butler-callback-state.js";
+import { buildCloseoutId } from "../../src/server/butler-agent-helpers.js";
+import { relevantTerminalWorkerReport } from "../../src/server/butler-closeout-gate.js";
 import { normalizeOperatorMessages } from "../../src/server/butler-operator-messages.js";
 import { backfillDirectCodexMessagesFromSessionFiles, buildDirectCodexMessagePingSummary, settleFailedDirectWorkerDispatch } from "../../src/server/direct-codex-message.js";
-import { readCurrentJobPayload } from "../../src/server/job-instruction-artifacts.js";
+import { readCurrentJobPayload, updateJobPayload } from "../../src/server/job-instruction-artifacts.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { StaleWorkerOperationError } from "../../src/server/stale-worker-operation-error.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
@@ -78,6 +80,37 @@ test("operator message persistence preserves presentation metadata", async () =>
   assert.equal(persisted[0]?.hiddenFromTranscript, true);
 });
 
+test("closeout accepts only the Worker turn bound to the current dispatch", () => {
+  const thread = { id: "thread-bound-report", status: "idle", turns: [] } as never;
+  const report = { turnId: "turn-old", status: "completed", updatedAt: 20 } as never;
+  assert.equal(relevantTerminalWorkerReport(thread, report, 10, "turn-current"), null);
+  assert.equal(relevantTerminalWorkerReport(thread, { ...report, turnId: "turn-current" }, 10, "turn-current")?.turnId, "turn-current");
+});
+
+test("closeout identity separates scopes that share a Worker turn", () => {
+  assert.notEqual(
+    buildCloseoutId("thread", "turn-1", "scope-a"),
+    buildCloseoutId("thread", "turn-1", "scope-b")
+  );
+  assert.equal(buildCloseoutId("thread", "turn-1"), "thread:turn-1");
+});
+
+test("terminal closeout rejects a superseded callback scope", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-stale-scope-closeout-"));
+  const threadId = "thread-stale-scope-closeout";
+  store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  const agent = createButlerAgent(store, sessionDir);
+  await agent.notifyDirectCodexMessage({ threadId, text: "First scope.", requestedAt: 1, scopeDisposition: "replace" });
+  const payload = store.getThreadJobPayload(threadId)!;
+  store.setThreadJobPayload(updateJobPayload(payload, { kind: "direct_message", instruction: "Replacement scope.", replaceOutputScope: true }));
+  const internals = agent as unknown as { postOperatorJobReply(threadId: string, text: string): Promise<void> };
+
+  await assert.rejects(() => internals.postOperatorJobReply(threadId, "Stale closeout."), /scope was superseded/);
+  assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.owesOperatorReply, true);
+  agent.dispose();
+});
+
 test("direct Codex ping summary includes message and selected context", () => {
   const summary = buildDirectCodexMessagePingSummary({
     text: "Please retry the smoke proof.",
@@ -106,6 +139,7 @@ test("direct Codex messages register Butler supervision callback", async () => {
   const agent = createButlerAgent(store, sessionDir);
   await agent.notifyDirectCodexMessage({
     threadId,
+    scopeDisposition: "replace",
     text: "Continue with the operator correction.",
     imageReferenceIds: [],
     fileReferenceIds: [],
@@ -150,6 +184,7 @@ test("direct Worker new work refreshes the review scope before persisting its pa
 
   await agent.notifyDirectCodexMessage({
     threadId,
+    scopeDisposition: "replace",
     text: "- Implement Microsoft OAuth\n- Implement magic links",
     requestedAt: 2,
     imageReferenceIds: [],
@@ -174,7 +209,7 @@ test("deleting a Worker removes its outstanding Butler callback", async () => {
   const threadId = "thread-delete-callback";
   store.upsertThreadSummary({ id: threadId, status: "active", cwd: "/workspace", turns: [{ id: "turn-1", status: "completed", items: [] }] });
   const agent = createButlerAgent(store, sessionDir);
-  await agent.notifyDirectCodexMessage({ threadId, text: "Continue.", imageReferenceIds: [], fileReferenceIds: [], inputItems: [] });
+  await agent.notifyDirectCodexMessage({ threadId, text: "Continue.", scopeDisposition: "replace", imageReferenceIds: [], fileReferenceIds: [], inputItems: [] });
   assert.equal(agent.getShellSnapshot().supervision.callbacks.length, 1);
 
   await agent.removeExternalWorkerDelegation(threadId);
@@ -190,11 +225,11 @@ test("direct Worker callback is persisted before send and rolled back on failure
   const agent = createButlerAgent(store, sessionDir);
   const requestedAt = Date.now();
 
-  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Run the follow-up.", requestedAt });
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Run the follow-up.", requestedAt, scopeDisposition: "replace" });
   assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.requestedAt, requestedAt);
   assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.lastPrivateSteerText, "Run the follow-up.");
   assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.dispatchState, "reserving");
-  await agent.notifyDirectCodexMessage({ threadId, text: "Run the follow-up.", requestedAt, callbackAlreadyRegistered: true });
+  await agent.notifyDirectCodexMessage({ threadId, text: "Run the follow-up.", requestedAt, callbackAlreadyRegistered: true, scopeDisposition: "replace" });
   assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.dispatchState, "reserving");
   await agent.markPendingChatCallbackDispatched(threadId, requestedAt, "turn-1");
   assert.equal(agent.getShellSnapshot().supervision.callbacks[0]?.dispatchState, "ready");
@@ -203,11 +238,11 @@ test("direct Worker callback is persisted before send and rolled back on failure
   await agent.rollbackDirectCodexMessage(threadId, requestedAt, reservation);
   assert.equal(agent.getShellSnapshot().supervision.callbacks.length, 0);
 
-  await agent.notifyDirectCodexMessage({ threadId, text: "Original review.", requestedAt: requestedAt + 1 });
+  await agent.notifyDirectCodexMessage({ threadId, text: "Original review.", requestedAt: requestedAt + 1, scopeDisposition: "replace" });
   const internals = agent as unknown as { pendingChatCallbacks: Map<string, ButlerThreadCallbackView> };
   internals.pendingChatCallbacks.get(threadId)!.reviewState = "running";
   await runSerializedJobMutation(threadId, async () => {
-    const interrupted = await agent.reserveDirectCodexMessage({ threadId, text: "Replacement send.", requestedAt: requestedAt + 2 });
+    const interrupted = await agent.reserveDirectCodexMessage({ threadId, text: "Replacement send.", requestedAt: requestedAt + 2, scopeDisposition: "replace" });
     await agent.rollbackDirectCodexMessage(threadId, requestedAt + 2, interrupted);
     assert.equal(internals.pendingChatCallbacks.get(threadId)?.reviewState, "queued");
   });
@@ -220,7 +255,7 @@ test("an active callback review can reserve its own Worker follow-up", async () 
   const threadId = "thread-review-followup-reserve";
   store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
   const agent = createButlerAgent(store, sessionDir);
-  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: 1 });
+  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: 1, scopeDisposition: "replace" });
   const internals = agent as unknown as { pendingChatCallbacks: Map<string, ButlerThreadCallbackView> };
   const attempted = internals.pendingChatCallbacks.get(threadId)!;
   attempted.reviewState = "running";
@@ -231,7 +266,7 @@ test("an active callback review can reserve its own Worker follow-up", async () 
     threadId,
     isCurrent: () => internals.pendingChatCallbacks.get(threadId) === attempted && attempted.reviewState === "running"
   }, async () => {
-    const reserved = await agent.reserveDirectCodexMessage({ threadId, text: "Fix the rejected point.", requestedAt });
+    const reserved = await agent.reserveDirectCodexMessage({ threadId, text: "Fix the rejected point.", requestedAt, scopeDisposition: "preserve" });
     assert.doesNotThrow(() => assertCallbackReviewCurrent(threadId));
     assert.equal(internals.pendingChatCallbacks.get(threadId), attempted);
     assert.equal(attempted.reviewState, "running");
@@ -249,7 +284,7 @@ test("a cancelled callback review can roll back its reserved follow-up", async (
   const threadId = "thread-review-followup-rollback";
   store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
   const agent = createButlerAgent(store, sessionDir);
-  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: 1 });
+  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: 1, scopeDisposition: "replace" });
   const internals = agent as unknown as { pendingChatCallbacks: Map<string, ButlerThreadCallbackView> };
   const attempted = internals.pendingChatCallbacks.get(threadId)!;
   attempted.reviewState = "running";
@@ -261,7 +296,7 @@ test("a cancelled callback review can roll back its reserved follow-up", async (
     threadId,
     isCurrent: () => reviewCurrent && internals.pendingChatCallbacks.get(threadId) === attempted && attempted.reviewState === "running"
   }, async () => {
-    const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Fix the rejected point.", requestedAt });
+    const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Fix the rejected point.", requestedAt, scopeDisposition: "preserve" });
     reviewCurrent = false;
     await agent.rollbackDirectCodexMessage(threadId, requestedAt, reservation);
   });
@@ -284,7 +319,7 @@ test("failed pre-send dispatch removes a newly created unsent job payload", asyn
   const threadId = "thread-direct-payload-rollback";
   store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
   const agent = createButlerAgent(store, sessionDir);
-  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Unsent follow-up.", requestedAt: 2 });
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Unsent follow-up.", requestedAt: 2, scopeDisposition: "replace" });
   const internals = agent as unknown as {
     createOrUpdateJobPayload(input: { threadId: string; kind: "steering"; instruction: string; onPrepared?: (payload: never) => void }): Promise<unknown>;
   };
@@ -305,7 +340,7 @@ test("a stale direct Worker dispatch rolls back its reserved callback", async ()
   store.upsertThreadSummary({ id: threadId, source: "pi-rpc", status: { type: "idle" }, cwd: "/workspace", turns: [] });
   const agent = createButlerAgent(store, sessionDir);
   const requestedAt = Date.now();
-  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Never accepted.", requestedAt });
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Never accepted.", requestedAt, scopeDisposition: "replace" });
 
   let caught: unknown;
   try {
@@ -332,7 +367,7 @@ test("a post-dispatch stale Worker operation preserves its supervision callback"
   store.upsertThreadSummary({ id: threadId, source: "pi-rpc", status: { type: "idle" }, cwd: "/workspace", turns: [] });
   const agent = createButlerAgent(store, sessionDir);
   const requestedAt = Date.now();
-  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Possibly accepted.", requestedAt });
+  const reservation = await agent.reserveDirectCodexMessage({ threadId, text: "Possibly accepted.", requestedAt, scopeDisposition: "replace" });
 
   await settleFailedDirectWorkerDispatch(
     new StaleWorkerOperationError(threadId, { dispatchMayHaveBeenAccepted: true }),
@@ -354,7 +389,7 @@ test("startup keeps an owed pre-send callback reservation with no confirmed Work
     getConnectionState: () => ({ compose: { availableModels: [] } }),
     loadThread: async () => { throw new Error("provider session is unavailable after restart"); }
   });
-  await agent.reserveDirectCodexMessage({ threadId, text: "Never sent.", requestedAt });
+  await agent.reserveDirectCodexMessage({ threadId, text: "Never sent.", requestedAt, scopeDisposition: "replace" });
 
   await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
 
@@ -374,7 +409,7 @@ test("startup retains an owed callback when Worker thread hydration fails", asyn
   const originalStore = await createStore();
   originalStore.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
   const originalAgent = createButlerAgent(originalStore, sessionDir);
-  await originalAgent.reserveDirectCodexMessage({ threadId, text: "Finish and report back.", requestedAt: 1 });
+  await originalAgent.reserveDirectCodexMessage({ threadId, text: "Finish and report back.", requestedAt: 1, scopeDisposition: "replace" });
   originalAgent.dispose();
 
   const emptyStore = await createStore();
@@ -427,7 +462,7 @@ test("startup promotes only the exact accepted direct-message dispatch", async (
     getConnectionState: () => ({ compose: { availableModels: [] } }),
     loadThread: async () => { throw new Error("provider session is unavailable after restart"); }
   });
-  await agent.reserveDirectCodexMessage({ threadId, text: "Run it.", requestedAt });
+  await agent.reserveDirectCodexMessage({ threadId, text: "Run it.", requestedAt, scopeDisposition: "replace" });
 
   await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
 
@@ -447,7 +482,7 @@ test("an unconfirmed reservation ignores unrelated Worker activity during recove
     getConnectionState: () => ({ compose: { availableModels: [] } }),
     loadThread: async () => undefined
   });
-  await agent.reserveDirectCodexMessage({ threadId, text: "This was never sent.", requestedAt });
+  await agent.reserveDirectCodexMessage({ threadId, text: "This was never sent.", requestedAt, scopeDisposition: "replace" });
 
   await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
 
@@ -475,7 +510,7 @@ test("a persisted closeout message reconciles its callback without posting twice
     postOperatorJobReply(threadId: string, text: string): Promise<void>;
     pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
   };
-  await agent.notifyDirectCodexMessage({ threadId, text: "Finish it.", requestedAt: 1 });
+  await agent.notifyDirectCodexMessage({ threadId, text: "Finish it.", requestedAt: 1, scopeDisposition: "replace" });
   internals.operatorMessages.push({ id: `callback-fallback-${threadId}:turn-1`, role: "assistant", text: "Already posted.", at: 2, taskDurationMs: null, kind: "message" });
   const pending = internals.pendingChatCallbacks.get(threadId)!;
   pending.reviewState = "running";
@@ -517,7 +552,7 @@ test("restart reconciliation closes a delivered callback before queuing recovery
     getConnectionState: () => ({ compose: { availableModels: [] } }),
     loadThread: async () => undefined
   });
-  await agent.notifyDirectCodexMessage({ threadId, text: "Finish it.", requestedAt: 10 });
+  await agent.notifyDirectCodexMessage({ threadId, text: "Finish it.", requestedAt: 10, scopeDisposition: "replace" });
   const internals = agent as unknown as {
     operatorMessages: Array<{ id: string; role: string; text: string; at: number; taskDurationMs: null; kind: "message" }>;
     pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
@@ -635,7 +670,7 @@ test("startup keeps a closed historical callback closed until newer Worker activ
   const threadId = "thread-closed-callback";
   store.upsertThreadSummary({ id: threadId, status: { type: "idle" }, cwd: "/workspace", turns: [{ id: "turn-1", status: "completed", items: [] }] });
   const agent = createButlerAgent(store, sessionDir);
-  await agent.notifyDirectCodexMessage({ threadId, text: "Initial work.", imageReferenceIds: [], fileReferenceIds: [], inputItems: [] });
+  await agent.notifyDirectCodexMessage({ threadId, text: "Initial work.", scopeDisposition: "replace", imageReferenceIds: [], fileReferenceIds: [], inputItems: [] });
   const internals = agent as unknown as { pendingChatCallbacks: Map<string, ButlerThreadCallbackView> };
   const closed = internals.pendingChatCallbacks.get(threadId)!;
   const closedAt = Date.now();
@@ -648,6 +683,36 @@ test("startup keeps a closed historical callback closed until newer Worker activ
   await agent.ensureExternalWorkerDelegation(threadId);
   assert.notEqual(internals.pendingChatCallbacks.get(threadId), closed);
   assert.equal(internals.pendingChatCallbacks.get(threadId)?.owesOperatorReply, true);
+});
+
+test("an operator-stopped callback survives restart without a second reply and rearms for newer work", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-direct-codex-stopped-restart-"));
+  const threadId = "thread-stopped-restart";
+  store.upsertThreadSummary({ id: threadId, status: { type: "idle" }, cwd: "/workspace", turns: [{ id: "turn-1", status: "completed", startedAt: 10, completedAt: 20, items: [] }] });
+  const first = createButlerAgent(store, sessionDir);
+  await first.notifyDirectCodexMessage({ threadId, text: "Initial work.", scopeDisposition: "replace", imageReferenceIds: [], fileReferenceIds: [], inputItems: [] });
+  await first.closeExternalWorkerDelegation(threadId);
+  const firstInternals = first as unknown as { pendingChatCallbacks: Map<string, ButlerThreadCallbackView> };
+  const closedAt = firstInternals.pendingChatCallbacks.get(threadId)?.closedAt ?? 0;
+  assert.equal(firstInternals.pendingChatCallbacks.get(threadId)?.operatorCloseoutStatus, "not_required");
+  assert.equal(firstInternals.pendingChatCallbacks.get(threadId)?.owesOperatorReply, false);
+  await (first as unknown as { saveCallbackState(): Promise<void> }).saveCallbackState();
+  first.dispose();
+
+  const restarted = createButlerAgent(store, sessionDir);
+  await (restarted as unknown as { loadCallbackState(): Promise<void> }).loadCallbackState();
+  const restartedInternals = restarted as unknown as { pendingChatCallbacks: Map<string, ButlerThreadCallbackView> };
+  const stoppedTombstone = restartedInternals.pendingChatCallbacks.get(threadId);
+  await restarted.ensureExternalWorkerDelegation(threadId);
+  assert.equal(restartedInternals.pendingChatCallbacks.get(threadId), stoppedTombstone);
+  assert.equal(stoppedTombstone?.owesOperatorReply, false);
+
+  store.getThread(threadId)!.turns.push({ id: "turn-2", requestedReasoningEffort: null, status: "started", error: null, startedAt: closedAt + 1, completedAt: null, items: [] });
+  await restarted.ensureExternalWorkerDelegation(threadId);
+  assert.notEqual(restartedInternals.pendingChatCallbacks.get(threadId), stoppedTombstone);
+  assert.equal(restartedInternals.pendingChatCallbacks.get(threadId)?.owesOperatorReply, true);
+  restarted.dispose();
 });
 
 test("operator history normalization hides persisted direct Codex prompts", () => {
@@ -739,6 +804,7 @@ test("direct Codex callback recovery uses worker reply item time instead of refr
 
     await agent.notifyDirectCodexMessage({
       threadId,
+      scopeDisposition: "replace",
       text: "Run a website preview",
       imageReferenceIds: [],
       fileReferenceIds: [],
@@ -818,6 +884,7 @@ test("silent completed Worker activity wakes Butler recovery when no report or r
 
     await agent.notifyDirectCodexMessage({
       threadId,
+      scopeDisposition: "replace",
       text: "Create the requested document.",
       imageReferenceIds: [],
       fileReferenceIds: [],
@@ -863,8 +930,8 @@ test("a steered active turn wakes Butler when that exact turn later stops silent
       getConnectionState: () => ({ compose: { availableModels: [] } }),
       loadThread: async () => undefined
     });
-    await agent.reserveDirectCodexMessage({ threadId, text: "Continue this active turn.", requestedAt });
-    await agent.notifyDirectCodexMessage({ threadId, text: "Continue this active turn.", requestedAt, callbackAlreadyRegistered: true });
+    await agent.reserveDirectCodexMessage({ threadId, text: "Continue this active turn.", requestedAt, scopeDisposition: "replace" });
+    await agent.notifyDirectCodexMessage({ threadId, text: "Continue this active turn.", requestedAt, callbackAlreadyRegistered: true, scopeDisposition: "replace" });
     await agent.markPendingChatCallbackDispatched(threadId, requestedAt, "turn-active-before-steer");
 
     store.upsertThreadSummary({
@@ -912,7 +979,7 @@ test("an accepted unbound dispatch probes an idle runtime instead of waiting for
       probeThread: async () => { probes += 1; return { attemptId: "probe-unbound-idle", state: "idle", busy: false, compacting: false, pendingMessageCount: 0, activityAt: null, acknowledgedWait: null, confirmedDead: false }; },
       stopThread: async () => { stops += 1; return true; }
     });
-    await agent.reserveDirectCodexMessage({ threadId, text: "Accepted but not yet bound.", requestedAt });
+    await agent.reserveDirectCodexMessage({ threadId, text: "Accepted but not yet bound.", requestedAt, scopeDisposition: "replace" });
     await agent.markPendingChatCallbackDispatched(threadId, requestedAt, null);
 
     Date.now = () => requestedAt + 5 * 60_000;
@@ -954,7 +1021,7 @@ test("an idle thread with a nonterminal accepted turn is still watchdog-probed a
       probeThread: async () => { probes += 1; return { state: "idle", busy: false, compacting: false, pendingMessageCount: 0, activityAt: null, acknowledgedWait: null, confirmedDead: false }; },
       stopThread: async () => { stops += 1; return true; }
     });
-    await agent.reserveDirectCodexMessage({ threadId, text: "Accepted but stale.", requestedAt });
+    await agent.reserveDirectCodexMessage({ threadId, text: "Accepted but stale.", requestedAt, scopeDisposition: "replace" });
     await agent.markPendingChatCallbackDispatched(threadId, requestedAt, "accepted-turn");
 
     Date.now = () => requestedAt + 5 * 60_000;
@@ -999,7 +1066,7 @@ test("watchdog confirms an abandoned active turn and wakes Butler immediately", 
         return true;
       }
     });
-    await agent.notifyDirectCodexMessage({ threadId, text: "Create the document.", requestedAt });
+    await agent.notifyDirectCodexMessage({ threadId, text: "Create the document.", requestedAt, scopeDisposition: "replace" });
 
     Date.now = () => requestedAt + 5 * 60_000;
     await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
@@ -1043,7 +1110,7 @@ test("watchdog recovers a confirmed dead transport without attempting an impossi
       probeThread: async () => { throw new WorkerTransportDeadError("Worker process exited"); },
       stopThread: async () => { stops += 1; throw new Error("interrupt transport is closed"); }
     });
-    await agent.notifyDirectCodexMessage({ threadId, text: "Create the document.", requestedAt });
+    await agent.notifyDirectCodexMessage({ threadId, text: "Create the document.", requestedAt, scopeDisposition: "replace" });
 
     Date.now = () => requestedAt + 5 * 60_000;
     await (agent as unknown as { reconcilePendingChatCallbacks(): Promise<void> }).reconcilePendingChatCallbacks();
@@ -1088,7 +1155,7 @@ test("watchdog never interrupts a responsive silent long-running command", async
       probeThread: async () => ({ attemptId: `probe-${++probes}`, state: "busy", busy: true, compacting: false, pendingMessageCount: 0, activityAt: null, acknowledgedWait: null, confirmedDead: false }),
       stopThread: async () => { stops += 1; return true; }
     });
-    await agent.notifyDirectCodexMessage({ threadId, text: "Run the long poll.", requestedAt });
+    await agent.notifyDirectCodexMessage({ threadId, text: "Run the long poll.", requestedAt, scopeDisposition: "replace" });
 
     for (const now of [requestedAt + 5 * 60_000, requestedAt + 10 * 60_000]) {
       Date.now = () => now;
@@ -1130,7 +1197,7 @@ test("watchdog emits one Butler notice when repeated probes cannot safely stop t
       probeThread: async () => { probes += 1; throw new Error(`probe unavailable ${probes}`); },
       stopThread: async () => { throw new Error("interrupt failed"); }
     });
-    await agent.notifyDirectCodexMessage({ threadId, text: "Run supervised work.", requestedAt });
+    await agent.notifyDirectCodexMessage({ threadId, text: "Run supervised work.", requestedAt, scopeDisposition: "replace" });
 
     for (const now of [requestedAt + 5 * 60_000, requestedAt + 5 * 60_000 + 30_000, requestedAt + 5 * 60_000 + 60_000]) {
       Date.now = () => now;

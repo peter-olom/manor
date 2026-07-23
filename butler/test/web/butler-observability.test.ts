@@ -499,6 +499,8 @@ test("blocked review shows model, attempt, exact failure, and model-aware retry"
       modelProvider: "ollama-cloud",
       modelId: "glm-5.2",
       thinkingLevel: "high",
+      workSliceNodeId: "node-push",
+      scopeLabel: "Push the current branch",
       retryable: true
     },
     blockedReason: null,
@@ -508,6 +510,7 @@ test("blocked review shows model, attempt, exact failure, and model-aware retry"
   }));
 
   assert.match(markup, /Attempt 3 of 3/);
+  assert.match(markup, /Reviewing: Push the current branch/);
   assert.match(markup, /ollama-cloud/);
   assert.match(markup, /glm-5\.2/);
   assert.match(markup, /Adversarial review timed out after 120s/);

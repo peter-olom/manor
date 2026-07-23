@@ -19,6 +19,7 @@ import type {
   ButlerCompactionView,
   ButlerMessageView,
   ButlerNextWorkerReportAction,
+  ButlerReviewScopeDisposition,
   ButlerOnboardingView,
   ButlerOperatorQuestionView,
   ButlerRoutingDecisionView,
@@ -209,6 +210,7 @@ export type ButlerAgentToolAccess = {
     instruction: string;
     imageReferenceIds?: string[];
     fileReferenceIds?: string[];
+    replaceOutputScope?: boolean;
     onPrepared?: (payload: JobPayloadView) => void;
   }): Promise<JobPayloadView>;
   bindJobPayloadDelivery(threadId: string, delivery: { turnId?: string | null; messageId?: string | null }): Promise<JobPayloadView | null>;
@@ -222,11 +224,13 @@ export type ButlerAgentToolAccess = {
   }): ButlerDelegationAttachmentAcknowledgement | void;
   registerPendingChatCallback(
     threadId: string,
-    options?: { privateSteerText?: string | null; preservePrivateSteer?: boolean; operatorRequestText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null }
+    options?: { privateSteerText?: string | null; preservePrivateSteer?: boolean; operatorRequestText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null; scopeDisposition?: ButlerReviewScopeDisposition; workSliceNodeId?: string | null }
   ): Promise<void>;
-  reserveDirectCodexMessage(input: { threadId: string; text: string; operatorRequestText?: string | null; requestedAt: number; nextWorkerReportAction?: ButlerNextWorkerReportAction }): Promise<ButlerCallbackReservation>;
+  reserveDirectCodexMessage(input: { threadId: string; text: string; operatorRequestText?: string | null; requestedAt: number; nextWorkerReportAction?: ButlerNextWorkerReportAction; scopeDisposition: ButlerReviewScopeDisposition }): Promise<ButlerCallbackReservation>;
+  bindPendingChatCallbackWorkSlice?(threadId: string, requestedAt: number, workSliceNodeId: string): Promise<void>;
   markPendingChatCallbackDispatched(threadId: string, requestedAt: number, acceptedWorkerTurnId: string | null): Promise<void>;
   rollbackDirectCodexMessage(threadId: string, requestedAt: number, reservation: ButlerCallbackReservation): Promise<void>;
+  closeExternalWorkerDelegation?(threadId: string): Promise<void>;
   removeExternalWorkerDelegation?(threadId: string): Promise<void>;
   postOperatorJobReply(threadId: string, text: string): Promise<void>;
   presentOperatorAttachment(input: {

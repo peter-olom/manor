@@ -177,6 +177,7 @@ test("non-Git work is reviewed from an empty isolated filesystem", async () => {
     threadId,
     projectId: contract.projectId,
     attemptId: payload.protocol.currentAttemptId,
+    scopeId: payload.protocol.currentScopeId,
     sourceTurnId: report.turnId,
     artifactId: null,
     proofRunId: null,
@@ -692,4 +693,32 @@ test("a superseded reviewer persists neither findings nor failure events", async
   assert.deepEqual(await review, []);
   assert.deepEqual(store.getThread(threadId)?.executionContract?.reviewResults ?? [], []);
   assert.equal(store.getThread(threadId)?.eventLog.some((event) => event.method === "adversarial/review/failed"), false);
+});
+
+test("adversarial review persists nothing when the accepted Worker report changes turns", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "manor-adversarial-turn-binding-"));
+  const store = new ButlerStateStore(path.join(dir, "state.json"));
+  const threadId = "worker-turn-binding";
+  store.upsertThreadSummary({ id: threadId, status: "idle", cwd: dir, turns: [{ id: "turn-1", status: "completed", items: [] }] });
+  store.setThreadExecutionContract(threadId, buildThreadExecutionContract({ threadId, workspaceCwd: dir, projectId: "project", projectLabel: "Project", branch: null, taskText: "Review the accepted turn.", notes: [] }));
+  store.recordWorkerReport(threadId, { turnId: "turn-1", status: "completed", summary: "First result.", details: null });
+
+  const results = await ensureButlerAdversarialReview({
+    watchdogs: new ActivityWatchdogService(),
+    store,
+    threadId,
+    model: { provider: "openai-codex", id: "gpt-5.5" } as never,
+    modelRegistry: {} as never,
+    piAuthPath: path.join(dir, "auth.json"),
+    thinkingLevel: "high",
+    expectedReportTurnId: "turn-1",
+    buildWorkspaceSnapshot: async () => "snapshot",
+    runReview: async () => {
+      store.recordWorkerReport(threadId, { turnId: "turn-2", status: "completed", summary: "Newer unrelated result.", details: null });
+      return { findings: [{ severity: "high", findingSummary: "stale finding", blocking: true, linkedClaimIds: [] }] };
+    }
+  });
+
+  assert.deepEqual(results, []);
+  assert.deepEqual(store.getThread(threadId)?.executionContract?.reviewResults ?? [], []);
 });

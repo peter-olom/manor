@@ -60,16 +60,26 @@ export async function postOperatorJobReply(access: OperatorJobReplyAccess, threa
     if (!callback || !isCallbackOutstanding(callback)) throw new Error(`Job ${threadId} does not have an outstanding operator reply obligation.`);
     const thread = access.store.getThread(threadId);
     if (!thread) throw new Error(`Job ${threadId} is no longer available.`);
+    const currentScopeId = access.store.getThreadJobPayload(threadId)?.protocol.currentScopeId ?? null;
+    if (callback.workSliceNodeId && callback.workSliceNodeId !== currentScopeId) {
+      throw new Error(`Job ${threadId} callback scope was superseded before closeout.`);
+    }
     const workerReport = access.store.getWorkerReport(threadId);
-    const relevantWorkerReport = relevantTerminalWorkerReport(thread, workerReport, callback.requestedAt);
+    const relevantWorkerReport = relevantTerminalWorkerReport(thread, workerReport, callback.requestedAt, callback.acceptedWorkerTurnId);
     const closeoutTurnId = relevantWorkerReport?.turnId ?? getFallbackTurnId(thread);
     if (!closeoutTurnId) throw new Error(`Job ${threadId} does not have a turn Butler can close against yet.`);
-    const closeoutId = buildCloseoutId(threadId, closeoutTurnId);
+    const closeoutId = buildCloseoutId(threadId, closeoutTurnId, callback.workSliceNodeId);
+    const legacyCloseoutId = buildCloseoutId(threadId, closeoutTurnId);
     const messageId = relevantWorkerReport ? `callback-${closeoutId}` : `callback-fallback-${closeoutId}`;
     const completedAt = relevantWorkerReport?.updatedAt ?? thread.updatedAt;
     const at = Math.min(completedAt, callback.requestedAt + 1);
     const resolutionState = relevantWorkerReport ? "received_worker_callback" : "recovered_from_thread_state";
-    const closeoutWasAlreadyPosted = access.deliveredCloseoutIds.has(closeoutId) || access.operatorMessages.some((message) => message.id === messageId);
+    const closeoutWasAlreadyPosted = access.deliveredCloseoutIds.has(closeoutId) || access.operatorMessages.some((message) => {
+      if (message.id === `callback-${closeoutId}` || message.id === `callback-fallback-${closeoutId}`) return true;
+      return Boolean(callback.workSliceNodeId) &&
+        (message.id === `callback-${legacyCloseoutId}` || message.id === `callback-fallback-${legacyCloseoutId}`) &&
+        typeof message.at === "number" && message.at >= callback.requestedAt;
+    });
     if (closeoutWasAlreadyPosted) {
       await rotateAcceptedBaseline(access, threadId, relevantWorkerReport?.status === "completed");
       access.deliveredCloseoutIds.add(closeoutId);

@@ -882,13 +882,13 @@ test("explicit checklist refresh creates missing review scope", async () => {
   assert.match(store.getThread(threadId)?.executionContract?.requestedTask ?? "", /Microsoft OAuth/);
 });
 
-test("system prompt advises focused checklist refresh for new work", async () => {
+test("system prompt requires an explicit review scope decision for Worker follow-ups", async () => {
   const store = await createStore();
   const prompt = buildSystemPrompt(store, "No callbacks.");
 
-  assert.match(prompt, /Use message_job with refreshChecklist/);
-  assert.match(prompt, /genuine new slice of work/);
-  assert.match(prompt, /pending or rejected items/);
+  assert.match(prompt, /Every message_job call must set reviewScope explicitly/);
+  assert.match(prompt, /genuine new operator work slice/);
+  assert.match(prompt, /pending or rejected/);
   assert.match(prompt, /complete resulting scope/);
   assert.match(prompt, /every criterion that should remain/);
   assert.match(prompt, /hold_job_context/);

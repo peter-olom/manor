@@ -58,7 +58,7 @@ Preview defaults:
   workspace-mode=snapshot
   runtime rule: the Worker shell supports normal development commands; use previews for clean runtimes, services, isolation, and browser proof
   uploaded inputs: read-only under /inputs in Worker and previews
-  derived outputs: write under /outputs/<jobId>, then run manor-harness input publish <path> --from <referenceId>
+  derived outputs: read the current payload and write under its exact workspace.outputDir, then run manor-harness input publish <path> --from <referenceId>
   preview commands start in the job worktree; prefer relative paths there or the contract cwd under /repos
   preview lifecycle is broker-managed; install, start, and debug the app explicitly with preview exec/logs/processes
   manor-harness preview inspect <previewSelector>

@@ -6,6 +6,7 @@ import type { ReferenceMutationQueue } from "./reference-mutation-queue.js";
 import { deriveReferenceMetadata } from "./reference-metadata.js";
 import type { ButlerStateStore } from "./state-store.js";
 import { normalizeString } from "./codex-harness-helpers.js";
+import { resolveDurableJobOutputDirectory } from "./job-output-manifest.js";
 
 export type HarnessInputActionAccess = {
   outputsDir: string;
@@ -108,7 +109,8 @@ export async function handleHarnessInputAction(input: {
   const payload = input.store.getThreadJobPayload(input.threadId);
   const grantedReferences = new Set([...(payload?.attachments.images ?? []), ...(payload?.attachments.files ?? [])]);
   if (!grantedReferences.has(sourceReferenceId)) throw new Error(`Source reference ${sourceReferenceId} is not granted to job ${input.threadId}`);
-  const jobOutputDir = path.resolve(input.outputsDir, input.threadId);
+  if (!payload) throw new Error(`No Manor job payload is stored for job ${input.threadId}`);
+  const jobOutputDir = resolveDurableJobOutputDirectory(payload, input.outputsDir);
   const realJobOutputDir = await fs.realpath(jobOutputDir).catch(() => "");
   const realOutputPath = await fs.realpath(outputPath).catch(() => "");
   if (!realJobOutputDir || !realOutputPath || (realOutputPath !== realJobOutputDir && !realOutputPath.startsWith(`${realJobOutputDir}${path.sep}`))) {

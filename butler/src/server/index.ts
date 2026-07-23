@@ -58,7 +58,7 @@ import { registerThreadArtifactRoutes } from "./thread-artifact-routes.js";
 import { deleteAllWorkerThreads, deleteWorkerThread, loadWorkerThread, sendWorkerMessage, stopWorkerThread, updateUnifiedWorkerCompose, updateWorkerThreadEffort } from "./worker-client-router.js";
 import { listComposerFileSuggestions } from "./composer-file-suggestions.js";
 import { validateWorkspaceCwd, WorkspaceCwdError } from "./repo-worktree.js";
-import { purgeNonPiWorkerArtifacts } from "./pi-only-cleanup.js";
+import { purgeNonPiWorkerArtifacts } from "./pi-only-cleanup.js"; import { restoreDurableJobPayloads } from "./job-payload-recovery.js";
 
 normalizeMemoryCodexModelEnv(process.env);
 
@@ -118,6 +118,7 @@ await Promise.all([
 ]);
 if (purgedLegacyWorkerIds.length > 0) await store.flushSave();
 await purgeNonPiWorkerArtifacts(artifactsDir, store.listThreads());
+const restoredJobPayloads = await restoreDurableJobPayloads({ artifactsDir, store }); if (restoredJobPayloads > 0) await store.flushSave();
 const pairStore = new PairStore(pairStatePath, store);
 await pairStore.load();
 let recoveredRetiredWorkers = false;
@@ -934,7 +935,7 @@ app.post("/api/threads/messages", async (request, response) => {
   try {
     await runSerializedJobMutation(threadId, async () => {
       const requestedAt = Date.now();
-      const directInput = { threadId, text, operatorRequestText: text, imageReferenceIds, fileReferenceIds, inputItems, requestedAt };
+      const directInput = { threadId, text, operatorRequestText: text, imageReferenceIds, fileReferenceIds, inputItems, requestedAt, scopeDisposition: "replace" as const };
       const reservation = await butlerAgent.reserveDirectCodexMessage(directInput);
       let sent = false;
       try {

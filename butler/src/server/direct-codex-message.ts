@@ -6,7 +6,7 @@ import { runSerializedCallbackReplacement } from "./butler-job-mutation-guard.js
 import type { JobPayloadKind } from "./job-instruction-artifacts.js";
 import type { JobPayloadView } from "./job-payload-types.js";
 import type { ButlerStateStore } from "./state-store.js";
-import type { ButlerMessageView, ButlerNextWorkerReportAction, CodexThreadExecutionContractView, SupervisionChecklistView } from "./types.js";
+import type { ButlerMessageView, ButlerNextWorkerReportAction, ButlerReviewScopeDisposition, CodexThreadExecutionContractView, SupervisionChecklistView } from "./types.js";
 import { workerMessageDispatchMayHaveBeenAccepted } from "./worker-client-router.js";
 
 export type DirectCodexMessagePingInput = {
@@ -18,6 +18,7 @@ export type DirectCodexMessagePingInput = {
   requestedAt?: number;
   callbackAlreadyRegistered?: boolean;
   nextWorkerReportAction?: ButlerNextWorkerReportAction;
+  scopeDisposition: ButlerReviewScopeDisposition;
 };
 
 type DirectMessageReviewScope = {
@@ -76,7 +77,7 @@ export type DirectCodexMessageAccess = {
   store: ButlerStateStore;
   registerPendingChatCallback(
     threadId: string,
-    options?: { privateSteerText?: string | null; operatorRequestText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null; dispatchState?: "ready" | "reserving" }
+    options?: { privateSteerText?: string | null; operatorRequestText?: string | null; nextWorkerReportAction?: ButlerNextWorkerReportAction; requestedAt?: number | null; dispatchState?: "ready" | "reserving"; scopeDisposition?: ButlerReviewScopeDisposition; workSliceNodeId?: string | null }
   ): Promise<void>;
   createOrUpdateJobPayload?(input: {
     threadId: string;
@@ -84,8 +85,10 @@ export type DirectCodexMessageAccess = {
     instruction: string;
     imageReferenceIds?: string[];
     fileReferenceIds?: string[];
+    replaceOutputScope?: boolean;
     onPrepared?: (payload: JobPayloadView) => void;
   }): Promise<JobPayloadView>;
+  bindPendingChatCallbackWorkSlice?(threadId: string, requestedAt: number, workSliceNodeId: string): Promise<void>;
   noteThreadFocus(threadId: string, reason?: string): void;
   saveCallbackState(): Promise<void>;
   emit(event: "change"): boolean;
@@ -104,7 +107,7 @@ function codexSessionThreadId(filePath: string): string | null {
 }
 
 function callbackTurnId(id: string): string | null {
-  return id.match(/^callback(?:-fallback)?-[^:]+:([^:]+)$/i)?.[1] ?? null;
+  return id.match(/^callback(?:-fallback)?-[^:]+:(?:[^:]+:)?([^:]+)$/i)?.[1] ?? null;
 }
 
 function directCodexMessageText(record: Record<string, unknown>): string | null {
@@ -330,6 +333,9 @@ export async function notifyDirectCodexMessage(
   input: DirectCodexMessagePingInput & { threadId: string },
   observer?: { onReviewScopeReplacement?: (replacement: { executionContract: CodexThreadExecutionContractView | null; supervisionChecklist: SupervisionChecklistView | null }) => void; onJobPayloadReplacement?: (payload: JobPayloadView) => void }
 ): Promise<{ executionContract: CodexThreadExecutionContractView | null; supervisionChecklist: SupervisionChecklistView | null } | null> {
+  if (input.scopeDisposition !== "preserve" && input.scopeDisposition !== "replace") {
+    throw new Error("Direct Worker messages require an explicit scopeDisposition of preserve or replace.");
+  }
   if (!access.store.getThread(input.threadId)) {
     throw new Error(`Job ${input.threadId} is not available for Butler notification.`);
   }
@@ -337,24 +343,33 @@ export async function notifyDirectCodexMessage(
   return runSerializedCallbackReplacement(input.threadId, async () => {
     const privateSteerText = buildDirectCodexMessagePingSummary(input);
     const requestedAt = typeof input.requestedAt === "number" && Number.isFinite(input.requestedAt) ? input.requestedAt : Date.now();
-    const refreshed = access.store.refreshCompletedSupervisionChecklistForFollowup(input.threadId, privateSteerText);
+    const scopeDisposition = input.scopeDisposition;
+    const refreshed = scopeDisposition === "replace"
+      ? access.store.refreshCompletedSupervisionChecklistForFollowup(input.threadId, privateSteerText, { force: true })
+      : null;
     const refreshedThread = refreshed ? access.store.getThread(input.threadId) : null;
     const reviewScopeReplacement = refreshed ? { executionContract: refreshedThread?.executionContract ? structuredClone(refreshedThread.executionContract) : null, supervisionChecklist: refreshedThread?.supervisionChecklist ? structuredClone(refreshedThread.supervisionChecklist) : null } : null;
     if (reviewScopeReplacement) observer?.onReviewScopeReplacement?.(reviewScopeReplacement);
-    await access.createOrUpdateJobPayload?.({
+    const payload = await access.createOrUpdateJobPayload?.({
       threadId: input.threadId,
       kind: "direct_message",
       instruction: privateSteerText,
       imageReferenceIds: input.imageReferenceIds,
       fileReferenceIds: input.fileReferenceIds,
+      replaceOutputScope: scopeDisposition === "replace",
       onPrepared: observer?.onJobPayloadReplacement
     });
+    if (payload && input.callbackAlreadyRegistered) {
+      await access.bindPendingChatCallbackWorkSlice?.(input.threadId, requestedAt, payload.protocol.currentScopeId);
+    }
     if (!input.callbackAlreadyRegistered) {
       await access.registerPendingChatCallback(input.threadId, {
         privateSteerText,
         operatorRequestText: input.operatorRequestText ?? input.text,
         nextWorkerReportAction: "review",
-        requestedAt
+        requestedAt,
+        scopeDisposition,
+        workSliceNodeId: payload?.protocol.currentScopeId ?? null
       });
     }
     access.noteThreadFocus(input.threadId, "direct_worker_message");

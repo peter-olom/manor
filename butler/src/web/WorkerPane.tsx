@@ -126,7 +126,9 @@ export type WorkerJobOutputManifestEntry = {
   threadId: string;
   projectId: string;
   attemptId: string;
+  scopeId: string;
   currentAttempt: boolean;
+  currentScope: boolean;
   sourceTurnId: string | null;
   referenceId: string;
   logicalPath: string | null;
@@ -147,8 +149,11 @@ export type WorkerJobOutputManifest = {
   jobId: string;
   projectId: string;
   currentAttemptId: string;
+  currentScopeId: string;
   attempt: number;
   entries: WorkerJobOutputManifestEntry[];
+  otherCurrentScopeEntries: WorkerJobOutputManifestEntry[];
+  historicalEntries: WorkerJobOutputManifestEntry[];
 };
 
 export type WorkerJobPayloadSnapshot = Pick<
@@ -488,60 +493,70 @@ function outputOutcome(entry: WorkerJobOutputManifestEntry): { label: string; cl
   return null;
 }
 
-export const WorkerJobOutputManifestPanel = memo(function WorkerJobOutputManifestPanel({
-  manifest
-}: {
-  manifest: WorkerJobOutputManifest | null;
-}) {
+function outputAttemptLabel(entry: WorkerJobOutputManifestEntry, currentAttemptId: string, currentAttempt: number): string {
+  if (entry.attemptId === currentAttemptId) return String(currentAttempt);
+  return entry.attemptId.match(/-(\d+)$/)?.[1] ?? shortId(entry.attemptId);
+}
+
+function WorkerOutputEntryList({ entries, attempt, currentAttemptId }: { entries: WorkerJobOutputManifestEntry[]; attempt: number; currentAttemptId: string }) {
+  const sorted = [...entries].sort((left, right) => left.createdAt - right.createdAt);
+  return <ol className="worker-output-manifest-list">
+    {sorted.map((entry) => {
+      const outcome = outputOutcome(entry);
+      return <li key={entry.id} className={`worker-output-manifest-entry${entry.available ? "" : " is-missing"}`}>
+        <div className="worker-output-manifest-entry-head">
+          <span className="worker-output-kind">{outputKindLabel(entry.kind)}</span>
+          <strong>{entry.title}</strong>
+          <span className={`worker-output-availability ${entry.kind === "proof" && entry.available ? "" : entry.available ? "is-available" : "is-missing"}`}>
+            {entry.kind === "proof" && entry.available ? "Record available" : entry.available ? "Available" : "Missing"}
+          </span>
+          <span className={`worker-output-integrity ${entry.kind !== "project_artifact" && entry.available ? "is-record" : `is-${entry.integrity}`}`}>{outputIntegrityLabel(entry)}</span>
+          {outcome ? <span className={`worker-output-outcome ${outcome.className}`}>{outcome.label}</span> : null}
+        </div>
+        <div className="worker-output-manifest-meta">
+          <span title={entry.referenceId}>Ref {shortId(entry.referenceId)}</span>
+          <span title={entry.attemptId}>Attempt {outputAttemptLabel(entry, currentAttemptId, attempt)}</span>
+          {entry.sourceTurnId ? <span title={entry.sourceTurnId}>Turn {shortId(entry.sourceTurnId)}</span> : null}
+          {entry.logicalPath ? <span title={entry.logicalPath}>{entry.logicalPath}</span> : entry.fileName ? <span title={entry.fileName}>{entry.fileName}</span> : null}
+          {entry.checksumSha256 ? <span title={`SHA-256 ${entry.checksumSha256}`}>sha256 {entry.checksumSha256.slice(0, 10)}</span> : null}
+          {entry.kind === "project_artifact" && entry.integrityCheckedAt ? (
+            <span title={new Date(entry.integrityCheckedAt).toISOString()}>Integrity checked {new Date(entry.integrityCheckedAt).toLocaleString()}</span>
+          ) : null}
+        </div>
+        {entry.available && (entry.openUrl || entry.downloadUrl) ? (
+          <div className="worker-output-manifest-actions">
+            {entry.openUrl ? <a href={entry.openUrl} target="_blank" rel="noreferrer" aria-label={`Open ${entry.title}`}>Open</a> : null}
+            {entry.downloadUrl ? <a href={entry.downloadUrl} download aria-label={`Download ${entry.title}`}>Download</a> : null}
+          </div>
+        ) : null}
+      </li>;
+    })}
+  </ol>;
+}
+
+export const WorkerJobOutputManifestPanel = memo(function WorkerJobOutputManifestPanel({ manifest }: { manifest: WorkerJobOutputManifest | null }) {
   if (!manifest) return null;
-  const entries = [...manifest.entries].sort((left, right) => left.createdAt - right.createdAt);
+  const entries = manifest.entries.filter((entry) => entry.currentScope !== false);
+  const otherEntries = (manifest.otherCurrentScopeEntries ?? []).filter((entry) => entry.currentScope !== false);
+  const historicalEntries = (manifest.historicalEntries ?? []).filter((entry) => !entry.currentScope);
   return (
-    <section className="worker-output-manifest" aria-label="Current Worker job outputs">
+    <section className="worker-output-manifest" aria-label="Current task outputs">
       <header className="worker-output-manifest-head">
         <div>
-          <h3>Job outputs</h3>
-          <p title={`Job ${manifest.jobId} · Project ${manifest.projectId} · ${manifest.currentAttemptId}`}>
+          <h3>Current task outputs</h3>
+          <p title={`Job ${manifest.jobId} · Project ${manifest.projectId} · ${manifest.currentAttemptId} · ${manifest.currentScopeId ?? "legacy scope"}`}>
             Job {shortId(manifest.jobId)} · Attempt {manifest.attempt}
           </p>
         </div>
         <span>{entries.length} output{entries.length === 1 ? "" : "s"}</span>
       </header>
       {entries.length === 0 ? (
-        <p className="worker-output-manifest-empty">No durable outputs registered yet.</p>
+        <p className="worker-output-manifest-empty">No outputs claimed by the current Worker report.</p>
       ) : (
-        <ol className="worker-output-manifest-list">
-          {entries.map((entry) => {
-            const outcome = outputOutcome(entry);
-            return <li key={entry.id} className={`worker-output-manifest-entry${entry.available ? "" : " is-missing"}`}>
-              <div className="worker-output-manifest-entry-head">
-                <span className="worker-output-kind">{outputKindLabel(entry.kind)}</span>
-                <strong>{entry.title}</strong>
-                <span className={`worker-output-availability ${entry.kind === "proof" && entry.available ? "" : entry.available ? "is-available" : "is-missing"}`}>
-                  {entry.kind === "proof" && entry.available ? "Record available" : entry.available ? "Available" : "Missing"}
-                </span>
-                <span className={`worker-output-integrity ${entry.kind !== "project_artifact" && entry.available ? "is-record" : `is-${entry.integrity}`}`}>{outputIntegrityLabel(entry)}</span>
-                {outcome ? <span className={`worker-output-outcome ${outcome.className}`}>{outcome.label}</span> : null}
-              </div>
-              <div className="worker-output-manifest-meta">
-                <span title={entry.referenceId}>Ref {shortId(entry.referenceId)}</span>
-                <span title={entry.attemptId}>Attempt {manifest.attempt}</span>
-                {entry.sourceTurnId ? <span title={entry.sourceTurnId}>Turn {shortId(entry.sourceTurnId)}</span> : null}
-                {entry.logicalPath ? <span title={entry.logicalPath}>{entry.logicalPath}</span> : entry.fileName ? <span title={entry.fileName}>{entry.fileName}</span> : null}
-                {entry.checksumSha256 ? <span title={`SHA-256 ${entry.checksumSha256}`}>sha256 {entry.checksumSha256.slice(0, 10)}</span> : null}
-                {entry.kind === "project_artifact" && entry.integrityCheckedAt ? (
-                  <span title={new Date(entry.integrityCheckedAt).toISOString()}>Integrity checked {new Date(entry.integrityCheckedAt).toLocaleString()}</span>
-                ) : null}
-              </div>
-              {entry.available && (entry.openUrl || entry.downloadUrl) ? (
-                <div className="worker-output-manifest-actions">
-                  {entry.openUrl ? <a href={entry.openUrl} target="_blank" rel="noreferrer" aria-label={`Open ${entry.title}`}>Open</a> : null}
-                  {entry.downloadUrl ? <a href={entry.downloadUrl} download aria-label={`Download ${entry.title}`}>Download</a> : null}
-                </div>
-              ) : null}
-            </li>;
-          })}
-        </ol>
+        <WorkerOutputEntryList entries={entries} attempt={manifest.attempt} currentAttemptId={manifest.currentAttemptId} />
       )}
+      {otherEntries.length > 0 ? <details className="worker-output-history"><summary>Other outputs from this task ({otherEntries.length})</summary><WorkerOutputEntryList entries={otherEntries} attempt={manifest.attempt} currentAttemptId={manifest.currentAttemptId} /></details> : null}
+      {historicalEntries.length > 0 ? <details className="worker-output-history"><summary>Earlier task outputs ({historicalEntries.length})</summary><WorkerOutputEntryList entries={historicalEntries} attempt={manifest.attempt} currentAttemptId={manifest.currentAttemptId} /></details> : null}
     </section>
   );
 });

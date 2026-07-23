@@ -9,6 +9,7 @@ import {
   shouldAllowLocalThreadFallback
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
+import type { ButlerReviewScopeDisposition } from "./types.js";
 import { stringEnumSchema } from "./butler-agent-tool-schemas.js";
 import { directWorkerDispatchMarker } from "./butler-callback-state.js";
 import { settleFailedDirectWorkerDispatch } from "./direct-codex-message.js";
@@ -26,7 +27,7 @@ export type ContinueWorkerJobParams = {
   text: string;
   imageReferenceIds?: string[];
   fileReferenceIds?: string[];
-  refreshChecklist?: boolean;
+  reviewScope: ButlerReviewScopeDisposition;
   nextWorkerReportAction?: "review" | "reply_to_operator";
 };
 
@@ -80,6 +81,9 @@ async function continueWorkerJobLocked(
   dispatchState: { accepted: boolean },
   reactivate: () => Promise<void>
 ) {
+  if (typedParams.reviewScope !== "preserve" && typedParams.reviewScope !== "replace") {
+    throw new Error("message_job requires an explicit reviewScope of preserve or replace.");
+  }
   const workerDefaults = access.getWorkerDefaults?.();
   const attachedWorkerThreadId = workerDefaults?.threadId;
   if (workerDefaults && attachedWorkerThreadId !== undefined && attachedWorkerThreadId !== typedParams.threadId) {
@@ -129,6 +133,7 @@ async function continueWorkerJobLocked(
   const fileReferenceIds = [...new Set([...(activeReferences?.fileReferenceIds ?? []), ...(typedParams.fileReferenceIds ?? [])])];
   const requestedAt = Date.now();
   const nextWorkerReportAction = typedParams.nextWorkerReportAction ?? "review";
+  const reviewScope = typedParams.reviewScope;
 
   await reactivate();
   const reservation = await access.reserveDirectCodexMessage({
@@ -136,7 +141,8 @@ async function continueWorkerJobLocked(
     text: typedParams.text,
     operatorRequestText: activeGuard?.operatorRequestText ?? null,
     requestedAt,
-    nextWorkerReportAction
+    nextWorkerReportAction,
+    scopeDisposition: reviewScope
   });
   let sent = false;
   let reviewedDispatchCounted = false;
@@ -149,11 +155,9 @@ async function continueWorkerJobLocked(
     return supervision;
   };
   try {
-    const refreshedChecklist = access.store.refreshCompletedSupervisionChecklistForFollowup(
-      typedParams.threadId,
-      typedParams.text,
-      { force: typedParams.refreshChecklist === true }
-    );
+    const refreshedChecklist = reviewScope === "replace"
+      ? access.store.refreshCompletedSupervisionChecklistForFollowup(typedParams.threadId, typedParams.text, { force: true })
+      : null;
     if (refreshedChecklist) {
       const refreshedThread = access.store.getThread(typedParams.threadId);
       reservation.reviewScopeReplacement = { executionContract: refreshedThread?.executionContract ? structuredClone(refreshedThread.executionContract) : null, supervisionChecklist: refreshedThread?.supervisionChecklist ? structuredClone(refreshedThread.supervisionChecklist) : null };
@@ -164,8 +168,10 @@ async function continueWorkerJobLocked(
       instruction: typedParams.text,
       imageReferenceIds,
       fileReferenceIds,
+      replaceOutputScope: reviewScope === "replace",
       onPrepared: (prepared) => { reservation.jobPayloadReplacement = structuredClone(prepared); }
     });
+    await access.bindPendingChatCallbackWorkSlice?.(typedParams.threadId, requestedAt, payload.protocol.currentScopeId);
     assertCallbackReviewCurrent(typedParams.threadId);
     const workerInput = buildWorkerInputWithReferences({
       text: formatJobPayloadMessage("steering", payload.threadId, payload.workerDirective, payload.display.summary),
@@ -749,7 +755,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
         }
         await loadWorkerThread(access, typedParams.threadId);
         const requestedAt = Date.now();
-        const reservation = await access.reserveDirectCodexMessage({ threadId: typedParams.threadId, text, requestedAt });
+        const reservation = await access.reserveDirectCodexMessage({ threadId: typedParams.threadId, text, requestedAt, scopeDisposition: "preserve" });
         let sent = false;
         let reviewedDispatchCounted = false;
         let supervision = access.store.getThreadSupervision(typedParams.threadId);
@@ -843,7 +849,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
         text: Type.String({ minLength: 1 }),
         imageReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
         fileReferenceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-        refreshChecklist: Type.Optional(Type.Boolean({ description: "Replace the current review contract for a genuine new work slice or material scope/acceptance change, including when existing points are pending or rejected. When true, text must state the complete resulting scope, including every criterion that should remain." })),
+        reviewScope: stringEnumSchema(["replace", "preserve"] as const, { description: "Required task-scope decision. Use replace for a new operator work slice, even when older points are pending or rejected. Use preserve only for rework or clarification within the current acceptance scope." }),
         nextWorkerReportAction: Type.Optional(stringEnumSchema(["review", "reply_to_operator"] as const))
       }),
       uiEffects: access.getToolUiEffects("message_job"),
@@ -897,7 +903,8 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       execute: async (_toolCallId, params) => {
         const typedParams = params as { threadId: string };
         const stopped = await stopWorkerThread(access, typedParams.threadId);
-        await access.removeExternalWorkerDelegation?.(typedParams.threadId);
+        if (!access.closeExternalWorkerDelegation) throw new Error("Worker stop supervision is unavailable.");
+        await access.closeExternalWorkerDelegation(typedParams.threadId);
         access.store.addEvent(typedParams.threadId, "butler.worker.stopped_by_operator", stopped ? "Stopped at the operator's request." : "The operator requested a stop after the Worker was already idle.");
         await access.store.flushSave();
         return {
