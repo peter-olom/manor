@@ -217,6 +217,23 @@ function reportCloseoutMessageId(threadId: string, turnId: string): string {
   return `callback-${threadId}:${turnId}`;
 }
 
+function closeoutTurnIndex(
+  messageId: string,
+  prefix: string,
+  thread: ReturnType<ButlerStateStore["getThread"]>
+): number {
+  if (!messageId.startsWith(prefix)) return -1;
+  const suffix = messageId.slice(prefix.length);
+  return thread?.turns.findIndex((turn) => suffix === turn.id || suffix.endsWith(`:${turn.id}`)) ?? -1;
+}
+
+function closeoutCompletedAt(message: PairMessage): number {
+  return Math.max(
+    message.at,
+    ...(message.trace ?? []).map((item) => item.completedAt ?? item.at ?? 0)
+  );
+}
+
 function reviewedReportIdentity(
   pair: PairChat,
   store: ButlerStateStore,
@@ -229,18 +246,19 @@ function reviewedReportIdentity(
   if (!report || report.status !== "completed") {
     return null;
   }
-  if (message.id === reportCloseoutMessageId(report.threadId, report.turnId)) {
+  const thread = store.getThread(report.threadId);
+  const reportTurnIndex = thread?.turns.findIndex((turn) => turn.id === report.turnId) ?? -1;
+  const callbackTurnIndex = closeoutTurnIndex(message.id, `callback-${report.threadId}:`, thread);
+  if (message.id === reportCloseoutMessageId(report.threadId, report.turnId) ||
+      (callbackTurnIndex >= 0 && callbackTurnIndex === reportTurnIndex)) {
     return { turnId: report.turnId, updatedAt: report.updatedAt };
   }
 
   const fallbackPrefix = `callback-fallback-${report.threadId}:`;
-  if (!message.id.startsWith(fallbackPrefix) || message.at < report.updatedAt) {
+  if (!message.id.startsWith(fallbackPrefix) || closeoutCompletedAt(message) < report.updatedAt) {
     return null;
   }
-  const fallbackTurnId = message.id.slice(fallbackPrefix.length);
-  const thread = store.getThread(report.threadId);
-  const reportTurnIndex = thread?.turns.findIndex((turn) => turn.id === report.turnId) ?? -1;
-  const fallbackTurnIndex = thread?.turns.findIndex((turn) => turn.id === fallbackTurnId) ?? -1;
+  const fallbackTurnIndex = closeoutTurnIndex(message.id, fallbackPrefix, thread);
   return reportTurnIndex >= 0 && fallbackTurnIndex >= reportTurnIndex
     ? { turnId: report.turnId, updatedAt: report.updatedAt }
     : null;

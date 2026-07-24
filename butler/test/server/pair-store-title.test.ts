@@ -528,7 +528,7 @@ test("completed worker report returns to idle after Butler posts the callback", 
   const reviewed = pairStore.updatePairSnapshot(created.id, {
     butlerPending: false,
     lastMessage: {
-      id: "callback-thread-done:turn-done",
+      id: "callback-thread-done:node-current-scope:turn-done",
       role: "butler",
       lane: "butler",
       text: "Done.",
@@ -591,14 +591,23 @@ test("thread-recovery closeout marks the stored worker report reviewed", async (
   const recovered = pairStore.updatePairSnapshot(created.id, {
     butlerPending: false,
     lastMessage: {
-      id: "callback-fallback-thread-recovered:turn-recovered",
+      id: "callback-fallback-thread-recovered:node-current-scope:turn-recovered",
       role: "butler",
       lane: "butler",
       text: "Recovered from the latest Worker response.",
-      at: report.updatedAt + 1,
+      at: report.updatedAt - 1,
       sourceThreadId: null,
       memoryObservationId: null,
-      metadata: {}
+      metadata: {},
+      trace: [{
+        id: `review-complete-${report.updatedAt + 1}`,
+        type: "reasoning",
+        status: "completed",
+        title: "Adversarial review",
+        text: "Completed attempt 1.",
+        at: report.updatedAt - 1,
+        completedAt: report.updatedAt + 1
+      }]
     },
     updatedAt: report.updatedAt + 1
   });
