@@ -1094,6 +1094,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
             modelProvider: review.modelProvider
           };
           persistedProofReview = access.store.recordPreviewProofReview(proof.proofRecordId, reviewRecord)?.proofReviews.at(-1) ?? reviewRecord;
+          if (typedParams.threadId) access.store.addProofReviewFinding(typedParams.threadId, proof.verification.runId, reviewVerdict, reviewConcern);
         }
 
         const availableArtifactCount = proof.artifacts.length;

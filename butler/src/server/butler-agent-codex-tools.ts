@@ -10,6 +10,7 @@ import {
 } from "./butler-agent-helpers.js";
 import type { ButlerAgentToolAccess, ButlerCustomTool } from "./butler-agent-tool-access.js";
 import type { ButlerReviewScopeDisposition } from "./types.js";
+import type { ReviewFinding, ReviewRecord } from "./orchestration-types.js";
 import { stringEnumSchema } from "./butler-agent-tool-schemas.js";
 import { directWorkerDispatchMarker } from "./butler-callback-state.js";
 import { settleFailedDirectWorkerDispatch } from "./direct-codex-message.js";
@@ -683,6 +684,42 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
         };
         assertCallbackReviewCurrent(typedParams.threadId);
         const checklist = access.store.reviewAcceptancePoints({ threadId: typedParams.threadId, decisions: typedParams.decisions });
+
+        // Dual-write: also record findings in the canonical ReviewRecord
+        const report = access.store.getWorkerReport(typedParams.threadId);
+        const payload = access.store.getThreadJobPayload(typedParams.threadId);
+        if (report) {
+          const now = Date.now();
+          const findings: ReviewFinding[] = typedParams.decisions.map((d) => ({
+            id: `butler-${d.pointId}-${now}`,
+            severity: d.status === "rejected" ? "high" : "info",
+            summary: `${d.status}: ${d.note ?? ""}`.trim(),
+            blocking: d.status === "rejected",
+            waived: d.status === "waived",
+            waiverReason: d.status === "waived" ? (d.note ?? "Butler waived this point.") : null,
+            source: "butler_review" as const,
+            proofRunId: null,
+            checklistItemId: d.pointId,
+            createdAt: now
+          }));
+          const blockingCount = findings.filter((f) => f.blocking).length;
+          const reviewRecord: ReviewRecord = {
+            id: `butler-${typedParams.threadId}-${report.turnId}-${now}`,
+            threadId: typedParams.threadId,
+            attemptId: typedParams.threadId,
+            scopeId: payload?.protocol.currentScopeId ?? report.turnId,
+            reportUpdatedAt: report.updatedAt,
+            outputManifestHash: null,
+            state: blockingCount > 0 ? "rejected" : "accepted",
+            findings,
+            workerInstruction: blockingCount > 0 ? (typedParams.decisions.find((d) => d.status === "rejected")?.nextInstruction ?? "Fix rejected acceptance points.") : null,
+            reviewedAt: now,
+            createdAt: now,
+            updatedAt: now
+          };
+          access.store.upsertReviewRecord(typedParams.threadId, reviewRecord);
+        }
+
         return {
           content: [{ type: "text", text: `Recorded ${typedParams.decisions.length} acceptance-point decisions. Checklist is ${checklist.reviewState}.` }],
           details: { checklist }
@@ -718,6 +755,25 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
           waiverReason: `Butler disproved this finding: ${evidence}`,
           updatedAt: Date.now()
         }]);
+
+        // Dual-write: update the canonical ReviewRecord finding as waived
+        const latestReview = access.store.getLatestReviewRecord(typedParams.threadId);
+        if (latestReview) {
+          const updatedFindings = latestReview.findings.map((f) =>
+            f.id === typedParams.findingId
+              ? { ...f, waived: true, waiverReason: `Butler disproved this finding: ${evidence}` }
+              : f
+          );
+          const stillBlocking = updatedFindings.some((f) => f.blocking && !f.waived);
+          access.store.upsertReviewRecord(typedParams.threadId, {
+            ...latestReview,
+            findings: updatedFindings,
+            state: stillBlocking ? "rejected" : "accepted",
+            workerInstruction: stillBlocking ? latestReview.workerInstruction : null,
+            updatedAt: Date.now()
+          });
+        }
+
         access.store.addEvent(typedParams.threadId, "butler.adversarial_review.disproved", `Butler disproved review finding ${finding.id}: ${evidence}`);
         return {
           content: [{ type: "text", text: `Review finding ${finding.id} marked disproved from stronger evidence.` }],

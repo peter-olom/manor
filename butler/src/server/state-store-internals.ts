@@ -61,7 +61,7 @@ import type {
   RuntimeCleanupTaskView,
   ServiceLeaseView,
   StackLeaseView,
-  SupervisionChecklistView
+  SupervisionChecklistView, ReviewRecord
 } from "./types.js";
 async function atomicWriteText(filePath: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -85,7 +85,7 @@ export type StateStoreInternalAccess = {
   persistedSupervisionByThreadId: Map<string, { butlerTurnsUsed: number; maxButlerTurns: number | null }>;
   persistedWorkerReportsByThreadId: Map<string, CodexWorkerReportView[]>;
   persistedExecutionContractsByThreadId: Map<string, CodexThreadExecutionContractView>;
-  persistedSupervisionChecklistsByThreadId: Map<string, SupervisionChecklistView>;
+  persistedSupervisionChecklistsByThreadId: Map<string, SupervisionChecklistView>; persistedReviewRecordsByThreadId: Map<string, ReviewRecord[]>;
   persistedJobMemoriesByThreadId: Map<string, JobMemoryView>;
   persistedProjectMemoriesByProjectId: Map<string, ProjectMemoryView>;
   persistedButlerMemoryEntries: ButlerMemoryEntryView[];
@@ -118,7 +118,6 @@ export type StateStoreInternalAccess = {
   primeThreadMilestones(threadId: string): void;
   emit(event: "change"): boolean;
 };
-
 function normalizeMemoryObservationSourceKind(value: unknown): MemoryObservationView["sourceKind"] {
   return value === "operator_message" ||
     value === "thread_created" ||
@@ -139,7 +138,6 @@ function normalizeMemoryObservationSourceKind(value: unknown): MemoryObservation
     ? value
     : "system";
 }
-
 function normalizeMemoryEntityType(value: unknown): MemoryEntityView["type"] {
   return value === "agent" ||
     value === "artifact" ||
@@ -158,7 +156,6 @@ function normalizeMemoryEntityType(value: unknown): MemoryEntityView["type"] {
     ? value
     : "unknown";
 }
-
 function normalizeMemoryEmbedding(value: unknown): MemoryEmbeddingView | null {
   const entry = value && typeof value === "object" ? value as Partial<MemoryEmbeddingView> : null;
   if (!entry || typeof entry.sourceId !== "string" || typeof entry.sourceTextHash !== "string" || typeof entry.model !== "string" || typeof entry.vectorBase64 !== "string") {
@@ -184,7 +181,6 @@ function normalizeMemoryEmbedding(value: unknown): MemoryEmbeddingView | null {
     embeddedAt: typeof entry.embeddedAt === "number" && Number.isFinite(entry.embeddedAt) ? entry.embeddedAt : Date.now()
   };
 }
-
 function normalizeMemoryTaskStatus(value: unknown): MemoryTaskView["status"] {
   return value === "queued" ||
     value === "in_progress" ||
@@ -197,7 +193,6 @@ function normalizeMemoryTaskStatus(value: unknown): MemoryTaskView["status"] {
     ? value
     : "unknown";
 }
-
 function normalizeMemorySynthesisQueueStatus(value: unknown): MemorySynthesisQueueEntryView["status"] {
   return value === "running" || value === "completed" || value === "failed" || value === "skipped" ? value : "pending";
 }
@@ -716,7 +711,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedSupervisionByThreadId.clear();
     access.persistedWorkerReportsByThreadId.clear();
     access.persistedExecutionContractsByThreadId.clear();
-    access.persistedSupervisionChecklistsByThreadId.clear();
+    access.persistedSupervisionChecklistsByThreadId.clear(); access.persistedReviewRecordsByThreadId.clear();
     access.persistedJobMemoriesByThreadId.clear();
     access.persistedProjectMemoriesByProjectId.clear();
     access.persistedButlerMemoryEntries.splice(0, access.persistedButlerMemoryEntries.length);
@@ -791,6 +786,9 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
       ) {
         access.persistedSupervisionChecklistsByThreadId.set(threadId, normalizeSupervisionChecklist(checklist));
       }
+    }
+    for (const [tid, recs] of Object.entries(data.reviewRecordsByThreadId ?? {})) {
+      if (Array.isArray(recs)) access.persistedReviewRecordsByThreadId.set(tid, recs as ReviewRecord[]);
     }
     for (const [threadId, memory] of Object.entries(data.jobMemoriesByThreadId ?? {})) {
       if (!memory || typeof memory !== "object" || typeof memory.threadId !== "string") {
@@ -1213,7 +1211,7 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
     access.persistedSupervisionByThreadId.clear();
     access.persistedWorkerReportsByThreadId.clear();
     access.persistedExecutionContractsByThreadId.clear();
-    access.persistedSupervisionChecklistsByThreadId.clear();
+    access.persistedSupervisionChecklistsByThreadId.clear(); access.persistedReviewRecordsByThreadId.clear();
     access.persistedJobMemoriesByThreadId.clear();
     access.persistedProjectMemoriesByProjectId.clear();
     access.persistedButlerMemoryEntries.splice(0, access.persistedButlerMemoryEntries.length);
@@ -1245,11 +1243,12 @@ async function persistStateStoreSnapshot(access: StateStoreInternalAccess): Prom
     serviceLeases: [...access.serviceLeases.values()].sort((left, right) => right.updatedAt - left.updatedAt),
     runtimeCleanupTasks: [...access.runtimeCleanupTasks.values()].sort((left, right) => left.nextAttemptAt - right.nextAttemptAt),
     workerReportsByThreadId: Object.fromEntries([...access.persistedWorkerReportsByThreadId.entries()].map(([threadId, reports]) => [threadId, reports])),
-    supervisionByThreadId: Object.fromEntries([...access.persistedSupervisionByThreadId.entries()].map(([threadId, policy]) => [threadId, { butlerTurnsUsed: policy.butlerTurnsUsed, maxButlerTurns: policy.maxButlerTurns }])),
-    executionContractsByThreadId: Object.fromEntries([...access.persistedExecutionContractsByThreadId.entries()].map(([threadId, contract]) => [threadId, contract])),
-    supervisionChecklistsByThreadId: Object.fromEntries([...access.persistedSupervisionChecklistsByThreadId.entries()].map(([threadId, checklist]) => [threadId, checklist])),
-    jobMemoriesByThreadId: Object.fromEntries([...access.persistedJobMemoriesByThreadId.entries()].map(([threadId, memory]) => [threadId, memory])),
-    projectMemoriesByProjectId: Object.fromEntries([...access.persistedProjectMemoriesByProjectId.entries()].map(([projectId, memory]) => [projectId, memory])),
+    supervisionByThreadId: Object.fromEntries([...access.persistedSupervisionByThreadId.entries()].map(([tid, p]) => [tid, { butlerTurnsUsed: p.butlerTurnsUsed, maxButlerTurns: p.maxButlerTurns }])),
+    executionContractsByThreadId: Object.fromEntries([...access.persistedExecutionContractsByThreadId.entries()].map(([tid, c]) => [tid, c])),
+    supervisionChecklistsByThreadId: Object.fromEntries([...access.persistedSupervisionChecklistsByThreadId.entries()].map(([tid, cl]) => [tid, cl])),
+    reviewRecordsByThreadId: Object.fromEntries([...access.persistedReviewRecordsByThreadId.entries()].map(([tid, recs]) => [tid, recs])),
+    jobMemoriesByThreadId: Object.fromEntries([...access.persistedJobMemoriesByThreadId.entries()].map(([tid, m]) => [tid, m])),
+    projectMemoriesByProjectId: Object.fromEntries([...access.persistedProjectMemoriesByProjectId.entries()].map(([pid, m]) => [pid, m])),
     butlerMemoryEntries: access.persistedButlerMemoryEntries,
     memoryEmbeddings: [...access.persistedMemoryEmbeddingsById.values()],
     memoryGraph: {
@@ -1260,8 +1259,8 @@ async function persistStateStoreSnapshot(access: StateStoreInternalAccess): Prom
       taskEvents: access.persistedMemoryTaskEvents,
       synthesisQueue: [...access.persistedMemorySynthesisQueueById.values()]
     },
-    projectArtifactsByProjectId: Object.fromEntries([...access.persistedProjectArtifactsByProjectId.entries()].map(([projectId, artifacts]) => [projectId, artifacts])),
-    projectPoliciesByProjectId: Object.fromEntries([...access.persistedProjectPoliciesByProjectId.entries()].map(([projectId, policies]) => [projectId, policies]))
+    projectArtifactsByProjectId: Object.fromEntries([...access.persistedProjectArtifactsByProjectId.entries()].map(([pid, arts]) => [pid, arts])),
+    projectPoliciesByProjectId: Object.fromEntries([...access.persistedProjectPoliciesByProjectId.entries()].map(([pid, pols]) => [pid, pols]))
   };
   await atomicWriteText(access.uiStatePath, JSON.stringify(payload, null, 2));
   await persistStateStoreSqliteMemory(access);
@@ -1420,7 +1419,7 @@ export function getOrCreateStateStoreThread(access: StateStoreInternalAccess, id
     turns: [],
     eventLog: [],
     milestones: [],
-    workerReport: null
+    workerReport: null, reviewRecords: []
   };
   const persisted = access.persistedSupervisionByThreadId.get(id);
   if (persisted) {
@@ -1467,6 +1466,8 @@ export function getOrCreateStateStoreThread(access: StateStoreInternalAccess, id
       updatedAt: now
     };
   }
+  const persistedReviewRecords = access.persistedReviewRecordsByThreadId.get(id);
+  if (persistedReviewRecords) created.reviewRecords = persistedReviewRecords.map((r) => ({ ...r, findings: r.findings.map((f) => ({ ...f })) }));
   const persistedJobMemory = access.persistedJobMemoriesByThreadId.get(id);
   if (persistedJobMemory) {
     created.jobMemory = { ...persistedJobMemory };

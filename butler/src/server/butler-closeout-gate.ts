@@ -32,6 +32,19 @@ export function getOperatorCloseoutBlocker(
   if (orchestrationBlocker) {
     return orchestrationBlocker;
   }
+  // Canonical review record check (additive — does not replace existing checks)
+  if (workerReport?.status === "completed") {
+    const latestReview = store.getLatestReviewRecord(threadId);
+    if (latestReview && latestReview.reportUpdatedAt === (workerReport.updatedAt ?? 0)) {
+      if (latestReview.state === "rejected") {
+        return latestReview.workerInstruction ?? "Butler rejected the latest review.";
+      }
+      if (latestReview.state === "queued" || latestReview.state === "running") {
+        return "Butler review is still pending.";
+      }
+    }
+  }
+
   if (workerReport?.status === "completed" && contractRequiresVisualProof(thread?.executionContract)) {
     const referencedRunIds = [...new Set(workerReport.evidence.map((entry) => entry.proofRunId).filter((id): id is string => Boolean(id)))];
     if (referencedRunIds.length === 0) return "Completed UI closeout requires referenced visual proof.";

@@ -1,6 +1,6 @@
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
 import type { ManorRestartRequestView } from "../shared/manor-restart.js";
-import type { ButlerRoutingDecisionView, ReviewPanelRunView, ReviewPanelSummaryView, WorkerClaimsReportView, WorkerReviewResultRecordView } from "./orchestration-types.js";
+import type { ButlerRoutingDecisionView, ReviewFinding, ReviewPanelRunView, ReviewPanelSummaryView, ReviewRecord, WorkerClaimsReportView, WorkerReviewResultRecordView } from "./orchestration-types.js";
 import type { ButlerMemoryEntryView, MemoryEmbeddingView, MemoryRetrievalCandidateView } from "./memory-types.js";
 export type { ButlerMemoryEntryView, ButlerMemoryReviewState, ButlerMemoryScopeKind, ButlerMemoryType, MemoryEmbeddingView, MemoryRetrievalCandidateView } from "./memory-types.js";
 export type {
@@ -20,7 +20,8 @@ export type {
   WorkerClaimView,
   WorkerReviewResultRecordView,
   WorkerReviewSeverity,
-  WorkerSubAgentSummaryView
+  WorkerSubAgentSummaryView,
+  ReviewFinding, ReviewRecord
 } from "./orchestration-types.js";
 export type { ManorRestartRequestView } from "../shared/manor-restart.js";
 export type CodexThreadStatus = "active" | "idle" | "unknown"; export type CodexProofExpectation = "none" | "requested";
@@ -89,7 +90,6 @@ export interface MissionContractView {
   operatorQuestionPolicy: string;
   blockedConditions: string[];
 }
-
 export interface CodexThreadExecutionContractView {
   threadId: string;
   workspaceCwd: string | null;
@@ -1126,6 +1126,7 @@ export interface CodexThreadRecord extends CodexThreadSummary {
   eventLog: CodexEventEntry[];
   milestones: CodexMilestoneEntry[];
   workerReport: CodexWorkerReportView | null;
+  reviewRecords: ReviewRecord[];
 }
 
 export interface CodexItemView {
@@ -1152,6 +1153,7 @@ export interface CodexThreadDetailView extends CodexThreadSummary {
   eventLog: CodexEventEntry[];
   workerReport: CodexWorkerReportView | null;
   workerReports?: CodexWorkerReportView[];
+  reviewRecords?: ReviewRecord[];
 }
 
 export interface ButlerWindow {
@@ -1488,6 +1490,7 @@ export interface PersistedUiState {
   executionContractsByThreadId?: Record<string, CodexThreadExecutionContractView>;
   jobMemoriesByThreadId?: Record<string, JobMemoryView>;
   supervisionChecklistsByThreadId?: Record<string, SupervisionChecklistView>;
+  reviewRecordsByThreadId?: Record<string, ReviewRecord[]>;
   projectMemoriesByProjectId?: Record<string, ProjectMemoryView>;
   butlerMemoryEntries?: ButlerMemoryEntryView[];
   memoryEmbeddings?: MemoryEmbeddingView[];

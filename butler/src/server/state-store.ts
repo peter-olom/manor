@@ -67,6 +67,7 @@ import { enqueueStateStoreMemorySynthesis, listDueStateStoreMemorySynthesis, lis
 import { listStateStoreDesktopSessions, removeStateStoreDesktopSession, replaceStateStoreDesktopSessions, upsertStateStoreDesktopSession } from "./state-store-desktop.js";
 import { buildStateStoreRuntimeSnapshot, buildStateStoreShellSnapshot, buildStateStoreSnapshot } from "./state-store-snapshot.js";
 import { listStateStoreWorkerReports, recordStateStoreWorkerReport, recordStateStoreWorkerReviewPeerContext, recordStateStoreWorkerReviewResults, replaceStateStoreWorkerReviewBaseline, type WorkerReviewBaselineState } from "./state-store-worker-reports.js";
+import { upsertStateStoreReviewRecord, getLatestStateStoreReviewRecord, rejectStaleStateStoreReviewRecords, addProofReviewFindingToLatestRecord } from "./state-store-review-records.js";
 import { removeStateStoreThreadDurably } from "./state-store-thread-deletion.js";
 import { recordReviewPanelVerdict as applyReviewPanelVerdict } from "./review-panel.js";
 import type {
@@ -90,6 +91,7 @@ import type {
   MemoryRelationshipView, MemorySynthesisPriority, MemorySynthesisQueueEntryView, MemoryTaskStatus,
   ProjectMemoryView, ProjectArtifactView, ProjectPolicyView, ReasoningEffort, RuntimeCleanupTaskView, RuntimeSnapshot,
   StackLeaseView, ServiceLeaseView, SupervisionChecklistItemStatus, SupervisionChecklistView, PersistedUiState, ReviewPanelRole, ReviewPanelVerdict,
+  ReviewRecord, ReviewFinding,
   WorkerClaimsReportView, WorkerReviewResultRecordView
 } from "./types.js";
 type JobMemoryWriteContext = { projectId?: string | null; projectLabel?: string | null; operatorGoal?: string | null; requestedTask?: string | null; proofRequirements?: string[] };
@@ -125,7 +127,7 @@ export class ButlerStateStore extends EventEmitter {
   private readonly leaseReapGraceMs: number;
   private readonly artifactRetentionMs: number;
   private readonly persistedExecutionContractsByThreadId = new Map<string, CodexThreadExecutionContractView>();
-  private readonly persistedSupervisionChecklistsByThreadId = new Map<string, SupervisionChecklistView>();
+  private readonly persistedSupervisionChecklistsByThreadId = new Map<string, SupervisionChecklistView>(); private readonly persistedReviewRecordsByThreadId = new Map<string, ReviewRecord[]>();
   private readonly persistedJobMemoriesByThreadId = new Map<string, JobMemoryView>();
   private readonly persistedProjectMemoriesByProjectId = new Map<string, ProjectMemoryView>();
   private readonly persistedButlerMemoryEntries: ButlerMemoryEntryView[] = [];
@@ -180,19 +182,12 @@ export class ButlerStateStore extends EventEmitter {
   }
   private upsertPreviewProofRecord(record: PreviewProofRecordView, options?: { emitChange?: boolean }): PreviewProofRecordView { return upsertStateStorePreviewProofRecord(this.getInternalAccess(), record, options); }
   private recordPreviewProofFromLease(lease: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId" | "lastVerification">, options?: { emitChange?: boolean }): PreviewProofRecordView | null { return recordStateStorePreviewProofFromLease(this.getInternalAccess(), lease, options); }
-
   private updateArtifactAvailability(filePath: string, mutate: (artifact: PreviewVerificationArtifactView) => PreviewVerificationArtifactView): boolean { return updateStateStoreArtifactAvailability(this.getInternalAccess(), filePath, mutate); }
-
   async load(): Promise<void> { await loadStateStore(this.getInternalAccess()); }
-
   private queueSave(): void { queueStateStoreSave(this.getInternalAccess()); }
-
   private emitChange(): void { emitStateStoreChange(this.getInternalAccess()); }
-
   setMemoryUpdateObserver(observer: StoreMemoryUpdateObserver | null): void { this.memoryUpdateObserver = observer; }
-
   private restorePersistedThread(thread: CodexThreadDetailView): void { restorePersistedStateStoreThread(this.getInternalAccess(), thread); }
-
   markThreadInventoryReady(): void {
     this.threadInventoryReady = true;
     if (this.reconcileThreadWindows()) {
@@ -939,7 +934,7 @@ export class ButlerStateStore extends EventEmitter {
         supervision: thread.supervision,
         supervisor: thread.supervisor,
         executionContract: thread.executionContract,
-        supervisionChecklist: thread.supervisionChecklist,
+        supervisionChecklist: thread.supervisionChecklist, reviewRecords: thread.reviewRecords,
         jobPayload: thread.jobPayload,
         jobMemory: thread.jobMemory
       }))
@@ -996,7 +991,7 @@ export class ButlerStateStore extends EventEmitter {
       supervision: thread.supervision,
       supervisor: thread.supervisor,
       executionContract: thread.executionContract,
-      supervisionChecklist: thread.supervisionChecklist,
+      supervisionChecklist: thread.supervisionChecklist, reviewRecords: thread.reviewRecords,
       jobPayload: thread.jobPayload,
       jobMemory: thread.jobMemory,
       turns: thread.turns.map((turn) => this.toTurnView(turn)),
@@ -1055,6 +1050,11 @@ export class ButlerStateStore extends EventEmitter {
   recordWorkerReviewResults(threadId: string, results: WorkerReviewResultRecordView[], expectedReport?: { turnId: string; reportUpdatedAt: number }): CodexThreadExecutionContractView | null { const contract = recordStateStoreWorkerReviewResults(this.getInternalAccess(), threadId, results, expectedReport); if (contract) this.addEvent(threadId, "butler.adversarial_review.recorded", `Recorded ${results.length} adversarial review finding${results.length === 1 ? "" : "s"}.`); return contract; }
   recordWorkerReviewPeerContext(threadId: string, context: NonNullable<CodexThreadExecutionContractView["reviewPeerContexts"]>[number]): void { recordStateStoreWorkerReviewPeerContext(this.getInternalAccess(), threadId, context); }
   replaceWorkerReviewBaseline(threadId: string, baseline: WorkerReviewBaselineState): void { replaceStateStoreWorkerReviewBaseline(this.getInternalAccess(), threadId, baseline); }
+
+  upsertReviewRecord(threadId: string, record: ReviewRecord): ReviewRecord { return upsertStateStoreReviewRecord(this.getInternalAccess(), threadId, record); }
+  getLatestReviewRecord(threadId: string): ReviewRecord | null { return getLatestStateStoreReviewRecord(this.getInternalAccess(), threadId); }
+  rejectStaleReviewRecords(threadId: string, currentReportUpdatedAt: number): void { rejectStaleStateStoreReviewRecords(this.getInternalAccess(), threadId, currentReportUpdatedAt); }
+  addProofReviewFinding(threadId: string, runId: string, verdict: string, concern: string): void { addProofReviewFindingToLatestRecord(this.getInternalAccess(), threadId, runId, verdict, concern); }
   getWorkerReport(threadId: string, turnId?: string | null): CodexWorkerReportView | null {
     const liveReport = this.threads.get(threadId)?.workerReport ?? null;
     if (liveReport && (!turnId || liveReport.turnId === turnId)) {

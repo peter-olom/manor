@@ -22,6 +22,7 @@ import { buildReviewWorkspaceSnapshot, cleanupScopedReviewWorkspace, createNonGi
 import { isolatedModelResourceOptions } from "./isolated-model-resources.js";
 import type { ButlerStateStore } from "./state-store.js";
 import type { ButlerThinkingLevel, CodexThreadRecord, CodexWorkerReportView, WorkerReviewResultRecordView } from "./types.js";
+import type { ReviewFinding, ReviewRecord } from "./orchestration-types.js";
 import { workerExecutionEndAt } from "./worker-execution-window.js";
 import { workerFileChangeAttribution } from "./worker-review-attribution.js";
 import { redactSensitiveText } from "./redact-sensitive-text.js";
@@ -631,6 +632,39 @@ export async function ensureButlerAdversarialReview(input: {
       reportUpdatedAt: report.updatedAt
     });
     if (!stored || !reportIsCurrent()) return [];
+
+    const blockingFindings = results.filter((r) => r.blocking && !r.waived);
+    const reviewFindings: ReviewFinding[] = results.map((r) => ({
+      id: r.id,
+      severity: r.severity,
+      summary: r.findingSummary,
+      blocking: r.blocking,
+      waived: r.waived,
+      waiverReason: r.waiverReason,
+      source: "adversarial_review" as const,
+      proofRunId: null,
+      checklistItemId: null,
+      createdAt: r.createdAt
+    }));
+    const contract = input.store.getThread(input.threadId)?.executionContract;
+    if (contract) {
+      const reviewRecord: ReviewRecord = {
+        id: `review-${input.threadId}-${report.turnId}-${crypto.randomUUID().slice(0, 8)}`,
+        threadId: input.threadId,
+        attemptId: contract.threadId,
+        scopeId: input.store.getThreadJobPayload(input.threadId)?.protocol.currentScopeId ?? report.turnId,
+        reportUpdatedAt: report.updatedAt,
+        outputManifestHash: null,
+        state: blockingFindings.length > 0 ? "rejected" : "accepted",
+        findings: reviewFindings,
+        workerInstruction: blockingFindings.length > 0 ? blockingFindings[0]!.findingSummary : null,
+        reviewedAt: Date.now(),
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+      input.store.upsertReviewRecord(input.threadId, reviewRecord);
+    }
+
     return results;
   } catch (error) {
     if (input.isCurrent?.() === false) return [];

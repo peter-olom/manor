@@ -18,6 +18,36 @@ export type ButlerGoalRoutingMode = "none" | "native_goal" | "contract_fallback"
 export type ButlerReviewRoutingTarget = "none" | "adversarial_review";
 export type WorkerClaimStatus = "completed" | "partial" | "blocked";
 export type WorkerReviewSeverity = "info" | "low" | "medium" | "high" | "critical";
+
+export type ReviewRecordState = "queued" | "running" | "accepted" | "rejected";
+
+export interface ReviewFinding {
+  id: string;
+  severity: WorkerReviewSeverity;
+  summary: string;
+  blocking: boolean;
+  waived: boolean;
+  waiverReason: string | null;
+  source: "adversarial_review" | "butler_review";
+  proofRunId: string | null;
+  checklistItemId: string | null;
+  createdAt: number;
+}
+
+export interface ReviewRecord {
+  id: string;
+  threadId: string;
+  attemptId: string;
+  scopeId: string;
+  reportUpdatedAt: number;
+  outputManifestHash: string | null;
+  state: ReviewRecordState;
+  findings: ReviewFinding[];
+  workerInstruction: string | null;
+  reviewedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
 export type ReviewPanelRole = "intent" | "qa" | "ui_taste" | "api" | "ops" | "product";
 export type ReviewPanelVerdict = "pending" | "passed" | "concern" | "failed" | "blocked";
 export type ReviewPanelSummaryStatus = "pending" | "passed" | "concerns" | "blocked";
