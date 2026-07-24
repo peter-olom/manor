@@ -18,11 +18,21 @@ import {
   formatResolvedJobOutputManifestForReview,
   inspectCurrentJobOutputForReview,
   resolveJobOutputManifest,
+  resolveJobOutputPreviewKind,
   validateReportedArtifactManifestRefs
 } from "../../src/server/job-output-manifest.js";
 import { createProjectArtifactFromFile, createProjectArtifactFromText } from "../../src/server/project-artifacts-policies.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
+
+test("job output preview kinds decide open versus download-only actions", () => {
+  assert.equal(resolveJobOutputPreviewKind({ kind: "screenshot", fileName: "final.png", contentType: "image/png" }), "image");
+  assert.equal(resolveJobOutputPreviewKind({ kind: "video", fileName: "proof.webm", contentType: "video/webm" }), "video");
+  assert.equal(resolveJobOutputPreviewKind({ kind: "file", fileName: "brief.pdf", contentType: "application/pdf" }), "pdf");
+  assert.equal(resolveJobOutputPreviewKind({ kind: "file", fileName: "notes.md", contentType: "text/markdown" }), "markdown");
+  assert.equal(resolveJobOutputPreviewKind({ kind: "file", fileName: "plain.txt", contentType: "text/plain" }), "text");
+  assert.equal(resolveJobOutputPreviewKind({ kind: "file", fileName: "slides.docx", contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }), null);
+});
 
 test("job manifest registers and resolves artifacts, proofs, and Worker reports", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "manor-job-output-manifest-"));
@@ -111,6 +121,7 @@ test("job manifest registers and resolves artifacts, proofs, and Worker reports"
   assert.equal(artifactUiEntry?.currentAttempt, true);
   assert.equal(artifactUiEntry?.available, true);
   assert.equal(artifactUiEntry?.integrity, "verified");
+  assert.equal(artifactUiEntry?.previewKind, "text");
   assert.match(artifactUiEntry?.openUrl ?? "", new RegExp(`/api/project-artifacts/project-1/${artifactId}/file$`));
   assert.match(artifactUiEntry?.downloadUrl ?? "", /\?download=1$/);
   assert.match(await formatResolvedJobOutputManifestForReview(current, store), /Research notes/);

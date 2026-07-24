@@ -4284,6 +4284,48 @@ a:hover {
   text-decoration: underline;
 }
 
+.worker-output-download-only {
+  color: var(--text-subtle);
+  font-size: 10.5px;
+}
+
+.worker-output-manifest-provenance > summary {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  margin: -2px -6px;
+  cursor: pointer;
+  touch-action: manipulation;
+  color: var(--text-subtle);
+  font-size: 11.5px;
+}
+
+.worker-output-manifest-provenance[open] > summary {
+  margin-bottom: 5px;
+}
+
+.worker-report-details {
+  margin-top: 8px;
+}
+
+.worker-report-details > summary {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  margin-left: -6px;
+  cursor: pointer;
+  touch-action: manipulation;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.worker-report-details[open] > summary {
+  margin-bottom: 6px;
+}
+
 .worker-turn {
   display: flex;
   flex-direction: column;

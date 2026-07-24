@@ -58,6 +58,74 @@ test("completed UI reports reject failed, mismatched, and duplicate browser proo
   assert.throws(() => validateCompletedWorkerEvidence({ thread: currentThread, evidence: [evidence()], threadProofs: [duplicateProof] }), /identical image content/);
 });
 
+test("completed reports require durable references without scanning the report narrative", () => {
+  const currentThread = thread();
+  const withoutReference = { ...evidence(), id: "evidence-no-ref", proofRunId: null, artifactId: null };
+  assert.throws(
+    () => validateCompletedWorkerEvidence({ thread: currentThread, evidence: [withoutReference], threadProofs: [proof("proof-1")] }),
+    /must reference a Manor proof run or durable project artifact/
+  );
+
+  const genericThread = thread();
+  genericThread.executionContract!.taskCategory = "generic_code";
+  const narrativeEvidence = { ...evidence(), id: "evidence-narrative", kind: "build" as const, proofRunId: null, summary: "Cleaned up /var/folders/q0/TemporaryItems/NSIRD_screencaptureui_x/Screenshot 2026-07-24 at 1.22.13 PM.png and /tmp/report.json." };
+  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread: genericThread, evidence: [narrativeEvidence], threadProofs: [] }));
+
+  const localProofReference = { ...evidence(), id: "evidence-local-proof", kind: "proof" as const, proofRunId: "/tmp/proof.json", artifactId: null };
+  assert.throws(
+    () => validateCompletedWorkerEvidence({ thread: genericThread, evidence: [localProofReference], threadProofs: [] }),
+    /must be a Manor reference ID/
+  );
+  const localArtifactReference = { ...evidence(), id: "evidence-local-artifact", kind: "file" as const, proofRunId: null, artifactId: "/tmp/output.zip" };
+  assert.throws(
+    () => validateCompletedWorkerEvidence({ thread: genericThread, evidence: [localArtifactReference], threadProofs: [] }),
+    /must be a Manor reference ID/
+  );
+  const localRouteReference = { ...evidence(), id: "evidence-local-route", kind: "build" as const, proofRunId: null, route: "/tmp/route.csv" };
+  assert.throws(
+    () => validateCompletedWorkerEvidence({ thread: genericThread, evidence: [localRouteReference], threadProofs: [] }),
+    /not local filesystem paths/
+  );
+  const extensionlessLogReference = { ...evidence(), id: "evidence-extensionless-log", kind: "build" as const, proofRunId: null, logRef: "/private/tmp/build-output" };
+  assert.throws(
+    () => validateCompletedWorkerEvidence({ thread: genericThread, evidence: [extensionlessLogReference], threadProofs: [] }),
+    /not local filesystem paths/
+  );
+  const fileUrlDataReference = { ...evidence(), id: "evidence-file-url-data", kind: "build" as const, proofRunId: null, dataRef: "file:///tmp/data.docx" };
+  assert.throws(
+    () => validateCompletedWorkerEvidence({ thread: genericThread, evidence: [fileUrlDataReference], threadProofs: [] }),
+    /not local filesystem paths/
+  );
+});
+
+test("file and text proof runs can complete without manufactured screenshots", () => {
+  const genericThread = thread();
+  genericThread.executionContract!.taskCategory = "generic_code";
+  const fileProof = proof("file-proof");
+  fileProof.verification.artifacts = [{
+    kind: "file",
+    label: "Research notes",
+    fileName: "notes.md",
+    filePath: "/tmp/notes.md",
+    contentType: "text/markdown",
+    sizeBytes: 24,
+    url: "/api/proofs/notes.md",
+    downloadUrl: null,
+    availability: "available",
+    retainedUntilAt: null,
+    expiredAt: null,
+    checksumSha256: null
+  }];
+  const fileEvidence = { ...evidence(), id: "evidence-file-proof", kind: "proof" as const, proofRunId: "file-proof", summary: "Saved durable Markdown notes." };
+  assert.doesNotThrow(() => validateCompletedWorkerEvidence({ thread: genericThread, evidence: [fileEvidence], threadProofs: [fileProof] }));
+
+  const uiThread = thread();
+  assert.throws(
+    () => validateCompletedWorkerEvidence({ thread: uiThread, evidence: [fileEvidence], threadProofs: [fileProof] }),
+    /no available screenshot or video/
+  );
+});
+
 test("legacy browser evidence normalizes to browser_flow", () => {
   assert.equal(normalizeReportEvidence([{ kind: "browser", summary: "Browser proof" }])[0]?.kind, "browser_flow");
 });

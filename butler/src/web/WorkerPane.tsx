@@ -31,6 +31,7 @@ export type WorkerItem = {
   type: string;
   status: string;
   text: string;
+  details?: string | null;
   at: number;
   taskDurationMs?: number | null;
 };
@@ -141,6 +142,7 @@ export type WorkerJobOutputManifestEntry = {
   status: string | null;
   fileName: string | null;
   contentType: string | null;
+  previewKind: "image" | "video" | "pdf" | "markdown" | "html" | "text" | null;
   openUrl: string | null;
   downloadUrl: string | null;
 };
@@ -304,7 +306,8 @@ function reportToWorkerItem(report: WorkerReport): WorkerItem {
     id: `report:${report.turnId ?? "latest"}:${report.updatedAt}`,
     type: "assistant_message",
     status: "completed",
-    text: `${report.summary}${report.details ? `\n\n${report.details}` : ""}`,
+    text: report.summary,
+    details: report.details,
     at: report.updatedAt
   };
 }
@@ -513,22 +516,27 @@ function WorkerOutputEntryList({ entries, attempt, currentAttemptId }: { entries
           <span className={`worker-output-integrity ${entry.kind !== "project_artifact" && entry.available ? "is-record" : `is-${entry.integrity}`}`}>{outputIntegrityLabel(entry)}</span>
           {outcome ? <span className={`worker-output-outcome ${outcome.className}`}>{outcome.label}</span> : null}
         </div>
-        <div className="worker-output-manifest-meta">
-          <span title={entry.referenceId}>Ref {shortId(entry.referenceId)}</span>
-          <span title={entry.attemptId}>Attempt {outputAttemptLabel(entry, currentAttemptId, attempt)}</span>
-          {entry.sourceTurnId ? <span title={entry.sourceTurnId}>Turn {shortId(entry.sourceTurnId)}</span> : null}
-          {entry.logicalPath ? <span title={entry.logicalPath}>{entry.logicalPath}</span> : entry.fileName ? <span title={entry.fileName}>{entry.fileName}</span> : null}
-          {entry.checksumSha256 ? <span title={`SHA-256 ${entry.checksumSha256}`}>sha256 {entry.checksumSha256.slice(0, 10)}</span> : null}
-          {entry.kind === "project_artifact" && entry.integrityCheckedAt ? (
-            <span title={new Date(entry.integrityCheckedAt).toISOString()}>Integrity checked {new Date(entry.integrityCheckedAt).toLocaleString()}</span>
-          ) : null}
-        </div>
         {entry.available && (entry.openUrl || entry.downloadUrl) ? (
           <div className="worker-output-manifest-actions">
-            {entry.openUrl ? <a href={entry.openUrl} target="_blank" rel="noreferrer" aria-label={`Open ${entry.title}`}>Open</a> : null}
+            {entry.previewKind && entry.openUrl ? <a href={entry.openUrl} target="_blank" rel="noreferrer" aria-label={`Open ${entry.title}`}>Open</a> : null}
             {entry.downloadUrl ? <a href={entry.downloadUrl} download aria-label={`Download ${entry.title}`}>Download</a> : null}
+            {!entry.previewKind && entry.downloadUrl ? <span className="worker-output-download-only">Download only</span> : null}
           </div>
         ) : null}
+        <details className="worker-output-manifest-provenance">
+          <summary>Provenance</summary>
+          <div className="worker-output-manifest-meta">
+            <span title={entry.referenceId}>Ref {shortId(entry.referenceId)}</span>
+            <span title={entry.attemptId}>Attempt {outputAttemptLabel(entry, currentAttemptId, attempt)}</span>
+            {entry.sourceTurnId ? <span title={entry.sourceTurnId}>Turn {shortId(entry.sourceTurnId)}</span> : null}
+            {entry.logicalPath ? <span title={entry.logicalPath}>{entry.logicalPath}</span> : entry.fileName ? <span title={entry.fileName}>{entry.fileName}</span> : null}
+            {entry.contentType ? <span title={entry.contentType}>{entry.contentType}</span> : null}
+            {entry.checksumSha256 ? <span title={`SHA-256 ${entry.checksumSha256}`}>sha256 {entry.checksumSha256.slice(0, 10)}</span> : null}
+            {entry.kind === "project_artifact" && entry.integrityCheckedAt ? (
+              <span title={new Date(entry.integrityCheckedAt).toISOString()}>Integrity checked {new Date(entry.integrityCheckedAt).toLocaleString()}</span>
+            ) : null}
+          </div>
+        </details>
       </li>;
     })}
   </ol>;
@@ -845,6 +853,12 @@ const WorkerMessageRow = memo(function WorkerMessageRow({ item, streaming, paylo
         <time className="worker-message-time">{formatTime(item.at)}</time>
       </header>
       <Markdown className="worker-message-body" text={item.text} />
+      {item.details?.trim() ? (
+        <details className="worker-report-details">
+          <summary>Report details</summary>
+          <Markdown className="worker-message-body is-report-details" text={item.details} />
+        </details>
+      ) : null}
       {showPayload ? <WorkerPayloadDetails payload={payload} checklist={checklist ?? null} /> : null}
     </article>
   );

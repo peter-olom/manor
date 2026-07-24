@@ -25,7 +25,7 @@ test("job payloads persist structured JSON and keep chat text readable", async (
     projectId: "project",
     projectLabel: "Project",
     branch: "main",
-    taskText: "- Add payload support\n- Verify harness access",
+    taskText: "- Build payload support\n- Verify harness access",
     notes: ["Use structured payloads."]
   });
   const payload = buildJobPayload({
@@ -49,6 +49,8 @@ test("job payloads persist structured JSON and keep chat text readable", async (
   assert.equal(read?.snapshots[0]?.nodeId, read?.currentNodeId);
   assert.equal(read?.snapshots[0]?.display.summary, read?.display.summary);
   assert.deepEqual(read?.checklist.map((point) => point.text), contract.acceptancePoints);
+  assert.ok(payload.proof.includes("build, typecheck, or equivalent command result"));
+  assert.ok(payload.proof.includes("intent-fit note"));
   assert.match(prompt, /We're going to build a simple todo app/);
   assert.match(prompt, /I put the job details in Manor/);
   assert.match(prompt, /manor-harness --thread thread-payload payload current/);

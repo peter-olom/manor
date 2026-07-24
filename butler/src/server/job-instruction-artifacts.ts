@@ -238,7 +238,14 @@ function buildChecklist(
 }
 
 function buildProof(contract: CodexThreadExecutionContractView | null): string[] {
-  return contract?.proofExpectation === "requested" ? [contract.proofExpectationLabel] : [];
+  const expectedEvidence = normalizeList(
+    (contract?.verificationMatrix ?? []).flatMap((row) => row.expectedEvidence),
+    12
+  );
+  if (contract?.proofExpectation !== "requested") {
+    return expectedEvidence;
+  }
+  return normalizeList([contract.proofExpectationLabel, ...expectedEvidence], 12);
 }
 
 function tagsFor(payload: Pick<JobPayloadView, "checklist" | "proof" | "constraints" | "notes"> & { report?: JobPayloadView["report"] | null }): string[] {

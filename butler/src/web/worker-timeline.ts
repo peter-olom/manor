@@ -148,7 +148,8 @@ export function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline
           id: `${turn.id}:worker-report:${turnReport.updatedAt}`,
           type: "assistant_message",
           status: "completed",
-          text: `${turnReport.summary}${turnReport.details ? `\n\n${turnReport.details}` : ""}`,
+          text: turnReport.summary,
+          details: turnReport.details,
           at: turnReport.updatedAt
         });
       }

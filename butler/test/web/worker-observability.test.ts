@@ -214,6 +214,7 @@ test("the Worker lane renders durable job outputs with provenance, integrity, an
           status: null,
           fileName: "relocation-options.md",
           contentType: "text/markdown",
+          previewKind: "markdown",
           openUrl: "/api/project-artifacts/workspace%3Ashared/artifact-report-1/file",
           downloadUrl: "/api/project-artifacts/workspace%3Ashared/artifact-report-1/file?download=1"
         },
@@ -237,6 +238,7 @@ test("the Worker lane renders durable job outputs with provenance, integrity, an
           status: "recorded",
           fileName: "sources.txt",
           contentType: "text/plain",
+          previewKind: "text",
           openUrl: "/api/proofs/proof-run-1/sources.txt",
           downloadUrl: null
         },
@@ -260,6 +262,7 @@ test("the Worker lane renders durable job outputs with provenance, integrity, an
           status: "completed",
           fileName: null,
           contentType: null,
+          previewKind: null,
           openUrl: null,
           downloadUrl: null
         }
@@ -320,6 +323,7 @@ test("the Worker output surface keeps unclaimed and earlier task outputs collaps
     status: "completed",
     fileName: null,
     contentType: null,
+    previewKind: null,
     openUrl: null,
     downloadUrl: null
   });
@@ -371,6 +375,7 @@ test("the Worker output surface separates failed proof outcome and suppresses mi
           status: null,
           fileName: "report.md",
           contentType: "text/markdown",
+          previewKind: null,
           openUrl: "/api/project-artifacts/workspace%3Ashared/artifact-missing/file",
           downloadUrl: "/api/project-artifacts/workspace%3Ashared/artifact-missing/file?download=1"
         },
@@ -394,6 +399,7 @@ test("the Worker output surface separates failed proof outcome and suppresses mi
           status: "expired",
           fileName: null,
           contentType: null,
+          previewKind: null,
           openUrl: null,
           downloadUrl: null
         }
@@ -406,4 +412,46 @@ test("the Worker output surface separates failed proof outcome and suppresses mi
   assert.doesNotMatch(markup, /href="\/api\/project-artifacts\/workspace%3Ashared\/artifact-missing/);
   assert.doesNotMatch(markup, /aria-label="Open Missing report"/);
   assert.doesNotMatch(markup, /aria-label="Download Missing report"/);
+});
+
+test("the Worker output surface offers download-only actions for non-previewable files", () => {
+  const markup = renderToStaticMarkup(React.createElement(WorkerJobOutputManifestPanel, {
+    manifest: {
+      jobId: "pi-job-docx",
+      projectId: "workspace:shared",
+      currentAttemptId: "attempt-pi-job-docx-1",
+      currentScopeId: "scope-current",
+      attempt: 1,
+      entries: [{
+        id: "docx-entry",
+        kind: "project_artifact",
+        title: "Word brief",
+        threadId: "pi-job-docx",
+        projectId: "workspace:shared",
+        attemptId: "attempt-pi-job-docx-1",
+        scopeId: "scope-current",
+        currentAttempt: true,
+        currentScope: true,
+        sourceTurnId: "turn-1",
+        referenceId: "artifact-docx",
+        logicalPath: "brief.docx",
+        createdAt: 1,
+        available: true,
+        integrity: "verified",
+        checksumSha256: "abc123",
+        checksumStatus: "verified",
+        integrityCheckedAt: 2,
+        status: null,
+        fileName: "brief.docx",
+        contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        previewKind: null,
+        openUrl: null,
+        downloadUrl: "/api/project-artifacts/workspace%3Ashared/artifact-docx/file?download=1"
+      }]
+    }
+  }));
+
+  assert.match(markup, />Download only</);
+  assert.match(markup, /aria-label="Download Word brief"/);
+  assert.doesNotMatch(markup, /aria-label="Open Word brief"/);
 });

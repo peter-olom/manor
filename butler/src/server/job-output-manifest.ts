@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 
+import { resolveReferencePreviewKind } from "../shared/references.js";
 import type { JobOutputManifestEntryView, JobPayloadView } from "./job-payload-types.js";
 import {
   jobPayloadsRoot,
@@ -42,6 +43,27 @@ const MAX_JOB_OUTPUT_FILE_BYTES = 100 * 1024 * 1024;
 const MAX_JOB_OUTPUT_TOTAL_BYTES = 512 * 1024 * 1024;
 const MAX_JOB_OUTPUT_DIRECTORY_ENTRIES = 512;
 const MAX_ARTIFACT_INSPECTION_BYTES = 100 * 1024 * 1024;
+
+export type JobOutputPreviewKind = "image" | "video" | "pdf" | "markdown" | "html" | "text" | null;
+
+export function resolveJobOutputPreviewKind(input: {
+  kind?: string | null;
+  fileName?: string | null;
+  contentType?: string | null;
+}): JobOutputPreviewKind {
+  const contentType = (input.contentType ?? "").trim().toLowerCase().split(";", 1)[0] ?? "";
+  const kind = (input.kind ?? "").trim().toLowerCase();
+  if (kind === "screenshot" || contentType.startsWith("image/")) return "image";
+  if (kind === "video" || contentType.startsWith("video/")) return "video";
+  return resolveReferencePreviewKind(input.fileName ?? "", input.contentType ?? "");
+}
+
+function selectProofOutputArtifact(proof: PreviewProofRecordView | null): PreviewVerificationArtifactView | null {
+  const candidates = (proof?.verification.artifacts ?? []).filter((artifact) =>
+    artifact.availability === "available" && Boolean(artifact.url || artifact.downloadUrl)
+  );
+  return candidates.find((artifact) => resolveJobOutputPreviewKind(artifact) !== null) ?? candidates[0] ?? null;
+}
 
 function assertSafeJobOutputPathSegment(value: string, label: string, maxLength = 200): void {
   if (value.length > maxLength || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value) || value === "." || value === "..") {
@@ -288,6 +310,7 @@ export type JobOutputManifestEntryUiView = {
   status: string | null;
   fileName: string | null;
   contentType: string | null;
+  previewKind: JobOutputPreviewKind;
   openUrl: string | null;
   downloadUrl: string | null;
 };
@@ -380,9 +403,22 @@ export async function buildJobOutputManifestUiView(
     entry.attemptId !== payload.protocol.currentAttemptId || entry.scopeId !== payload.protocol.currentScopeId
   ).slice(-128);
   const mapEntry = ({ entry, available, integrity, checksumStatus, integrityCheckedAt, proofOutcome, artifact, proof, report }: ResolvedJobOutputManifestEntry): JobOutputManifestEntryUiView => {
-    const proofArtifact = proof?.verification.artifacts.find((candidate) =>
-      candidate.availability === "available" && Boolean(candidate.url || candidate.downloadUrl)
-    ) ?? null;
+    const proofArtifact = selectProofOutputArtifact(proof);
+    const fileName = artifact?.fileName ?? proofArtifact?.fileName ?? null;
+    const contentType = artifact?.contentType ?? proofArtifact?.contentType ?? null;
+    const previewKind = available
+      ? resolveJobOutputPreviewKind({ kind: artifact ? "file" : proofArtifact?.kind ?? null, fileName, contentType })
+      : null;
+    const openUrl = available && previewKind
+      ? artifact
+        ? getProjectArtifactUserUrl(artifact)
+        : proofArtifact?.url ?? proofArtifact?.downloadUrl ?? null
+      : null;
+    const downloadUrl = available
+      ? artifact
+        ? getProjectArtifactUserDownloadUrl(artifact)
+        : proofArtifact?.downloadUrl ?? proofArtifact?.url ?? null
+      : null;
     return {
       id: entry.id,
       kind: entry.kind,
@@ -404,14 +440,11 @@ export async function buildJobOutputManifestUiView(
       integrityCheckedAt,
       proofOutcome,
       status: report?.status ?? proofOutcome,
-      fileName: artifact?.fileName ?? proofArtifact?.fileName ?? null,
-      contentType: artifact?.contentType ?? proofArtifact?.contentType ?? null,
-      openUrl: available && artifact
-        ? getProjectArtifactUserUrl(artifact)
-        : available ? proofArtifact?.url ?? null : null,
-      downloadUrl: available && artifact
-        ? getProjectArtifactUserDownloadUrl(artifact)
-        : available ? proofArtifact?.downloadUrl ?? null : null
+      fileName,
+      contentType,
+      previewKind,
+      openUrl,
+      downloadUrl
     };
   };
   return {

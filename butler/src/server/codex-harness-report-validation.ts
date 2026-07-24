@@ -82,6 +82,26 @@ const PROOF_BOUND_EVIDENCE_KINDS = new Set<WorkerEvidenceKind>([
   "video",
   "proof"
 ]);
+const DURABLE_REFERENCE_EVIDENCE_KINDS = new Set<WorkerEvidenceKind>([
+  "proof",
+  "screenshot",
+  "video",
+  "trace",
+  "file"
+]);
+const LOCAL_FILESYSTEM_REFERENCE_PATTERN = /(?:^file:\/\/|^(?:~\/|[A-Za-z]:[\\/]|\\\\)|\/var\/folders\/|\/private\/var\/folders\/|TemporaryItems|screencaptureui|NSIRD_|\/(?:private\/)?tmp\/)/i;
+
+function assertDurableReferenceId(value: string | null | undefined, label: string): void {
+  if (value && (/\s/.test(value) || /[\\/]/.test(value) || /^file:/i.test(value))) {
+    throw new Error(`${label} must be a Manor reference ID, not a local path.`);
+  }
+}
+
+function assertNoLocalFilesystemReference(value: string | null | undefined, label: string): void {
+  if (value && LOCAL_FILESYSTEM_REFERENCE_PATTERN.test(value)) {
+    throw new Error(`${label} must reference Manor proof runs or durable artifacts, not local filesystem paths.`);
+  }
+}
 
 function normalizedRoutePath(raw: string): string | null {
   try {
@@ -92,7 +112,7 @@ function normalizedRoutePath(raw: string): string | null {
   }
 }
 
-function proofFailure(proof: PreviewProofRecordView): string | null {
+function proofFailure(proof: PreviewProofRecordView, requireVisualArtifact: boolean): string | null {
   const verification = proof.verification;
   if (!verification.ok || verification.failureKind !== "none") {
     return verification.error ?? `proof run failed with signal ${verification.failureKind}`;
@@ -106,7 +126,7 @@ function proofFailure(proof: PreviewProofRecordView): string | null {
   if (verification.actions?.some((action) => action.status === "failed")) {
     return "the proof contains a failed browser action";
   }
-  if (!proofHasVisualArtifact(proof)) {
+  if (requireVisualArtifact && !proofHasVisualArtifact(proof)) {
     return "the proof has no available screenshot or video";
   }
   return null;
@@ -158,6 +178,14 @@ export function validateCompletedWorkerEvidence(input: {
   const pointIds = new Set(contract?.verificationMatrix.map((row) => row.acceptancePointId).filter((id): id is string => Boolean(id)) ?? []);
   const matrixRowIds = new Set(contract?.verificationMatrix.map((row) => row.id) ?? []);
   for (const entry of input.evidence) {
+    assertDurableReferenceId(entry.proofRunId, "Evidence proof run");
+    assertDurableReferenceId(entry.artifactId, "Evidence artifact");
+    assertNoLocalFilesystemReference(entry.route, "Evidence route");
+    assertNoLocalFilesystemReference(entry.logRef, "Evidence log reference");
+    assertNoLocalFilesystemReference(entry.dataRef, "Evidence data reference");
+    if (DURABLE_REFERENCE_EVIDENCE_KINDS.has(entry.kind) && !entry.proofRunId && !entry.artifactId) {
+      throw new Error(`Evidence kind ${entry.kind} must reference a Manor proof run or durable project artifact.`);
+    }
     if (entry.pointId && !pointIds.has(entry.pointId)) {
       throw new Error(`Completed report evidence references unknown acceptance point ${entry.pointId}.`);
     }
@@ -169,12 +197,18 @@ export function validateCompletedWorkerEvidence(input: {
   const proofByRunId = new Map(input.threadProofs.map((proof) => [proof.verification.runId, proof]));
   const referencedEvidence = input.evidence.filter((entry) => entry.proofRunId);
 
+  const visualProofRequired = threadRequiresVisualProof(input.thread);
   for (const entry of referencedEvidence) {
     const proof = proofByRunId.get(entry.proofRunId!);
     if (!proof) {
       throw new Error(`Completed report references missing proof run ${entry.proofRunId}. Capture the proof again and report its returned run ID.`);
     }
-    const failure = proofFailure(proof);
+    const entryRequiresVisualArtifact = entry.kind === "browser_flow" ||
+      entry.kind === "visual_review" ||
+      entry.kind === "screenshot" ||
+      entry.kind === "video" ||
+      (visualProofRequired && PROOF_BOUND_EVIDENCE_KINDS.has(entry.kind));
+    const failure = proofFailure(proof, entryRequiresVisualArtifact);
     if (failure) {
       throw new Error(`Completed report references unusable proof run ${entry.proofRunId}: ${failure}.`);
     }
@@ -184,7 +218,7 @@ export function validateCompletedWorkerEvidence(input: {
   }
   rejectDuplicateNamedCaptures([...new Set(referencedEvidence.map((entry) => proofByRunId.get(entry.proofRunId!)).filter((proof): proof is PreviewProofRecordView => Boolean(proof)))]);
 
-  if (!threadRequiresVisualProof(input.thread)) return;
+  if (!visualProofRequired) return;
 
   const visualEvidence = input.evidence.filter((entry) => VISUAL_EVIDENCE_KINDS.has(entry.kind));
   if (visualEvidence.length === 0) {
