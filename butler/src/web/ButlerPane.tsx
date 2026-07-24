@@ -699,7 +699,7 @@ type ReviewActivityBubbleProps = {
 export const ReviewActivityBubble = memo(function ReviewActivityBubble({ review, blockedReason, busy, onRetry, onStop }: ReviewActivityBubbleProps) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    if (review.stage !== "retry_wait") return;
+    if (review.stage !== "retry_wait" && review.state !== "running") return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [review.stage]);
@@ -708,6 +708,7 @@ export const ReviewActivityBubble = memo(function ReviewActivityBubble({ review,
     ? Math.max(0, Math.ceil((review.nextAttemptAt - now) / 1000))
     : null;
   const currentBlocker = review.state === "blocked" ? blockedReason : null;
+  const stalled = review.state === "running" && review.deadlineAt !== null && now > review.deadlineAt;
   const diagnosticHistory = [
     currentBlocker ? `Current blocker\n${currentBlocker}` : null,
     review.lastError && review.lastError !== currentBlocker ? `Latest review failure\n${review.lastError}` : null,
@@ -721,10 +722,11 @@ export const ReviewActivityBubble = memo(function ReviewActivityBubble({ review,
       </header>
       {review.scopeLabel ? <p className="review-activity-scope" title={review.scopeLabel}>Reviewing: {review.scopeLabel}</p> : null}
       <div className="review-activity-status" role="status">
-        {review.state !== "blocked" ? <SandSpinner /> : null}
-        <strong>{REVIEW_STAGE_LABELS[review.stage]}</strong>
+        {review.state !== "blocked" && !stalled ? <SandSpinner /> : null}
+        <strong>{stalled ? "Review stalled" : REVIEW_STAGE_LABELS[review.stage]}</strong>
         {retryRemaining !== null ? <span aria-hidden="true">retrying in {retryRemaining}s</span> : null}
       </div>
+      {stalled ? <p className="review-activity-last">The review passed its backend activity deadline. Manor is recovering it.</p> : null}
       <p className="review-activity-model">{[providerModelRef(review.modelProvider, review.modelId), review.thinkingLevel].filter(Boolean).join(" · ")}</p>
       {review.lastActivity ? (
         <p className="review-activity-last">

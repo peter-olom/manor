@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
-import { applyCallbackReviewFailure, applyCallbackReviewProgress, assertCallbackSupervisorPromptSucceeded, buildCallbackAdversarialReviewBrief, buildCurrentOperatorTurnContext, buildGuardedCallbackReviewTools, CallbackReviewScheduler, isCallbackReviewAutomationPause, isCallbackReviewOperatorPause, isCallbackReviewRetryablePause, isCurrentCallbackReview, pauseCallbackReview, prepareCallbackReviewRetry, selectRunnableCallbackReviews, shouldIgnoreCallbackReviewFailure } from "../../src/server/butler-callback-review-runner.js";
+import { applyCallbackReviewFailure, applyCallbackReviewProgress, assertCallbackSupervisorPromptSucceeded, buildCallbackAdversarialReviewBrief, buildCurrentOperatorTurnContext, buildGuardedCallbackReviewTools, CallbackReviewScheduler, isCallbackReviewAutomationPause, isCallbackReviewOperatorPause, isCallbackReviewRetryablePause, isCurrentCallbackReview, pauseCallbackReview, prepareCallbackReviewRetry, raceCallbackReviewAttempt, selectRunnableCallbackReviews, settleCallbackReviewFailure, shouldIgnoreCallbackReviewFailure } from "../../src/server/butler-callback-review-runner.js";
 import { blockCloseoutReview } from "../../src/server/butler-closeout-gate.js";
 import type { PendingChatCallback } from "../../src/server/butler-agent-helpers.js";
 import { loadButlerCallbackState } from "../../src/server/butler-callback-state.js";
@@ -185,6 +185,47 @@ test("review progress clears preparation deadlines and rolls inactivity deadline
   });
   assert.equal(target.reviewState, "running");
   assert.equal(target.reviewDeadlineAt, 420_000);
+});
+
+test("review failure settlement is bounded while preserving serialized Stop ordering", async () => {
+  const target = callback("worker-settlement", Date.now());
+  target.reviewState = "running";
+  target.reviewStage = "supervising_closeout";
+  const store = new ButlerStateStore(path.join(await mkdtemp(path.join(tmpdir(), "manor-review-settlement-")), "state.json"));
+  let release!: () => void;
+  let entered!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const holder = runSerializedJobMutation(target.threadId, async () => { entered(); await blocked; });
+  await started;
+
+  const settlement = await settleCallbackReviewFailure({
+    attempted: target,
+    error: new Error("review timed out"),
+    store,
+    failureCount: new Map(),
+    notBefore: new Map(),
+    getCurrent: () => target,
+    save: async () => undefined,
+    emit: () => undefined,
+    timeoutMs: 5
+  });
+
+  assert.deepEqual(settlement, { completed: false });
+  assert.equal(target.reviewState, "running");
+  const stop = runSerializedJobMutation(target.threadId, async () => { pauseCallbackReview(target, null); });
+  release();
+  await Promise.all([holder, stop]);
+  assert.equal(target.reviewState, "blocked");
+});
+
+test("callback review attempt deadline interrupts a hanging supervisor setup step", async () => {
+  const hangingSetup = new Promise<string>(() => undefined);
+  const attemptHealth = new Promise<never>((_resolve, reject) => {
+    setImmediate(() => reject(new Error("review attempt expired")));
+  });
+
+  await assert.rejects(raceCallbackReviewAttempt(hangingSetup, attemptHealth), /review attempt expired/);
 });
 
 test("isolated supervisor rejects provider errors and incomplete closeout decisions", () => {

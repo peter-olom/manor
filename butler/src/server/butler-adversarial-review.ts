@@ -110,6 +110,8 @@ export async function waitForPiReviewSubmission(input: {
   submission: Promise<ReturnType<typeof validateAdversarialReviewOutput>>;
   abort: () => Promise<unknown>;
   timeoutMs: number;
+  maxDurationMs?: number;
+  absoluteDeadlineAt?: number;
   lastActivityAt?: () => number;
   isCurrent?: () => boolean;
   watchdogs: ActivityWatchdogService;
@@ -118,11 +120,16 @@ export async function waitForPiReviewSubmission(input: {
   let watchdogId: string | null = null;
   try {
     const startedAt = Date.now();
+    const absoluteDeadlineAt = input.absoluteDeadlineAt ?? startedAt + (input.maxDurationMs ?? 5 * 60_000);
     const timeoutOutcome = new Promise<never>((_resolve, reject) => {
       const check = () => {
         const now = Date.now();
         if (input.isCurrent?.() === false) {
           reject(new Error("adversarial review was superseded"));
+          return;
+        }
+        if (now >= absoluteDeadlineAt) {
+          reject(new Error("adversarial review exceeded its maximum runtime"));
           return;
         }
         const inactiveFor = now - (input.lastActivityAt?.() ?? startedAt);
@@ -136,7 +143,7 @@ export async function waitForPiReviewSubmission(input: {
         id: watchdogId,
         policy: "review-activity",
         target: "Pi reviewer",
-        maxIntervalMs: input.timeoutMs,
+        maxIntervalMs: Math.min(input.timeoutMs, input.maxDurationMs ?? 5 * 60_000),
         callback: check
       });
     });
@@ -146,7 +153,7 @@ export async function waitForPiReviewSubmission(input: {
       timeoutOutcome
     ]);
     if (outcome.kind === "prompt") return null;
-    await input.abort().catch(() => undefined);
+    void input.abort().catch(() => undefined);
     return outcome.review;
   } finally {
     if (watchdogId) input.watchdogs.unregister(watchdogId);
@@ -185,6 +192,8 @@ export type ProviderAdversarialReviewInput = {
   selection: ReviewSelection;
   prompt: string;
   timeoutMs: number;
+  maxDurationMs?: number;
+  absoluteDeadlineAt?: number;
   onProgress?: (progress: AdversarialReviewProgress) => void;
   isCurrent?: () => boolean;
   watchdogs: ActivityWatchdogService;
@@ -242,7 +251,8 @@ function extractJson(text: string): string {
 }
 
 async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unknown> {
-  const nextDeadlineAt = () => Date.now() + input.timeoutMs;
+  const absoluteDeadlineAt = input.absoluteDeadlineAt ?? Date.now() + (input.maxDurationMs ?? 5 * 60_000);
+  const nextDeadlineAt = () => Math.min(Date.now() + input.timeoutMs, absoluteDeadlineAt);
   let lastProgress = reportReviewProgress(input, {
     stage: "reviewing_changes",
     message: "Reviewer session is starting.",
@@ -324,6 +334,8 @@ async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unkno
       submission,
       abort: () => session.abort(),
       timeoutMs: input.timeoutMs,
+      maxDurationMs: input.maxDurationMs,
+      absoluteDeadlineAt,
       lastActivityAt: () => lastProgress.at,
       isCurrent: input.isCurrent,
       watchdogs: input.watchdogs,
@@ -337,7 +349,7 @@ async function runPiReview(input: ProviderAdversarialReviewInput): Promise<unkno
     if (!text) throw new Error("adversarial reviewer returned no result");
     return JSON.parse(extractJson(text));
   } catch (error) {
-    await session.abort().catch(() => {});
+    void session.abort().catch(() => {});
     if (error instanceof Error && error.message === "adversarial review timed out") {
       throw reviewTimeoutError(input, lastProgress);
     }
@@ -429,6 +441,7 @@ export async function ensureButlerAdversarialReview(input: {
   expectedReportTurnId?: string | null;
   reviewBrief?: string | null;
   timeoutMs?: number;
+  absoluteDeadlineAt?: number;
   watchdogs: ActivityWatchdogService;
   runReview?: typeof runProviderAdversarialReview;
   buildWorkspaceSnapshot?: (cwd: string, baselineSha?: string | null, baselineTreeSha?: string | null, baselineObjectDir?: string | null) => Promise<string>;
@@ -474,7 +487,7 @@ export async function ensureButlerAdversarialReview(input: {
     stage: "preparing",
     message: "Preparing an isolated workspace for adversarial review.",
     at: Date.now(),
-    deadlineAt: null
+    deadlineAt: input.absoluteDeadlineAt ?? Date.now() + 5 * 60_000
   });
 
   const preferredCwd = thread.executionContract?.workspaceCwd || thread.cwd || process.cwd();
@@ -543,7 +556,7 @@ export async function ensureButlerAdversarialReview(input: {
       stage: "reviewing_changes",
       message: "Workspace snapshot is ready. Starting the adversarial reviewer.",
       at: Date.now(),
-      deadlineAt: Date.now() + (input.timeoutMs ?? 120_000)
+      deadlineAt: Math.min(Date.now() + (input.timeoutMs ?? 120_000), input.absoluteDeadlineAt ?? Number.POSITIVE_INFINITY)
     });
     const raw = validateAdversarialReviewOutput(await (input.runReview ?? runProviderAdversarialReview)({
       cwd: effectiveReviewCwd,
@@ -552,6 +565,7 @@ export async function ensureButlerAdversarialReview(input: {
       selection: { model, thinkingLevel: input.thinkingLevel },
       prompt,
       timeoutMs: input.timeoutMs ?? 120_000,
+      absoluteDeadlineAt: input.absoluteDeadlineAt,
       watchdogs: input.watchdogs,
       onProgress: input.onProgress,
       isCurrent: input.isCurrent,

@@ -52,9 +52,9 @@ import type { ButlerAgentSessionAccess, ButlerAgentToolAccess, ButlerCallbackRes
 import { BUTLER_TOOL_CATALOG } from "./butler-agent-tool-catalog.js";
 import { keepButlerActivityBefore } from "./butler-activity.js"; import { ButlerActivitySummaryState } from "./butler-activity-summary-state.js";
 import { acceptedWorkerTurnCompletionAt, buildPendingChatCallback, closePendingChatCallbackForOperatorStop, loadButlerCallbackState, reconcileAcceptedWorkerTurn, reconcileReservedCallbackDispatch, replaceCallbackPreservingRunningReview, saveButlerCallbackState } from "./butler-callback-state.js";
-import { applyCallbackReviewFailure, beginCallbackReviewAttempt, CallbackReviewScheduler, isCallbackReviewAutomationPause, isCallbackReviewRetryablePause, isCurrentCallbackReview, pauseCallbackReview, persistCallbackReviewProgress, prepareCallbackReviewRetry, runCallbackAdversarialReview, selectRunnableCallbackReviews, shouldIgnoreCallbackReviewFailure } from "./butler-callback-review-runner.js";
+import { applyCallbackReviewFailure, beginCallbackReviewAttempt, CallbackReviewScheduler, isCallbackReviewAutomationPause, isCallbackReviewRetryablePause, isCurrentCallbackReview, pauseCallbackReview, persistCallbackReviewProgress, prepareCallbackReviewRetry, recoverOrphanedCallbackReviews, runCallbackAdversarialReview, selectRunnableCallbackReviews, settleCallbackReviewFailure, settleReviewMutationWithin } from "./butler-callback-review-runner.js";
 import { blockCloseoutReview, getOperatorCloseoutBlocker as getCloseoutBlocker, idleCloseoutReview, isSameBlockedCloseout, queueCloseoutReview, recordGatedCloseout, relevantTerminalWorkerReport } from "./butler-closeout-gate.js";
-import { backfillOperatorMessagesFromSessionFiles, normalizeOperatorMessages, normalizeOperatorQuestion, readPersistedMessageAttachments, removeOperatorMessage, upsertOperatorMessage } from "./butler-operator-messages.js";
+import { backfillOperatorMessagesFromSessionFiles, normalizeOperatorMessages, normalizeOperatorQuestion, OperatorMessageStateWriteQueue, readPersistedMessageAttachments, removeOperatorMessage, upsertOperatorMessage } from "./butler-operator-messages.js";
 import { postOperatorJobReply as deliverOperatorJobReply, type OperatorJobReplyAccess } from "./butler-operator-closeout.js";
 import { providerCredentialsChanged, readButlerAuthStatus } from "./auth-status.js";
 import { buildDirectCodexMessagePingSummary, notifyDirectCodexMessage, planDirectMessageRollback, type DirectCodexMessageAccess, type DirectCodexMessagePingInput } from "./direct-codex-message.js";
@@ -122,6 +122,7 @@ import { ActivityWatchdogService } from "./activity-watchdog.js"; import { Butle
 import { getActiveManorSettings } from "./manor-settings-runtime.js";
 import { buildButlerProviderWebTools, PROVIDER_WEB_FETCH_TOOL_NAME, PROVIDER_WEB_SEARCH_TOOL_NAME } from "./provider-web-tools.js";
 import { piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
+
 export class ButlerAgentService extends EventEmitter {
   private readonly store: ButlerStateStore;
   private readonly piRpcWorkerClient: PiRpcWorkerClient | null;
@@ -183,7 +184,7 @@ export class ButlerAgentService extends EventEmitter {
   private smokeReactionQueued = false;
   private readonly callbackReviewScheduler: CallbackReviewScheduler;
   private readonly callbackReviewNotBefore = new Map<string, number>();
-  private readonly callbackReviewFailureCount = new Map<string, number>(); private callbackStateSaveTail: Promise<void> = Promise.resolve();
+  private readonly callbackReviewFailureCount = new Map<string, number>(); private readonly activeCallbackReviewThreads = new Set<string>(); private callbackStateSaveTail: Promise<void> = Promise.resolve(); private readonly operatorMessageStateWrites = new OperatorMessageStateWriteQueue();
   private compaction: Omit<ButlerCompactionView, "autoEnabled" | "active" | "count"> = {
     lastReason: null,
     lastStartedAt: null,
@@ -280,7 +281,7 @@ export class ButlerAgentService extends EventEmitter {
     }
   }
   private async loadCallbackState(): Promise<void> { await loadButlerCallbackState({ callbackStatePath: this.callbackStatePath, pendingChatCallbacks: this.pendingChatCallbacks, deliveredCloseoutIds: this.deliveredCloseoutIds, callbackReviewFailureCount: this.callbackReviewFailureCount, callbackReviewNotBefore: this.callbackReviewNotBefore }); for (const callback of this.pendingChatCallbacks.values()) if (isCallbackOutstanding(callback)) this.delegationWatchdogs.register(callback.threadId); }
-  async saveOperatorMessageState(): Promise<void> { normalizeOperatorMessages(this.operatorMessages); await writeJsonStateFileAtomic(this.operatorMessageStatePath, this.operatorMessages); }
+  async saveOperatorMessageState(messages = this.operatorMessages): Promise<void> { return this.operatorMessageStateWrites.run(async () => { normalizeOperatorMessages(messages); await writeJsonStateFileAtomic(this.operatorMessageStatePath, messages); }); }
   private loadActivitySummaryState(): Promise<void> { return this.activitySummaryState.load(); }
   private saveActivitySummaryState(): Promise<void> { return this.activitySummaryState.save(); }
   private persistActivitySummaryTurn(turn: ButlerActivityTurnView): void { void this.activitySummaryState.persistTurn(turn); }
@@ -391,7 +392,7 @@ export class ButlerAgentService extends EventEmitter {
     }
     return { complete: answer.complete, queued: answer.queued, message: answer.message };
   }
-  private async postOperatorJobReply(threadId: string, text: string): Promise<void> { await deliverOperatorJobReply(this as unknown as OperatorJobReplyAccess, threadId, text); const callback = this.pendingChatCallbacks.get(threadId); if (!callback || !isCallbackOutstanding(callback)) this.delegationWatchdogs.unregister(threadId); }
+  private async postOperatorJobReply(threadId: string, text: string, expectedCallback?: PendingChatCallback): Promise<void> { await deliverOperatorJobReply(this as unknown as OperatorJobReplyAccess, threadId, text, expectedCallback); const callback = this.pendingChatCallbacks.get(threadId); if (!callback || !isCallbackOutstanding(callback)) this.delegationWatchdogs.unregister(threadId); }
   private async presentOperatorAttachment(input: { messageId: string; text: string; attachment: NonNullable<ButlerMessageView["attachments"]>[number] }): Promise<void> { upsertOperatorMessage(this.operatorMessages, input.messageId, input.text, Date.now(), null, { attachments: [{ ...input.attachment }] }); await this.saveOperatorMessageState(); this.emit("change"); }
   private describePendingCallbacks(): string {
     return describePendingCallbacks(this.store, [...this.pendingChatCallbacks.values()]);
@@ -402,14 +403,15 @@ export class ButlerAgentService extends EventEmitter {
       return;
     }
     let changed = false;
+    const recovered = recoverOrphanedCallbackReviews({ callbacks: outstandingCallbacks, activeThreadIds: this.activeCallbackReviewThreads, now: Date.now(), store: this.store, failureCount: this.callbackReviewFailureCount, notBefore: this.callbackReviewNotBefore }); if (recovered.changed) { changed = true; await this.saveCallbackState(); this.emit("change"); if (recovered.retryAt !== null) this.callbackReviewScheduler.scheduleAt(recovered.retryAt); }
     const workerAccess = this.getWorkerClientAccess();
     await Promise.allSettled(outstandingCallbacks.map((callback) => runSerializedJobMutation(callback.threadId, async () => {
       if (this.quiescing || this.pendingChatCallbacks.get(callback.threadId) !== callback || !isCallbackOutstanding(callback)) return;
-      const now = Date.now();
-      callback.updatedAt = now;
+      const callbackNow = Date.now();
+      callback.updatedAt = callbackNow;
       const storedThread = this.store.getThread(callback.threadId);
       const loadResult = shouldHydratePendingWorkerCallback(callback, storedThread) ? await loadWorkerThreadWithin(workerAccess, callback.threadId) : "loaded"; if (this.quiescing) return;
-      if (loadResult !== "loaded") { callback.lastWorkerStatusSeen = "unknown"; changed = true; if (!this.store.getThread(callback.threadId)) { const dispatchState = reconcileReservedCallbackDispatch(callback, undefined); if (dispatchState === "ready") callback.dispatchState = "ready"; if (callback.dispatchState === "ready") { callback.watchdogAttentionAt ??= now; callback.watchdogAttentionReason = "Worker thread could not be loaded during callback recovery; Manor will retry."; callback.updatedAt = now; await postWorkerHydrationAttentionNotice({ callback, messages: this.operatorMessages, save: () => this.saveOperatorMessageState(), emit: () => this.emit("change") }); } return; } }
+      if (loadResult !== "loaded") { callback.lastWorkerStatusSeen = "unknown"; changed = true; if (!this.store.getThread(callback.threadId)) { const dispatchState = reconcileReservedCallbackDispatch(callback, undefined); if (dispatchState === "ready") callback.dispatchState = "ready"; if (callback.dispatchState === "ready") { callback.watchdogAttentionAt ??= callbackNow; callback.watchdogAttentionReason = "Worker thread could not be loaded during callback recovery; Manor will retry."; callback.updatedAt = callbackNow; await postWorkerHydrationAttentionNotice({ callback, messages: this.operatorMessages, save: () => this.saveOperatorMessageState(), emit: () => this.emit("change") }); } return; } }
       const thread = this.store.getThread(callback.threadId);
       if (reconcileAcceptedWorkerTurn(callback, thread)) changed = true;
       const dispatchState = reconcileReservedCallbackDispatch(callback, thread);
@@ -438,7 +440,7 @@ export class ButlerAgentService extends EventEmitter {
       const latestAgentReplyAt = latestCompletedAgentMessageAt(thread, callback.requestedAt), latestTerminalActivityAt = latestTerminalWorkerActivityAt(thread, callback.requestedAt);
       const latestRecoveryActivityAt = Math.max(latestAgentReplyAt ?? 0, latestTerminalActivityAt ?? 0, acceptedWorkerTurnCompletionAt(thread, callback.acceptedWorkerTurnId, callback.requestedAt) ?? 0) || null;
       const hasRecoverableThreadState = nextStatus === "idle" && latestRecoveryActivityAt !== null && latestRecoveryActivityAt >= callback.requestedAt;
-      const callbackTimedOut = hasRecoverableThreadState && now - latestRecoveryActivityAt >= CALLBACK_RECOVERY_TIMEOUT_MS;
+      const callbackTimedOut = hasRecoverableThreadState && callbackNow - latestRecoveryActivityAt >= CALLBACK_RECOVERY_TIMEOUT_MS;
       const nextCallbackState =
         relevantWorkerReport
           ? "received_worker_callback"
@@ -457,10 +459,10 @@ export class ButlerAgentService extends EventEmitter {
           callback.reviewReason = "thread_recovery";
         }
         callback.callbackState = nextCallbackState;
-        callback.updatedAt = now;
+        callback.updatedAt = callbackNow;
         changed = true;
       }
-      const watchdog = await reconcilePendingCallbackWorkerWatchdog({ callback, thread, now, workerAccess, hasRelevantWorkerReport: Boolean(relevantWorkerReport), isOwned: () => !this.quiescing && this.pendingChatCallbacks.get(callback.threadId) === callback });
+      const watchdog = await reconcilePendingCallbackWorkerWatchdog({ callback, thread, now: callbackNow, workerAccess, hasRelevantWorkerReport: Boolean(relevantWorkerReport), isOwned: () => !this.quiescing && this.pendingChatCallbacks.get(callback.threadId) === callback });
       if (watchdog.changed) changed = true;
       if (watchdog.attentionRequired && callback.watchdogAttentionAt) {
         await postWorkerWatchdogAttentionNotice({ callback, messages: this.operatorMessages, save: () => this.saveOperatorMessageState(), emit: () => this.emit("change") });
@@ -861,6 +863,8 @@ export class ButlerAgentService extends EventEmitter {
   private async processCallbackReviews(): Promise<void> {
     if (this.quiescing) return;
     const now = Date.now();
+    const recovered = recoverOrphanedCallbackReviews({ callbacks: [...this.pendingChatCallbacks.values()].filter(isCallbackOutstanding), activeThreadIds: this.activeCallbackReviewThreads, now, store: this.store, failureCount: this.callbackReviewFailureCount, notBefore: this.callbackReviewNotBefore });
+    if (recovered.changed) { await this.saveCallbackState(); this.emit("change"); if (recovered.retryAt !== null) this.callbackReviewScheduler.scheduleAt(recovered.retryAt); }
     const { pendingReviews, retryAt } = selectRunnableCallbackReviews(
       this.pendingChatCallbacks.values(),
       this.callbackReviewNotBefore,
@@ -871,7 +875,6 @@ export class ButlerAgentService extends EventEmitter {
       if (retryAt !== null) this.callbackReviewScheduler.scheduleAt(retryAt);
       return;
     }
-
     for (const callback of pendingReviews) {
       const liveCallback = await runSerializedJobMutation(callback.threadId, async () => {
         const current = this.pendingChatCallbacks.get(callback.threadId);
@@ -899,6 +902,8 @@ export class ButlerAgentService extends EventEmitter {
       });
       if (!liveCallback) continue;
 
+      this.activeCallbackReviewThreads.add(liveCallback.threadId);
+      try {
       try {
         await runCallbackAdversarialReview({
           callback: liveCallback,
@@ -910,21 +915,14 @@ export class ButlerAgentService extends EventEmitter {
           onProgress: (progress) => { void persistCallbackReviewProgress({ attempted: liveCallback, progress, getCurrent: () => this.pendingChatCallbacks.get(liveCallback.threadId), save: () => this.saveCallbackState(), emit: () => this.emit("change") }).catch((error) => { this.lastError = `Adversarial review progress could not be saved: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}`; this.emit("change"); }); }
         });
       } catch (error) {
-        let failureApplied = false;
-        let retryAt: number | null = null;
-        await runSerializedJobMutation(callback.threadId, async () => {
-          const nextCallback = this.pendingChatCallbacks.get(callback.threadId);
-          if (shouldIgnoreCallbackReviewFailure(liveCallback, nextCallback) || !nextCallback) return;
-          applyCallbackReviewFailure({ callback: nextCallback, error, store: this.store, failureCount: this.callbackReviewFailureCount, notBefore: this.callbackReviewNotBefore });
-          retryAt = nextCallback.reviewNextAttemptAt ?? null;
-          await this.saveCallbackState(); this.emit("change"); failureApplied = true;
-        });
-        if (retryAt !== null) this.callbackReviewScheduler.scheduleAt(retryAt);
-        if (failureApplied) throw error;
+        const settlement = await settleCallbackReviewFailure({ attempted: liveCallback, error, store: this.store, failureCount: this.callbackReviewFailureCount, notBefore: this.callbackReviewNotBefore, getCurrent: () => this.pendingChatCallbacks.get(callback.threadId), save: () => this.saveCallbackState(), emit: () => this.emit("change") });
+        if (!settlement.completed) { this.callbackReviewScheduler.scheduleAt(Date.now() + 100); throw error; }
+        if (settlement.value.retryAt !== null) this.callbackReviewScheduler.scheduleAt(settlement.value.retryAt);
+        if (settlement.value.failureApplied) throw error;
         continue;
       }
 
-      await runSerializedJobMutation(callback.threadId, async () => {
+      const terminalization = await settleReviewMutationWithin(runSerializedJobMutation(callback.threadId, async () => {
         const nextCallback = this.pendingChatCallbacks.get(callback.threadId);
         if (nextCallback !== liveCallback || !isCallbackOutstanding(nextCallback) || nextCallback.reviewState !== "running") return;
         const currentScopeId = this.store.getThreadJobPayload(callback.threadId)?.protocol.currentScopeId ?? null;
@@ -956,14 +954,18 @@ export class ButlerAgentService extends EventEmitter {
             this.emit("change");
             return;
           }
-          await this.postOperatorJobReply(callback.threadId, safeCloseoutText);
+          await this.postOperatorJobReply(callback.threadId, safeCloseoutText, liveCallback);
           return;
         }
 
         idleCloseoutReview(nextCallback);
         await this.saveCallbackState();
         this.emit("change");
-      });
+      }), 5_000).catch((error) => ({ completed: false as const, error }));
+      if (!terminalization.completed && liveCallback.reviewState === "running") { applyCallbackReviewFailure({ callback: liveCallback, error: "error" in terminalization ? terminalization.error : new Error("Adversarial review closeout persistence timed out."), store: this.store, failureCount: this.callbackReviewFailureCount, notBefore: this.callbackReviewNotBefore }); void this.saveCallbackState().catch(() => undefined); this.emit("change"); if (liveCallback.reviewNextAttemptAt) this.callbackReviewScheduler.scheduleAt(liveCallback.reviewNextAttemptAt); }
+      } finally {
+        this.activeCallbackReviewThreads.delete(liveCallback.threadId);
+      }
     }
   }
 

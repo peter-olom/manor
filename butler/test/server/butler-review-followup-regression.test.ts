@@ -150,6 +150,68 @@ test("a failed review schedules its retry without waiting for status polling", a
   agent.dispose();
 });
 
+test("an expired running review without a runtime watchdog is recovered", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-review-orphan-recovery-"));
+  const threadId = "thread-review-orphan";
+  store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
+  const agent = createButlerAgent(store, sessionDir);
+  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: Date.now() - 10_000, scopeDisposition: "replace" });
+  const internals = agent as unknown as {
+    pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
+    activeCallbackReviewThreads: Set<string>;
+    reconcilePendingChatCallbacks(): Promise<void>;
+  };
+  const callback = internals.pendingChatCallbacks.get(threadId)!;
+  Object.assign(callback, {
+    callbackState: "received_worker_callback",
+    dispatchState: "ready",
+    reviewState: "running",
+    reviewStage: "supervising_closeout",
+    reviewAttempt: 1,
+    reviewDeadlineAt: Date.now() - 1,
+    reviewLastActivityAt: Date.now() - 5_000
+  });
+  internals.activeCallbackReviewThreads.add("another-active-review");
+
+  await internals.reconcilePendingChatCallbacks();
+
+  assert.notEqual(callback.reviewState, "running");
+  assert.equal(callback.reviewStage, "retry_wait");
+  assert.match(callback.reviewLastError ?? "", /without recording a terminal state/);
+  agent.dispose();
+});
+
+test("an expired activity lease is not recovered while its exact review run is active", async () => {
+  const store = await createStore();
+  const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-review-active-watchdog-"));
+  const threadId = "thread-review-active";
+  store.upsertThreadSummary({ id: threadId, status: "idle", cwd: "/workspace", turns: [] });
+  const agent = createButlerAgent(store, sessionDir);
+  await agent.notifyDirectCodexMessage({ threadId, text: "Review this work.", requestedAt: Date.now() - 10_000, scopeDisposition: "replace" });
+  const internals = agent as unknown as {
+    pendingChatCallbacks: Map<string, ButlerThreadCallbackView>;
+    reconcilePendingChatCallbacks(): Promise<void>;
+    activeCallbackReviewThreads: Set<string>;
+  };
+  const callback = internals.pendingChatCallbacks.get(threadId)!;
+  Object.assign(callback, {
+    callbackState: "received_worker_callback",
+    dispatchState: "ready",
+    reviewState: "running",
+    reviewStage: "supervising_closeout",
+    reviewAttempt: 1,
+    reviewDeadlineAt: Date.now() - 1
+  });
+  internals.activeCallbackReviewThreads.add(threadId);
+
+  await internals.reconcilePendingChatCallbacks();
+
+  assert.equal(callback.reviewState, "running");
+  internals.activeCallbackReviewThreads.delete(threadId);
+  agent.dispose();
+});
+
 test("a failed ordinary steer preserves checklist updates that arrived while sending", async () => {
   const store = await createStore();
   const sessionDir = await mkdtemp(path.join(tmpdir(), "manor-review-scope-concurrency-"));

@@ -48,7 +48,8 @@ test("isolated adversarial review stores only compact findings and reuses the ex
   const model = { provider: "openai-codex", id: "gpt-5.5" } as never;
   let runs = 0;
   let reviewerPrompt = "";
-  const progress: string[] = [];
+  const absoluteDeadlineAt = Date.now() + 10_000;
+  const progress: Array<{ stage: string; deadlineAt: number | null | undefined }> = [];
   const review = () => ensureButlerAdversarialReview({
     watchdogs: new ActivityWatchdogService(),
     store,
@@ -58,11 +59,13 @@ test("isolated adversarial review stores only compact findings and reuses the ex
     piAuthPath: path.join(dir, "auth.json"),
     scratchDir: path.join(dir, "reviews"),
     thinkingLevel: "high",
-    onProgress: (entry) => progress.push(entry.stage),
+    absoluteDeadlineAt,
+    onProgress: (entry) => progress.push({ stage: entry.stage, deadlineAt: entry.deadlineAt }),
     reviewBrief: "Latest Butler steer: verify the retry exhaustion path.",
     buildWorkspaceSnapshot: async () => "diff --git a/retry.ts b/retry.ts",
     runReview: async (input) => {
       runs += 1;
+      assert.equal(input.absoluteDeadlineAt, absoluteDeadlineAt);
       reviewerPrompt = input.prompt;
       return {
         findings: [{
@@ -79,7 +82,10 @@ test("isolated adversarial review stores only compact findings and reuses the ex
   const second = await review();
 
   assert.equal(runs, 1);
-  assert.deepEqual(progress, ["preparing", "reviewing_changes"]);
+  assert.deepEqual(progress, [
+    { stage: "preparing", deadlineAt: absoluteDeadlineAt },
+    { stage: "reviewing_changes", deadlineAt: absoluteDeadlineAt }
+  ]);
   assert.deepEqual(second, first);
   assert.match(reviewerPrompt, /Fix the retry path/);
   assert.match(reviewerPrompt, /verify the retry exhaustion path/);
@@ -371,12 +377,45 @@ test("Pi adversarial review can outlive the former hard maximum while activity c
       submission: new Promise<typeof review>((resolve) => setTimeout(() => resolve(review), 130)),
       abort: async () => undefined,
       timeoutMs: 50,
+      maxDurationMs: 250,
       lastActivityAt: () => lastActivityAt
     });
     assert.deepEqual(result, review);
   } finally {
     clearInterval(activity);
   }
+});
+
+test("Pi adversarial review has an absolute cap even while activity continues", async () => {
+  let lastActivityAt = Date.now();
+  const activity = setInterval(() => { lastActivityAt = Date.now(); }, 5);
+  try {
+    await assert.rejects(() => waitForPiReviewSubmission({
+      watchdogs: new ActivityWatchdogService(),
+      prompt: new Promise<void>(() => undefined),
+      submission: new Promise<{ findings: [] }>(() => undefined),
+      abort: async () => undefined,
+      timeoutMs: 100,
+      maxDurationMs: 25,
+      lastActivityAt: () => lastActivityAt
+    }), /maximum runtime/);
+  } finally {
+    clearInterval(activity);
+  }
+});
+
+test("Pi adversarial review does not wait for an abort that never settles", async () => {
+  const review = { findings: [] };
+  const startedAt = Date.now();
+  const result = await waitForPiReviewSubmission({
+    watchdogs: new ActivityWatchdogService(),
+    prompt: new Promise<void>(() => undefined),
+    submission: Promise.resolve(review),
+    abort: async () => new Promise<never>(() => undefined),
+    timeoutMs: 100
+  });
+  assert.deepEqual(result, review);
+  assert.ok(Date.now() - startedAt < 100);
 });
 
 test("Pi adversarial review still stops after sustained inactivity", async () => {

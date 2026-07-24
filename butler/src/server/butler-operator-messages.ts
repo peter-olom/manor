@@ -14,6 +14,16 @@ import { isTrustedProjectArtifactUserUrl } from "./project-artifact-access.js";
 
 type ButlerMessageAttachmentView = NonNullable<ButlerMessageView["attachments"]>[number];
 
+export class OperatorMessageStateWriteQueue {
+  private tail: Promise<void> = Promise.resolve();
+
+  run(write: () => Promise<void>): Promise<void> {
+    const queued = this.tail.catch(() => undefined).then(write);
+    this.tail = queued;
+    return queued;
+  }
+}
+
 type OperatorMessageOptions = {
   role?: string;
   displayText?: string | null;

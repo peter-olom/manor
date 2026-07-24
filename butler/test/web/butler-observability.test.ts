@@ -518,14 +518,15 @@ test("blocked review shows model, attempt, exact failure, and model-aware retry"
 });
 
 test("active review shows progress and Stop without an arbitrary timeout countdown", () => {
+  const now = Date.now();
   const markup = renderToStaticMarkup(React.createElement(ReviewActivityBubble, {
     review: {
       state: "running",
       stage: "reviewing_changes",
       attempt: 1,
       maxAttempts: 3,
-      startedAt: 100,
-      deadlineAt: 220,
+      startedAt: now - 100,
+      deadlineAt: now + 60_000,
       nextAttemptAt: null,
       lastActivityAt: 120,
       lastActivity: "Reviewer is reasoning over the change.",
@@ -548,6 +549,39 @@ test("active review shows progress and Stop without an arbitrary timeout countdo
   assert.match(markup, /Reviewer tool history/);
   assert.match(markup, /Stop review/);
   assert.doesNotMatch(markup, /before timeout|maximum/);
+});
+
+test("expired running review is shown as stalled without a spinner", () => {
+  const markup = renderToStaticMarkup(React.createElement(ReviewActivityBubble, {
+    review: {
+      state: "running",
+      stage: "supervising_closeout",
+      attempt: 1,
+      maxAttempts: 3,
+      startedAt: Date.now() - 120_000,
+      deadlineAt: Date.now() - 1,
+      nextAttemptAt: null,
+      lastActivityAt: Date.now() - 90_000,
+      lastActivity: "Butler is reasoning over the review findings.",
+      lastTool: "read_job",
+      lastError: null,
+      errors: [],
+      modelProvider: "openai-codex",
+      modelId: "gpt-5.6-sol",
+      thinkingLevel: "medium",
+      retryable: false,
+      workSliceNodeId: "node-current",
+      scopeLabel: "Current operator request"
+    },
+    blockedReason: null,
+    busy: false,
+    onRetry: () => undefined,
+    onStop: () => undefined
+  }));
+
+  assert.match(markup, /Review stalled/);
+  assert.match(markup, /passed its backend activity deadline/);
+  assert.doesNotMatch(markup, /sand-spinner/);
 });
 
 test("non-review closeout blockers do not offer an unusable retry", () => {

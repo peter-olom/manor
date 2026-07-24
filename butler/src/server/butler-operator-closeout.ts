@@ -18,7 +18,7 @@ export type OperatorJobReplyAccess = {
   deliveredCloseoutIds: Set<string>;
   artifactsDir: string;
   noteThreadFocus(threadId: string, reason: string): void;
-  saveOperatorMessageState(): Promise<void>;
+  saveOperatorMessageState(messages?: ButlerMessageView[]): Promise<void>;
   saveCallbackState(): Promise<void>;
   emit(event: "change"): boolean;
 };
@@ -53,9 +53,15 @@ function callbackReviewTrace(callback: PendingChatCallback, completedAt: number)
   }];
 }
 
-export async function postOperatorJobReply(access: OperatorJobReplyAccess, threadId: string, text: string): Promise<void> {
+export async function postOperatorJobReply(access: OperatorJobReplyAccess, threadId: string, text: string, expectedCallback?: PendingChatCallback): Promise<void> {
   await runSerializedCallbackReplacement(threadId, async () => {
+    const assertExpectedCurrent = () => {
+      if (expectedCallback && (access.pendingChatCallbacks.get(threadId) !== expectedCallback || expectedCallback.reviewState !== "running" || !isCallbackOutstanding(expectedCallback))) {
+        throw new Error("This callback review was superseded before closeout completed.");
+      }
+    };
     assertCallbackReviewCurrent(threadId);
+    assertExpectedCurrent();
     const callback = access.pendingChatCallbacks.get(threadId);
     if (!callback || !isCallbackOutstanding(callback)) throw new Error(`Job ${threadId} does not have an outstanding operator reply obligation.`);
     const thread = access.store.getThread(threadId);
@@ -82,6 +88,7 @@ export async function postOperatorJobReply(access: OperatorJobReplyAccess, threa
     });
     if (closeoutWasAlreadyPosted) {
       await rotateAcceptedBaseline(access, threadId, relevantWorkerReport?.status === "completed");
+      assertExpectedCurrent();
       access.deliveredCloseoutIds.add(closeoutId);
       applyPostedCloseout(callback, { resolutionState, threadStatus: thread.status, postedAt: completedAt, workerReportUpdatedAt: relevantWorkerReport?.updatedAt ?? null });
       await access.saveCallbackState();
@@ -97,6 +104,7 @@ export async function postOperatorJobReply(access: OperatorJobReplyAccess, threa
       throw new Error(closeoutBlocker);
     }
     await rotateAcceptedBaseline(access, threadId, relevantWorkerReport?.status === "completed");
+    assertExpectedCurrent();
     const closeoutText = buildOperatorCloseoutText({
       store: access.store,
       thread,
@@ -104,14 +112,22 @@ export async function postOperatorJobReply(access: OperatorJobReplyAccess, threa
       text,
       operatorRequestText: callback.operatorRequestText
     });
+    const nextOperatorMessages = [...access.operatorMessages];
+    upsertOperatorMessage(nextOperatorMessages, messageId, closeoutText, at, elapsedTaskDurationMs(callback.requestedAt, completedAt), { trace: callbackReviewTrace(callback, completedAt) });
+    try {
+      await access.saveOperatorMessageState(nextOperatorMessages);
+      assertExpectedCurrent();
+    } catch (error) {
+      await access.saveOperatorMessageState(access.operatorMessages).catch(() => undefined);
+      throw error;
+    }
     upsertOperatorMessage(access.operatorMessages, messageId, closeoutText, at, elapsedTaskDurationMs(callback.requestedAt, completedAt), { trace: callbackReviewTrace(callback, completedAt) });
-    await access.saveOperatorMessageState();
     access.operatorSink?.onOperatorReply?.({ threadId, text: closeoutText, at });
     access.noteThreadFocus(threadId, "closeout");
     access.deliveredCloseoutIds.add(closeoutId);
     applyPostedCloseout(callback, { resolutionState, threadStatus: thread.status, postedAt: completedAt, workerReportUpdatedAt: relevantWorkerReport?.updatedAt ?? null });
     recordPostedCloseoutEvents(access.store, threadId, resolutionState);
-    await access.saveCallbackState();
+    await Promise.all([access.saveOperatorMessageState(), access.saveCallbackState()]);
     access.emit("change");
   });
 }

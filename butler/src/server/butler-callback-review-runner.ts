@@ -22,6 +22,11 @@ const CALLBACK_REVIEW_MAX_ATTEMPTS = 3;
 const CALLBACK_REVIEW_PAUSED_PREFIX = "Adversarial review paused";
 const CALLBACK_REVIEW_OPERATOR_STOPPED_PREFIX = "Adversarial review stopped by the operator";
 const CALLBACK_SUPERVISOR_TIMEOUT_MS = 90_000;
+const CALLBACK_REVIEW_MAX_DURATION_MS = 5 * 60_000;
+
+export function raceCallbackReviewAttempt<T>(work: Promise<T>, attemptHealth: Promise<never>): Promise<T> {
+  return Promise.race([work, attemptHealth]);
+}
 const CALLBACK_REVIEW_TOOL_NAMES = new Set([
   "read_job",
   "read_supervision_checklist",
@@ -141,6 +146,70 @@ export function persistCallbackReviewProgress(input: {
     await input.save();
     input.emit();
   });
+}
+
+export function recoverOrphanedCallbackReviews(input: {
+  callbacks: PendingChatCallback[];
+  activeThreadIds: ReadonlySet<string>;
+  now: number;
+  store: ButlerStateStore;
+  failureCount: Map<string, number>;
+  notBefore: Map<string, number>;
+}): { changed: boolean; retryAt: number | null } {
+  let changed = false;
+  let retryAt: number | null = null;
+  for (const callback of input.callbacks) {
+    if (input.activeThreadIds.has(callback.threadId) || callback.reviewState !== "running" || !callback.reviewDeadlineAt || callback.reviewDeadlineAt > input.now) continue;
+    applyCallbackReviewFailure({
+      callback,
+      error: new Error("Adversarial review process ended without recording a terminal state."),
+      store: input.store,
+      failureCount: input.failureCount,
+      notBefore: input.notBefore
+    });
+    const nextRetryAt = callback.reviewNextAttemptAt ?? null;
+    if (nextRetryAt !== null) retryAt = retryAt === null ? nextRetryAt : Math.min(retryAt, nextRetryAt);
+    input.store.addEvent(callback.threadId, "butler.adversarial_review.recovered", "Recovered an expired review whose runtime watchdog had already exited.");
+    changed = true;
+  }
+  return { changed, retryAt };
+}
+
+export async function settleReviewMutationWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<{ completed: true; value: T } | { completed: false }> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ completed: true as const, value })),
+      new Promise<{ completed: false }>((resolve) => {
+        timer = setTimeout(() => resolve({ completed: false }), timeoutMs);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function settleCallbackReviewFailure(input: {
+  attempted: PendingChatCallback;
+  error: unknown;
+  store: ButlerStateStore;
+  failureCount: Map<string, number>;
+  notBefore: Map<string, number>;
+  getCurrent: () => PendingChatCallback | undefined;
+  save: () => Promise<void>;
+  emit: () => void;
+  timeoutMs?: number;
+}) {
+  return settleReviewMutationWithin(runSerializedJobMutation(input.attempted.threadId, async () => {
+    const current = input.getCurrent();
+    if (shouldIgnoreCallbackReviewFailure(input.attempted, current) || !current) return { failureApplied: false, retryAt: null };
+    applyCallbackReviewFailure({ callback: current, error: input.error, store: input.store, failureCount: input.failureCount, notBefore: input.notBefore });
+    const retryAt = current.reviewNextAttemptAt ?? null;
+    await input.save();
+    input.emit();
+    return { failureApplied: true, retryAt };
+  }), input.timeoutMs ?? 5_000);
 }
 
 export function prepareCallbackReviewRetry(
@@ -375,6 +444,7 @@ export async function runCallbackAdversarialReview(input: {
   watchdogs: ActivityWatchdogService;
   isCurrent?: () => boolean;
   supervisorTimeoutMs?: number;
+  maxDurationMs?: number;
   onProgress?: (progress: AdversarialReviewProgress) => void;
 }): Promise<void> {
   const { callback, sessionAccess } = input;
@@ -390,7 +460,39 @@ export async function runCallbackAdversarialReview(input: {
   const model = callback.reviewModelId ? pinnedModel : sessionAccess.session.model;
   const thinkingLevel = callback.reviewReasoningLevel ?? getButlerShellSnapshot(sessionAccess).compose?.thinkingLevel ?? "off";
   if (!model) throw new Error("The Butler model selected for this review is no longer available. Open Settings → Providers to reconnect it, then retry.");
-  await ensureButlerAdversarialReview({
+  const attemptStartedAt = callback.reviewStartedAt ?? Date.now();
+  const attemptDeadlineAt = attemptStartedAt + (input.maxDurationMs ?? CALLBACK_REVIEW_MAX_DURATION_MS);
+  if (attemptDeadlineAt <= Date.now()) throw new Error("Adversarial review exceeded its maximum runtime before it could start.");
+  let activeAbort: (() => Promise<unknown>) | null = null;
+  let attemptWatchdogId: string | null = null;
+  let attemptRejected = false;
+  const attemptHealth = new Promise<never>((_resolve, reject) => {
+    const check = () => {
+      if (attemptRejected) return;
+      if (!(input.isCurrent?.() ?? true)) {
+        attemptRejected = true;
+        attemptActive = false;
+        if (activeAbort) void activeAbort().catch(() => undefined);
+        reject(new Error("This callback review was superseded by newer Butler context."));
+        return;
+      }
+      if (Date.now() < attemptDeadlineAt) return;
+      attemptRejected = true;
+      attemptActive = false;
+      if (activeAbort) void activeAbort().catch(() => undefined);
+      reject(new Error(`Adversarial review exceeded its ${Math.round((input.maxDurationMs ?? CALLBACK_REVIEW_MAX_DURATION_MS) / 1000)}s maximum runtime.`));
+    };
+    attemptWatchdogId = `review-attempt:${callback.threadId}:${callback.reviewAttempt ?? 0}:${crypto.randomUUID()}`;
+    input.watchdogs.register({
+      id: attemptWatchdogId,
+      policy: "review-activity",
+      target: callback.threadId,
+      maxIntervalMs: Math.max(1, attemptDeadlineAt - Date.now()),
+      callback: check
+    });
+  });
+  try {
+  await raceCallbackReviewAttempt(ensureButlerAdversarialReview({
     store: input.store,
     threadId: callback.threadId,
     model,
@@ -401,14 +503,15 @@ export async function runCallbackAdversarialReview(input: {
     expectedReportTurnId: callback.acceptedWorkerTurnId,
     reviewBrief: buildCallbackAdversarialReviewBrief(input.store, callback),
     watchdogs: input.watchdogs,
+    absoluteDeadlineAt: attemptDeadlineAt,
     isCurrent,
     onProgress: input.onProgress
-  });
+  }), attemptHealth);
   if (!isCurrent()) return;
 
   const supervisorTimeoutMs = input.supervisorTimeoutMs ?? CALLBACK_SUPERVISOR_TIMEOUT_MS;
   const supervisorStartedAt = Date.now();
-  const nextSupervisorDeadlineAt = (activityAt = Date.now()) => activityAt + supervisorTimeoutMs;
+  const nextSupervisorDeadlineAt = (activityAt = Date.now()) => Math.min(activityAt + supervisorTimeoutMs, attemptDeadlineAt);
   let lastProgress: AdversarialReviewProgress = {
     stage: "supervising_closeout",
     message: "Adversarial findings are ready. Butler is deciding the closeout action.",
@@ -426,8 +529,8 @@ export async function runCallbackAdversarialReview(input: {
     extensionFactories: [registerOpencodeGoRequestTransforms],
     systemPromptOverride: () => sessionAccess.session?.systemPrompt ?? "You are Butler supervising an isolated Worker review."
   });
-  await resourceLoader.reload();
-  const { session } = await createAgentSession({
+  await raceCallbackReviewAttempt(resourceLoader.reload(), attemptHealth);
+  const { session } = await raceCallbackReviewAttempt(createAgentSession({
     cwd: "/repos",
     authStorage: AuthStorage.create(input.piAuthPath),
     modelRegistry: sessionAccess.modelRegistry,
@@ -443,7 +546,8 @@ export async function runCallbackAdversarialReview(input: {
     sessionManager: SessionManager.inMemory("/repos"),
     settingsManager,
     resourceLoader
-  });
+  }), attemptHealth);
+  activeAbort = () => session.abort();
   let lastReasoningReportAt = 0;
   let completedSupervisorAction = false;
   const unsubscribe = session.subscribe((event) => {
@@ -512,15 +616,16 @@ export async function runCallbackAdversarialReview(input: {
       });
     });
     const payload = input.store.getThreadJobPayload(callback.threadId);
-    const outputManifest = payload
-      ? await formatResolvedJobOutputManifestForReview(payload, input.store)
-      : "No durable outputs are registered for the current job attempt.";
+    const outputManifest = await raceCallbackReviewAttempt(payload
+      ? formatResolvedJobOutputManifestForReview(payload, input.store)
+      : Promise.resolve("No durable outputs are registered for the current job attempt."), attemptHealth);
     await Promise.race([
       session.prompt(buildCallbackReviewPrompt(input.store, callback, {
         butlerTurnContext: buildCurrentOperatorTurnContext(sessionAccess.session.messages, callback.operatorRequestText),
         outputManifest
       })),
-      reviewHealth
+      reviewHealth,
+      attemptHealth
     ]);
     assertCallbackSupervisorPromptSucceeded(session.messages, completedSupervisorAction, formatProviderModelRef({ provider: model.provider, model: model.id }) ?? model.id);
   } finally {
@@ -528,6 +633,10 @@ export async function runCallbackAdversarialReview(input: {
     if (watchdogId) input.watchdogs.unregister(watchdogId);
     unsubscribe();
     session.dispose();
+  }
+  } finally {
+    attemptActive = false;
+    if (attemptWatchdogId) input.watchdogs.unregister(attemptWatchdogId);
   }
 }
 
