@@ -27,6 +27,29 @@ const CALLBACK_REVIEW_MAX_DURATION_MS = 5 * 60_000;
 export function raceCallbackReviewAttempt<T>(work: Promise<T>, attemptHealth: Promise<never>): Promise<T> {
   return Promise.race([work, attemptHealth]);
 }
+
+export function createCallbackSupervisorCompletionSignal(): {
+  promise: Promise<void>;
+  complete: () => void;
+  completed: () => boolean;
+} {
+  let isCompleted = false;
+  let resolveCompletion!: () => void;
+  const promise = new Promise<void>((resolve) => { resolveCompletion = resolve; });
+  return {
+    promise,
+    complete: () => {
+      if (isCompleted) return;
+      isCompleted = true;
+      resolveCompletion();
+    },
+    completed: () => isCompleted
+  };
+}
+
+export function callbackReviewWasSuperseded(isCurrent: boolean, supervisorCompleted: boolean): boolean {
+  return !isCurrent && !supervisorCompleted;
+}
 const CALLBACK_REVIEW_TOOL_NAMES = new Set([
   "read_job",
   "read_supervision_checklist",
@@ -463,13 +486,14 @@ export async function runCallbackAdversarialReview(input: {
   const attemptStartedAt = callback.reviewStartedAt ?? Date.now();
   const attemptDeadlineAt = attemptStartedAt + (input.maxDurationMs ?? CALLBACK_REVIEW_MAX_DURATION_MS);
   if (attemptDeadlineAt <= Date.now()) throw new Error("Adversarial review exceeded its maximum runtime before it could start.");
+  const supervisorCompletion = createCallbackSupervisorCompletionSignal();
   let activeAbort: (() => Promise<unknown>) | null = null;
   let attemptWatchdogId: string | null = null;
   let attemptRejected = false;
   const attemptHealth = new Promise<never>((_resolve, reject) => {
     const check = () => {
       if (attemptRejected) return;
-      if (!(input.isCurrent?.() ?? true)) {
+      if (callbackReviewWasSuperseded(input.isCurrent?.() ?? true, supervisorCompletion.completed())) {
         attemptRejected = true;
         attemptActive = false;
         if (activeAbort) void activeAbort().catch(() => undefined);
@@ -567,6 +591,8 @@ export async function runCallbackAdversarialReview(input: {
     if (event.type === "tool_execution_end") {
       if (!event.isError && CALLBACK_SUPERVISOR_COMPLETION_TOOLS.has(event.toolName)) {
         completedSupervisorAction = true;
+        supervisorCompletion.complete();
+        void session.abort().catch(() => undefined);
       }
       let detail = "";
       if (event.isError) {
@@ -594,7 +620,7 @@ export async function runCallbackAdversarialReview(input: {
   try {
     const reviewHealth = new Promise<never>((_resolve, reject) => {
       const check = () => {
-        if (!isCurrent()) {
+        if (callbackReviewWasSuperseded(isCurrent(), supervisorCompletion.completed())) {
           void session.abort();
           reject(new Error("This callback review was superseded by newer Butler context."));
           return;
@@ -625,7 +651,8 @@ export async function runCallbackAdversarialReview(input: {
         outputManifest
       })),
       reviewHealth,
-      attemptHealth
+      attemptHealth,
+      supervisorCompletion.promise
     ]);
     assertCallbackSupervisorPromptSucceeded(session.messages, completedSupervisorAction, formatProviderModelRef({ provider: model.provider, model: model.id }) ?? model.id);
   } finally {

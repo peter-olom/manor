@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { ActivityWatchdogService } from "../../src/server/activity-watchdog.js";
-import { applyCallbackReviewFailure, applyCallbackReviewProgress, assertCallbackSupervisorPromptSucceeded, buildCallbackAdversarialReviewBrief, buildCurrentOperatorTurnContext, buildGuardedCallbackReviewTools, CallbackReviewScheduler, isCallbackReviewAutomationPause, isCallbackReviewOperatorPause, isCallbackReviewRetryablePause, isCurrentCallbackReview, pauseCallbackReview, prepareCallbackReviewRetry, raceCallbackReviewAttempt, selectRunnableCallbackReviews, settleCallbackReviewFailure, shouldIgnoreCallbackReviewFailure } from "../../src/server/butler-callback-review-runner.js";
+import { applyCallbackReviewFailure, applyCallbackReviewProgress, assertCallbackSupervisorPromptSucceeded, buildCallbackAdversarialReviewBrief, buildCurrentOperatorTurnContext, buildGuardedCallbackReviewTools, callbackReviewWasSuperseded, CallbackReviewScheduler, createCallbackSupervisorCompletionSignal, isCallbackReviewAutomationPause, isCallbackReviewOperatorPause, isCallbackReviewRetryablePause, isCurrentCallbackReview, pauseCallbackReview, prepareCallbackReviewRetry, raceCallbackReviewAttempt, selectRunnableCallbackReviews, settleCallbackReviewFailure, shouldIgnoreCallbackReviewFailure } from "../../src/server/butler-callback-review-runner.js";
 import { blockCloseoutReview } from "../../src/server/butler-closeout-gate.js";
 import type { PendingChatCallback } from "../../src/server/butler-agent-helpers.js";
 import { loadButlerCallbackState } from "../../src/server/butler-callback-state.js";
@@ -226,6 +226,25 @@ test("callback review attempt deadline interrupts a hanging supervisor setup ste
   });
 
   await assert.rejects(raceCallbackReviewAttempt(hangingSetup, attemptHealth), /review attempt expired/);
+});
+
+test("a successful supervisor completion action terminates the isolated review once", async () => {
+  const completion = createCallbackSupervisorCompletionSignal();
+  let promptFinished = false;
+  const hangingPrompt = new Promise<void>(() => undefined).finally(() => { promptFinished = true; });
+
+  completion.complete();
+  completion.complete();
+  await Promise.race([hangingPrompt, completion.promise]);
+
+  assert.equal(completion.completed(), true);
+  assert.equal(promptFinished, false);
+});
+
+test("self-terminal supervisor state is not mistaken for external supersession", () => {
+  assert.equal(callbackReviewWasSuperseded(false, true), false);
+  assert.equal(callbackReviewWasSuperseded(false, false), true);
+  assert.equal(callbackReviewWasSuperseded(true, false), false);
 });
 
 test("isolated supervisor rejects provider errors and incomplete closeout decisions", () => {
