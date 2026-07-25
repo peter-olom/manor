@@ -12,3 +12,5 @@ butler/dist/
 test-results/
 
 .worktrees/
+qa-output/
+undefined/
