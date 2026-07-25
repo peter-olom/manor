@@ -1,6 +1,6 @@
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime.js";
 import type { ManorRestartRequestView } from "../shared/manor-restart.js";
-import type { ButlerRoutingDecisionView, ReviewFinding, ReviewPanelRunView, ReviewPanelSummaryView, ReviewRecord, WorkerClaimsReportView, WorkerReviewResultRecordView } from "./orchestration-types.js";
+import type { ButlerRoutingDecisionView, ReviewFinding, ReviewRecord, WorkerClaimsReportView } from "./orchestration-types.js";
 import type { ButlerMemoryEntryView, MemoryEmbeddingView, MemoryRetrievalCandidateView } from "./memory-types.js";
 export type { ButlerMemoryEntryView, ButlerMemoryReviewState, ButlerMemoryScopeKind, ButlerMemoryType, MemoryEmbeddingView, MemoryRetrievalCandidateView } from "./memory-types.js";
 export type {
@@ -10,15 +10,9 @@ export type {
   ButlerRoutingQuestionView,
   ButlerRoutingRiskLevel,
   ButlerRoutingTaskClass,
-  ReviewPanelRole,
-  ReviewPanelRunView,
-  ReviewPanelSummaryStatus,
-  ReviewPanelSummaryView,
-  ReviewPanelVerdict,
   WorkerClaimStatus,
   WorkerClaimsReportView,
   WorkerClaimView,
-  WorkerReviewResultRecordView,
   WorkerReviewSeverity,
   WorkerSubAgentSummaryView,
   ReviewFinding, ReviewRecord
@@ -104,10 +98,7 @@ export interface CodexThreadExecutionContractView {
   inferredWorkDepth: CodexInferredWorkDepth;
   taskCategory: CodexTaskCategory;
   verificationMatrix: VerificationMatrixRowView[];
-  reviewPanel: ReviewPanelRunView[];
-  reviewPanelSummary: ReviewPanelSummaryView;
   orchestration?: ButlerRoutingDecisionView;
-  reviewResults?: WorkerReviewResultRecordView[];
   reviewBaselineCwd?: string | null;
   reviewBaselineSha?: string | null;
   reviewBaselineTreeSha?: string | null;

@@ -8,7 +8,6 @@ import type {
   VerificationMatrixRowView
 } from "./types.js";
 import { taskHasUiImplication } from "./proof-policy.js";
-import { buildReviewPanel, summarizeReviewPanel } from "./review-panel.js";
 
 const MAX_ACCEPTANCE_POINTS = 24;
 const DEFAULT_BLOCKED_CONDITIONS = [
@@ -404,7 +403,6 @@ export function buildThreadExecutionContract(input: {
     blockedConditions: input.blockedConditions
   });
   const verificationMatrix = buildVerificationMatrix({ acceptancePoints, taskCategory, inferredWorkDepth });
-  const reviewPanel = buildReviewPanel({ taskCategory, inferredWorkDepth, requestedTask, attachmentCount: input.attachmentCount ?? 0 });
 
   return {
     threadId: input.threadId,
@@ -420,8 +418,6 @@ export function buildThreadExecutionContract(input: {
     inferredWorkDepth,
     taskCategory,
     verificationMatrix,
-    reviewPanel,
-    reviewPanelSummary: summarizeReviewPanel(reviewPanel),
     mission,
     notes: [...new Set(notes)]
   };

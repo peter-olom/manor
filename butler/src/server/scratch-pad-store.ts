@@ -459,20 +459,18 @@ export class ScratchPadStore extends EventEmitter {
     const checklist = thread?.supervisionChecklist ?? null;
     const contract = thread?.executionContract ?? null;
     const workerReport = thread?.workerReport ?? null;
-    if (workerReport?.status === "blocked" || thread?.supervisor?.blocked || contract?.reviewPanelSummary.status === "blocked") {
-      return defaultReadiness("blocked", workerReport?.updatedAt ?? contract?.reviewPanelSummary.updatedAt ?? item.updatedAt);
+    const latestReview = thread?.reviewRecords?.sort((a, b) => b.reportUpdatedAt - a.reportUpdatedAt)[0] ?? null;
+    if (workerReport?.status === "blocked" || thread?.supervisor?.blocked || (latestReview?.state === "rejected")) {
+      return defaultReadiness("blocked", workerReport?.updatedAt ?? latestReview?.updatedAt ?? item.updatedAt);
     }
     if (checklist?.items.some((entry) => entry.status === "rejected" || entry.queuedInstruction)) {
       return defaultReadiness("needs_rework", checklist.updatedAt);
     }
-    if (contract?.reviewPanelSummary.status === "concerns") {
-      return defaultReadiness("needs_rework", contract.reviewPanelSummary.updatedAt ?? item.updatedAt);
-    }
-    if (workerReport && checklist?.reviewState === "reviewed") {
-      return defaultReadiness("ready", Math.max(workerReport.updatedAt, checklist.updatedAt, contract?.reviewPanelSummary.updatedAt ?? 0));
+    if (latestReview?.state === "accepted") {
+      return defaultReadiness("ready", Math.max(workerReport?.updatedAt ?? 0, checklist?.updatedAt ?? 0, latestReview.updatedAt));
     }
     if (workerReport) {
-      return defaultReadiness("reviewing", Math.max(workerReport.updatedAt, checklist?.updatedAt ?? 0, contract?.reviewPanelSummary.updatedAt ?? 0));
+      return defaultReadiness("reviewing", Math.max(workerReport.updatedAt, checklist?.updatedAt ?? 0, latestReview?.updatedAt ?? 0));
     }
     return defaultReadiness("exploring", item.startedAt ?? item.updatedAt);
   }
@@ -487,9 +485,8 @@ export class ScratchPadStore extends EventEmitter {
     const workerReport = thread?.workerReport ?? null;
     const totalEvidence = checklist?.items.length ?? contract?.verificationMatrix.length ?? 0;
     const acceptedEvidence = checklist?.items.filter((entry) => entry.status === "accepted" || entry.status === "waived").length ?? 0;
-    const reviewerConcerns = [
-      ...new Set(contract?.reviewPanel.flatMap((entry) => [entry.requiredFollowUp, ...entry.concerns].filter((value): value is string => Boolean(value))) ?? [])
-    ].slice(0, 5);
+    const latestReview = thread?.reviewRecords?.sort((a, b) => b.reportUpdatedAt - a.reportUpdatedAt)[0] ?? null;
+    const reviewerConcerns = (latestReview?.findings ?? []).filter((f) => f.blocking && !f.waived).map((f) => f.summary).slice(0, 5);
     const usedAttachments = item.attachments.filter((attachment) => attachment.used).length;
     const availableAttachments = item.attachments.filter((attachment) => attachment.available).length;
     const attachmentSummary =
@@ -516,12 +513,12 @@ export class ScratchPadStore extends EventEmitter {
       resultSummary: workerReport?.summary ?? item.dossier.resultSummary,
       acceptedEvidence,
       totalEvidence,
-      reviewerSummary: contract?.reviewPanelSummary.summary ?? item.dossier.reviewerSummary,
+      reviewerSummary: latestReview?.findings.map((f) => f.summary).join("; ") ?? item.dossier.reviewerSummary,
       reviewerConcerns,
       attachmentSummary,
       nextAction,
       risk: rejected?.queuedInstruction ?? rejected?.butlerNote ?? (waiverSummary || null),
-      updatedAt: Math.max(workerReport?.updatedAt ?? 0, checklist?.updatedAt ?? 0, contract?.reviewPanelSummary.updatedAt ?? 0, item.updatedAt)
+      updatedAt: Math.max(workerReport?.updatedAt ?? 0, checklist?.updatedAt ?? 0, latestReview?.updatedAt ?? 0, item.updatedAt)
     };
   }
 

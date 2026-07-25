@@ -570,7 +570,6 @@ export class ButlerAgentService extends EventEmitter {
       this.emit("change");
     }); });
   }
-
   async start(): Promise<void> {
     await fs.mkdir(this.sessionDir, { recursive: true });
     await this.loadOperatorMessageState();
@@ -579,6 +578,20 @@ export class ButlerAgentService extends EventEmitter {
     if (operatorStateChanged) await this.saveOperatorMessageState();
     await this.loadActivitySummaryState();
     await this.loadCallbackState();
+    for (const [threadId, callback] of this.pendingChatCallbacks) {
+      if (callback.reviewState === "blocked" && callback.blockedCloseoutReason?.startsWith("Adversarial review paused")) {
+        const review = this.store.getLatestReviewRecord(threadId);
+        const report = this.store.getWorkerReport(threadId);
+        if (review && report && review.reportUpdatedAt === report.updatedAt && (review.state === "accepted" || review.state === "rejected")) {
+          callback.reviewState = "queued";
+          callback.reviewStage = "queued";
+          callback.blockedCloseoutReason = null;
+          callback.blockedCloseoutReportAt = null;
+          callback.updatedAt = Date.now();
+        }
+      }
+    }
+    await this.saveCallbackState();
     await this.manorRestartRequests.load();
     this.auth = await readButlerAuthStatus(this.piAuthPath);
     this.workerAuth = await this.piRpcWorkerClient?.getAuthStatus() ?? { mode: "none", loggedIn: false, validationError: "Pi Worker runtime is not available", lastValidatedAt: Date.now() };
@@ -605,7 +618,6 @@ export class ButlerAgentService extends EventEmitter {
     this.unsubscribeSession?.();
     this.unsubscribeSession = null;
   }
-
   async refreshModelSettings(): Promise<boolean> { if (this.quiescing) return false;
     if (this.modelRefreshPromise) return this.modelRefreshPromise;
     if (this.pending || this.session?.isStreaming || this.session?.isCompacting) return false;
@@ -674,7 +686,6 @@ export class ButlerAgentService extends EventEmitter {
   private getToolUiEffects(name: string): ButlerToolUiEffect[] {
     return this.toolCatalog.find((tool) => tool.name === name)?.uiEffects ?? [];
   }
-
   private resetCallbackReviewFailures(threadId?: string): void {
     const ids = threadId ? [threadId] : [...this.pendingChatCallbacks.keys()];
     for (const id of ids) {
@@ -686,7 +697,6 @@ export class ButlerAgentService extends EventEmitter {
       }
     }
   }
-
   private scheduleButlerSkillReload(): void { setImmediate(() => void this.reloadResources().catch((error) => { this.lastError = error instanceof Error ? error.message : String(error); this.emit("change"); })); } private getToolAccess(): ButlerAgentToolAccess { return this as unknown as ButlerAgentToolAccess; }
 
   private getWorkerClientAccess(): WorkerClientAccess {
@@ -698,7 +708,6 @@ export class ButlerAgentService extends EventEmitter {
       recordSuccessfulWorkerSelection: this.options.recordSuccessfulWorkerSelection
     };
   }
-
   private getSessionAccess(): ButlerAgentSessionAccess { return this as unknown as ButlerAgentSessionAccess; }
 
   getButlerSessionId(): string | null { return this.session?.sessionId ?? null; }
@@ -722,7 +731,6 @@ export class ButlerAgentService extends EventEmitter {
     });
     return { candidate, projectMemory: this.store.getProjectMemory(candidate.projectId) };
   }
-
   private noteThreadFocus(threadId: string, reason?: string): void {
     const thread = this.store.getThread(threadId);
     if (!thread) {
@@ -735,7 +743,6 @@ export class ButlerAgentService extends EventEmitter {
       ...this.recentThreadFocus.filter((entry) => entry.threadId !== threadId)
     ].slice(0, 8);
   }
-
   private getRecentFocusedThreadId(): string | null {
     const freshThreshold = Date.now() - 60 * 60 * 1000;
     this.recentThreadFocus = this.recentThreadFocus.filter(
@@ -743,7 +750,6 @@ export class ButlerAgentService extends EventEmitter {
     );
     return this.recentThreadFocus[0]?.threadId ?? null;
   }
-
   private getActiveOperatorThreadGuard(): ButlerOperatorThreadGuard | null { return this.activeOperatorThreadGuard; }
   private getActiveOperatorReferences(): { imageReferenceIds: string[]; fileReferenceIds: string[] } | null { return this.activeOperatorReferences ? { imageReferenceIds: [...this.activeOperatorReferences.imageReferenceIds], fileReferenceIds: [...this.activeOperatorReferences.fileReferenceIds] } : null; }
   private defineButlerTool<TParams extends Record<string, unknown>>(definition: {
@@ -768,7 +774,6 @@ export class ButlerAgentService extends EventEmitter {
       })
     });
   }
-
   private getThreadBudgetLimitMessage(threadId: string): string | null {
     const supervision = this.store.getThreadSupervision(threadId);
     if (supervision.maxButlerTurns === null || supervision.butlerTurnsUsed < supervision.maxButlerTurns) {
@@ -777,7 +782,6 @@ export class ButlerAgentService extends EventEmitter {
 
     return `Butler has used ${supervision.butlerTurnsUsed}/${supervision.maxButlerTurns} reviewed Worker turns for the current operator message on job ${threadId}. Raise the visible turn limit or send a new operator message before dispatching more Worker work.`;
   }
-
   private getOperatorCloseoutBlocker(threadId: string): string | null { return getCloseoutBlocker(this.store, threadId); }
 
   get pendingManorRestartRequest(): AppSnapshot["butler"]["pendingManorRestartRequest"] { return this.manorRestartRequests.pendingRequest; }
@@ -808,7 +812,6 @@ export class ButlerAgentService extends EventEmitter {
       "Only finish when Butler explicitly tells you to finalize the smoke test."
     ].join("\n");
   }
-
   private buildSmokeFollowUpText(plan: SupervisionSmokePlan): string {
     const nextStepNumber = plan.followUpsSent + 2;
     const isFinalFollowUp = plan.followUpsSent + 1 >= plan.totalFollowUps;
@@ -834,7 +837,6 @@ export class ButlerAgentService extends EventEmitter {
       "Then reply briefly that the step was reported and that you are waiting for Butler."
     ].join("\n");
   }
-
   private async sendPrivateJobFollowUp(threadId: string, text: string): Promise<void> { return runSerializedJobMutation(threadId, async () => {
     const limitMessage = this.getThreadBudgetLimitMessage(threadId);
     if (limitMessage) {
@@ -968,7 +970,6 @@ export class ButlerAgentService extends EventEmitter {
       }
     }
   }
-
   private scheduleSmokeTestReactions(): void {
     if (this.smokeReactionInFlight) {
       this.smokeReactionQueued = true;
@@ -988,7 +989,6 @@ export class ButlerAgentService extends EventEmitter {
         }
       });
   }
-
   private async processSmokeTestReactions(): Promise<void> {
     if (this.supervisionSmokePlans.size === 0) {
       return;
@@ -1023,7 +1023,6 @@ export class ButlerAgentService extends EventEmitter {
       }
     }
   }
-
   private async prepareDelegationWorkspace(task: string, cwd?: string): Promise<{ cwd: string; branchName: string | null }> {
     const requestedCwd = await resolveExistingWorkspaceCwd(cwd ?? "/repos");
     const resolvedCwd = await validateWorkspaceCwd(requestedCwd);
@@ -1044,7 +1043,6 @@ export class ButlerAgentService extends EventEmitter {
       branchName: worktree.branchName
     };
   }
-
   private async buildDelegationContract(options: {
     threadId: string;
     task: string;
@@ -1066,7 +1064,6 @@ export class ButlerAgentService extends EventEmitter {
     this.delegationInstructionCache.set(options.threadId, cachedResult);
     return { text: cachedResult.text, contract: cachedResult.contract };
   }
-
   private async createOrUpdateJobPayload(input: {
     threadId: string;
     kind: JobPayloadKind;
@@ -1096,14 +1093,12 @@ export class ButlerAgentService extends EventEmitter {
     this.store.setThreadJobPayload(payload);
     return payload;
   }
-
   private async bindJobPayloadDelivery(threadId: string, delivery: { turnId?: string | null; messageId?: string | null }) {
     const existing = this.store.getThreadJobPayload(threadId);
     if (!existing) return null;
     const payload = bindStoredJobPayloadDelivery(existing, delivery);
     await persistJobPayload(jobPayloadsRoot(this.artifactsDir), payload, { beforeCommit: () => assertCallbackReviewCurrent(threadId) }); assertCallbackReviewCurrent(threadId); this.store.setThreadJobPayload(payload); return payload;
   }
-
   private getServiceTemplate(templateId: string): LoadedServiceTemplate {
     const template = this.serviceTemplateRegistry.get(templateId);
     if (!template) {
@@ -1111,11 +1106,9 @@ export class ButlerAgentService extends EventEmitter {
     }
     return template;
   }
-
   private listServiceTemplates(): LoadedServiceTemplate[] {
     return this.serviceTemplateRegistry.list();
   }
-
   private getValidatedStack(stackId: string | null, threadId: string | null) {
     if (!stackId) {
       return null;
@@ -1144,7 +1137,6 @@ export class ButlerAgentService extends EventEmitter {
 
     return stack;
   }
-
   private getValidatedPreview(previewSelector: string | null, threadId: string | null) {
     if (!previewSelector) {
       return null;
@@ -1183,7 +1175,6 @@ export class ButlerAgentService extends EventEmitter {
 
     throw new Error(`Unknown preview: ${previewSelector}`);
   }
-
   private requireValidatedPreview(previewSelector: string, threadId: string | null) {
     const preview = this.getValidatedPreview(previewSelector, threadId);
     if (!preview) {
@@ -1191,7 +1182,6 @@ export class ButlerAgentService extends EventEmitter {
     }
     return preview;
   }
-
   private getValidatedService(serviceSelector: string | null, threadId: string | null) {
     if (!serviceSelector) {
       return null;
@@ -1230,7 +1220,6 @@ export class ButlerAgentService extends EventEmitter {
 
     throw new Error(`Unknown service: ${serviceSelector}`);
   }
-
   private requireValidatedService(serviceSelector: string, threadId: string | null) {
     const service = this.getValidatedService(serviceSelector, threadId);
     if (!service) {
@@ -1238,7 +1227,6 @@ export class ButlerAgentService extends EventEmitter {
     }
     return service;
   }
-
   private getLatestThreadVerificationPreview(threadId: string): PreviewLeaseView {
     const previews = this.store
       .listPreviewLeases()
@@ -1256,7 +1244,6 @@ export class ButlerAgentService extends EventEmitter {
       return right.updatedAt - left.updatedAt;
     })[0]!;
   }
-
   private toResolvedProof(
     subject: Pick<PreviewLeaseView, "id" | "threadId" | "projectId" | "projectLabel" | "title" | "stackId">,
     verification: PreviewVerificationView,
@@ -1285,7 +1272,6 @@ export class ButlerAgentService extends EventEmitter {
       trace: findVerificationArtifact(decoratedVerification, "trace")
     };
   }
-
   private resolvePreviewProof(params: { threadId?: string; leaseId?: string; runId?: string }): ResolvedPreviewProof {
     const preview = params.leaseId ? this.requireValidatedPreview(params.leaseId, params.threadId?.trim() || null) : null;
     const requestedRunId = params.runId?.trim();
@@ -1342,7 +1328,6 @@ export class ButlerAgentService extends EventEmitter {
 
     throw new Error(`Preview ${preview.id} does not have a recorded verification yet.`);
   }
-
   private resolveWorkspaceProject(cwd: string | null | undefined, fallbackId: string, fallbackLabel: string) {
     const project = resolveWorkspaceProjectInfo(cwd);
     if (project.id === "unknown") {
@@ -1354,7 +1339,6 @@ export class ButlerAgentService extends EventEmitter {
 
     return project;
   }
-
   private removeStackArtifacts(stackId: string): void {
     for (const lease of this.store.listPreviewLeases()) {
       if (lease.stackId === stackId) {
@@ -1370,7 +1354,6 @@ export class ButlerAgentService extends EventEmitter {
 
     this.store.removeStackLease(stackId);
   }
-
   private normalizeServiceEnv(value: unknown): Record<string, string> {
     if (!value || typeof value !== "object") return {};
     return Object.fromEntries(
@@ -1380,7 +1363,6 @@ export class ButlerAgentService extends EventEmitter {
         .filter(([key, entryValue]) => key.length > 0 && entryValue.length > 0)
     );
   }
-
   private normalizeStringArray(value: unknown): string[] {
     if (!Array.isArray(value)) return [];
     return [...new Set(value.map((entry) => (typeof entry === "string" ? entry.trim() : "")).filter(Boolean))];
@@ -1403,7 +1385,6 @@ export class ButlerAgentService extends EventEmitter {
     tools.push(...buildButlerProviderWebTools(() => this.session?.model?.provider));
     return tools;
   }
-
   private async createOrRefreshSession(): Promise<void> { await createOrRefreshButlerSession(this.getSessionAccess()); this.toolCatalog = this.buildToolCatalog(); }
 
   private async sanitizePersistedSessions(): Promise<void> { await sanitizePersistedButlerSessions(this.getSessionAccess()); }

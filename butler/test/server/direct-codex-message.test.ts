@@ -1254,7 +1254,6 @@ test("completed direct-reply callbacks queue adversarial review before closeout"
         fallbackReason: null,
         createdAt: requestedAt
       },
-      reviewResults: []
     });
     Date.now = () => reportAt;
     const report = store.recordWorkerReport(threadId, {
@@ -1284,26 +1283,31 @@ test("completed direct-reply callbacks queue adversarial review before closeout"
     for (const item of store.getSupervisionChecklist(threadId)?.items ?? []) {
       store.reviewAcceptancePoint({ threadId, pointId: item.id, status: "accepted" });
     }
-    store.recordWorkerReviewResults(threadId, [
-      {
+    store.upsertReviewRecord(threadId, {
+      id: "record-failed",
+      threadId,
+      attemptId: threadId,
+      scopeId: report.turnId,
+      reportUpdatedAt: report.updatedAt,
+      outputManifestHash: null,
+      state: "rejected",
+      findings: [{
         id: "review-failed",
-        reviewSource: "adversarial_review",
-        turnId: report.turnId,
-        reportUpdatedAt: report.updatedAt,
-        severity: "high",
-        findingSummary: "Codex review automation failed.",
+        severity: "high" as const,
+        summary: "Codex review automation failed.",
         blocking: true,
         waived: false,
         waiverReason: null,
-        automationFailure: true,
-        linkedClaimIds: ["claim-1"],
-        modelProvider: "openai-codex",
-        modelId: "gpt-5.5",
-        reasoningLevel: "high",
-        createdAt: reportAt,
-        updatedAt: reportAt
-      }
-    ]);
+        source: "adversarial_review" as const,
+        proofRunId: null,
+        checklistItemId: null,
+        createdAt: reportAt
+      }],
+      workerInstruction: "Codex review automation failed.",
+      reviewedAt: reportAt,
+      createdAt: reportAt,
+      updatedAt: reportAt
+    });
 
     const agent = createButlerAgent(store, sessionDir);
     const internals = agent as unknown as {

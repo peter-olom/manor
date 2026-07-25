@@ -4,7 +4,7 @@ import { normalizeWorkerClaimsReport } from "./butler-orchestration.js";
 import { getSelfImprovementRequestState } from "./self-improvement-request-state.js";
 import { recordChecklistWorkerEvidence } from "./supervision-checklist.js";
 import { emitStateStoreChange, queueStateStoreSave, type StateStoreInternalAccess } from "./state-store-internals.js";
-import type { CodexThreadExecutionContractView, CodexWorkerEvidenceView, CodexWorkerReportView, WorkerClaimsReportView, WorkerReviewResultRecordView } from "./types.js";
+import type { CodexThreadExecutionContractView, CodexWorkerEvidenceView, CodexWorkerReportView, WorkerClaimsReportView } from "./types.js";
 
 export type WorkerReviewBaselineState = {
   cwd: string | null;
@@ -154,28 +154,6 @@ export function listStateStoreWorkerReports(access: StateStoreInternalAccess, th
   return [...byTurnId.values()].sort((left, right) => left.createdAt - right.createdAt);
 }
 
-export function recordStateStoreWorkerReviewResults(
-  access: StateStoreInternalAccess,
-  threadId: string,
-  results: WorkerReviewResultRecordView[],
-  expectedReport?: { turnId: string; reportUpdatedAt: number }
-): CodexThreadExecutionContractView | null {
-  const thread = access.getOrCreateThread(threadId);
-  if (!thread.executionContract) return null;
-  if (expectedReport && (
-    thread.workerReport?.turnId !== expectedReport.turnId ||
-    thread.workerReport.updatedAt !== expectedReport.reportUpdatedAt
-  )) return null;
-  const byId = new Map<string, WorkerReviewResultRecordView>();
-  for (const result of thread.executionContract.reviewResults ?? []) byId.set(result.id, result);
-  for (const result of results) byId.set(result.id, result);
-  thread.executionContract.reviewResults = [...byId.values()].sort((left, right) => left.createdAt - right.createdAt).slice(-80);
-  thread.updatedAt = Date.now();
-  access.persistedExecutionContractsByThreadId.set(threadId, { ...thread.executionContract });
-  queueStateStoreSave(access);
-  emitStateStoreChange(access);
-  return thread.executionContract;
-}
 
 export function recordStateStoreWorkerReviewPeerContext(access: StateStoreInternalAccess, threadId: string, context: NonNullable<CodexThreadExecutionContractView["reviewPeerContexts"]>[number]): void {
   const thread = access.threads.get(threadId);

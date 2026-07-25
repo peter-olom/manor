@@ -296,6 +296,7 @@ await skillsService.repairSharedSkillRegistryPermissions(); await harnessService
 await butlerAgent.start();
 await piRpcWorkerClient.start();
 await reconcileSelfImprovementAfterRestart((threadId) => threadId.startsWith("pi-"));
+for (const pair of pairStore.listSummaries()) if (pair.butlerPendingReason) pairStore.updatePairSnapshot(pair.id, { butlerPendingReason: null });
 await pairSessions.startSupervisedSessions(); automationScheduler.start(); const stopOllamaCloudModelRecovery = startOllamaCloudModelRecovery(modelInventoryRefresh);
 
 const app = express();
@@ -1488,9 +1489,7 @@ server.on("upgrade", (request, socket, head) => {
   previewProxy.ws(request, socket, head, { target }, () => {
     socket.destroy();
   });
-});
-
-server.on("close", () => { automationScheduler.stop(); stopOllamaCloudModelRecovery(); modelInventoryRefresh.dispose();
+});server.on("close", () => { automationScheduler.stop(); stopOllamaCloudModelRecovery(); modelInventoryRefresh.dispose();
   butlerExecutorAdmissionServer.close();
   clearInterval(leaseReaper);
   clearInterval(artifactReaper);

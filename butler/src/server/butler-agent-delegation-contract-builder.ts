@@ -75,7 +75,7 @@ export async function buildButlerDelegationContract(options: {
     reviewBaselineCaptureFailed: inheritedBaseline?.reviewBaselineCaptureFailed ?? Boolean(reviewGitRoot && !reviewBaseline),
     reviewPeerContexts: inheritedBaseline?.reviewPeerContexts?.map((entry) => ({ ...entry, paths: [...entry.paths] })) ?? [],
     reviewPeerContextOverflow: inheritedBaseline?.reviewPeerContextOverflow ?? false,
-    ...(options.orchestration ? { orchestration: options.orchestration, reviewResults: [] } : {}),
+    ...(options.orchestration ? { orchestration: options.orchestration } : {}),
     notes: [...new Set(notes.map((note) => note.trim()).filter(Boolean))]
   };
   const payload = buildJobPayload({

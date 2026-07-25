@@ -11,9 +11,9 @@ import type {
   CodexWorkerReportView,
   WorkerClaimStatus,
   WorkerClaimsReportView,
-  WorkerReviewResultRecordView,
   WorkerReviewSeverity
 } from "./types.js";
+import type { ReviewFinding, ReviewRecord } from "./orchestration-types.js";
 
 const TASK_CLASSES = new Set<string>([
   "trivial",
@@ -205,25 +205,20 @@ export function normalizeWorkerClaimsReport(raw: unknown): WorkerClaimsReportVie
 export function getOrchestrationCloseoutBlocker(input: {
   thread: CodexThreadRecord | null | undefined;
   workerReport: CodexWorkerReportView | null | undefined;
+  latestReview: ReviewRecord | null;
 }): string | null {
-  const contract = input.thread?.executionContract;
-  if (!contract) return null;
   const report = input.workerReport;
   if (report?.status !== "completed") return null;
-  const currentResults = (contract.reviewResults ?? []).filter((result) => result.turnId === report.turnId && result.reportUpdatedAt === report.updatedAt);
-  const completedResults = currentResults.filter((result) => result.automationFailure !== true);
-  if (completedResults.length === 0) {
+  if (!input.latestReview || input.latestReview.reportUpdatedAt !== (report.updatedAt ?? 0)) {
     return "Adversarial review must finish before Butler can close the job.";
   }
-  const blocker = completedResults.find((result) => result.blocking && !result.waived);
-  return blocker ? `Adversarial review blocked closeout: ${blocker.findingSummary}` : null;
-}
-
-export function shouldRunCodexWorkerReview(contract: CodexThreadExecutionContractView | null | undefined, report: CodexWorkerReportView): boolean {
-  if (report.status !== "completed") return false;
-  if (!contract) return false;
-  const existing = (contract.reviewResults ?? []).some((result) => result.turnId === report.turnId && result.reportUpdatedAt === report.updatedAt && result.automationFailure !== true);
-  return !existing;
+  if (input.latestReview.state === "rejected") {
+    return input.latestReview.workerInstruction ?? "Adversarial review blocked closeout.";
+  }
+  if (input.latestReview.state === "queued" || input.latestReview.state === "running") {
+    return "Adversarial review is still pending.";
+  }
+  return null;
 }
 
 export function normalizeWorkerReviewResults(input: {
@@ -232,14 +227,11 @@ export function normalizeWorkerReviewResults(input: {
   turnId: string;
   reportUpdatedAt: number;
   defaultBlocking?: boolean;
-  modelProvider?: string | null;
-  modelId?: string | null;
-  reasoningLevel?: string | null;
-}): WorkerReviewResultRecordView[] {
+}): ReviewFinding[] {
   const record = input.raw && typeof input.raw === "object" ? (input.raw as Record<string, unknown>) : {};
   const rawFindings = Array.isArray(record.findings) ? record.findings : [];
   return rawFindings
-    .map((entry, index): WorkerReviewResultRecordView | null => {
+    .map((entry, index): ReviewFinding | null => {
       if (!entry || typeof entry !== "object") return null;
       const item = entry as Record<string, unknown>;
       const summary = readRecordStringWithoutLimit(item, "findingSummary", "finding_summary", "summary");
@@ -249,23 +241,17 @@ export function normalizeWorkerReviewResults(input: {
       const blocking = typeof item.blocking === "boolean" ? item.blocking : severity === "high" || severity === "critical" || input.defaultBlocking === true;
       return {
         id: readRecordString(item, "id") ?? `review-${input.turnId}-${index + 1}-${crypto.randomUUID().slice(0, 8)}`,
-        reviewSource: "adversarial_review" as const,
-        turnId: input.turnId,
-        reportUpdatedAt: input.reportUpdatedAt,
+        source: "adversarial_review" as const,
         severity,
-        findingSummary: summary,
+        summary,
         blocking,
         waived: item.waived === true || item.waiverStatus === "waived" || item.waiver_status === "waived",
         waiverReason: readRecordString(item, "waiverReason", "waiver_reason"),
-        automationFailure: false,
-        linkedClaimIds: stringList(item.linkedClaimIds ?? item.linked_claim_ids, 20, 100),
-        modelProvider: input.modelProvider?.trim() || null,
-        modelId: input.modelId?.trim() || null,
-        reasoningLevel: input.reasoningLevel?.trim() || null,
-        createdAt: Date.now(),
-        updatedAt: Date.now()
+        proofRunId: null,
+        checklistItemId: null,
+        createdAt: Date.now()
       };
     })
-    .filter((entry): entry is WorkerReviewResultRecordView => Boolean(entry))
+    .filter((entry): entry is ReviewFinding => Boolean(entry))
     .slice(0, 20);
 }

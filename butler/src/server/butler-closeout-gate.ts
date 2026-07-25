@@ -24,37 +24,27 @@ export function getOperatorCloseoutBlocker(
 ): string | null {
   const thread = options.thread ?? store.getThread(threadId);
   const workerReport = "workerReport" in options ? options.workerReport : store.getWorkerReport(threadId);
+  const latestReview = workerReport?.status === "completed" ? store.getLatestReviewRecord(threadId) : null;
   const gate = evaluateOperatorCloseoutGate(thread?.supervisionChecklist, workerReport);
   if (!gate.ok) {
     return gate.reason;
   }
-  const orchestrationBlocker = getOrchestrationCloseoutBlocker({ thread, workerReport });
+  const orchestrationBlocker = getOrchestrationCloseoutBlocker({ thread, workerReport, latestReview });
   if (orchestrationBlocker) {
     return orchestrationBlocker;
-  }
-  // Canonical review record check (additive — does not replace existing checks)
-  if (workerReport?.status === "completed") {
-    const latestReview = store.getLatestReviewRecord(threadId);
-    if (latestReview && latestReview.reportUpdatedAt === (workerReport.updatedAt ?? 0)) {
-      if (latestReview.state === "rejected") {
-        return latestReview.workerInstruction ?? "Butler rejected the latest review.";
-      }
-      if (latestReview.state === "queued" || latestReview.state === "running") {
-        return "Butler review is still pending.";
-      }
-    }
   }
 
   if (workerReport?.status === "completed" && contractRequiresVisualProof(thread?.executionContract)) {
     const referencedRunIds = [...new Set(workerReport.evidence.map((entry) => entry.proofRunId).filter((id): id is string => Boolean(id)))];
     if (referencedRunIds.length === 0) return "Completed UI closeout requires referenced visual proof.";
-    const proofs = store.listPreviewProofs().filter((proof) => proof.threadId === threadId && referencedRunIds.includes(proof.verification.runId));
+    const proofs = store.listPreviewProofs().filter((p) => p.threadId === threadId);
     for (const runId of referencedRunIds) {
-      const proof = proofs.find((entry) => entry.verification.runId === runId);
-      const latestReview = proof?.proofReviews.slice().sort((left, right) => right.reviewedAt - left.reviewedAt)[0];
-      if (!latestReview) return `Visual proof ${runId} must be reviewed by Butler before completed closeout.`;
-      if (latestReview.verdict !== "credible") {
-        return `Visual proof ${runId} cannot support completed closeout because Butler's latest review is ${latestReview.verdict}.`;
+      const proof = proofs.find((p) => p.verification.runId === runId);
+      if (!proof) return `Visual proof ${runId} was not found. It must be reviewed by Butler before completed closeout.`;
+      const finding = latestReview?.findings.find((f) => f.proofRunId === runId);
+      if (!finding) return `Visual proof ${runId} must be reviewed by Butler before completed closeout.`;
+      if (finding.blocking && !finding.waived) {
+        return `Visual proof ${runId} cannot support completed closeout because Butler's latest review found a blocking issue.`;
       }
     }
   }

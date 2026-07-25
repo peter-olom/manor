@@ -48,38 +48,6 @@ export interface ReviewRecord {
   createdAt: number;
   updatedAt: number;
 }
-export type ReviewPanelRole = "intent" | "qa" | "ui_taste" | "api" | "ops" | "product";
-export type ReviewPanelVerdict = "pending" | "passed" | "concern" | "failed" | "blocked";
-export type ReviewPanelSummaryStatus = "pending" | "passed" | "concerns" | "blocked";
-
-export interface ReviewPanelRunView {
-  id: string;
-  role: ReviewPanelRole;
-  label: string;
-  scope: string;
-  trigger: string;
-  prompt: string;
-  verdict: ReviewPanelVerdict;
-  concerns: string[];
-  evidenceRefs: string[];
-  requiredFollowUp: string | null;
-  reviewerNote: string | null;
-  modelProvider: string | null;
-  modelId: string | null;
-  createdAt: number;
-  reviewedAt: number | null;
-  updatedAt: number;
-}
-
-export interface ReviewPanelSummaryView {
-  status: ReviewPanelSummaryStatus;
-  reviewers: number;
-  passed: number;
-  concerns: number;
-  blocking: number;
-  summary: string | null;
-  updatedAt: number | null;
-}
 
 export interface ButlerRoutingQuestionView {
   id: string;
@@ -132,23 +100,4 @@ export interface WorkerClaimsReportView {
   risks: string[];
   unresolvedItems: string[];
   subAgentSummaries: WorkerSubAgentSummaryView[];
-}
-
-export interface WorkerReviewResultRecordView {
-  id: string;
-  reviewSource: "adversarial_review";
-  turnId: string;
-  reportUpdatedAt: number;
-  severity: WorkerReviewSeverity;
-  findingSummary: string;
-  blocking: boolean;
-  waived: boolean;
-  waiverReason: string | null;
-  automationFailure?: boolean;
-  linkedClaimIds: string[];
-  modelProvider: string | null;
-  modelId: string | null;
-  reasoningLevel: string | null;
-  createdAt: number;
-  updatedAt: number;
 }

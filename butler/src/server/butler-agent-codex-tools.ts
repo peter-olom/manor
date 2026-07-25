@@ -770,25 +770,13 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
       uiEffects: access.getToolUiEffects("disprove_review_finding"),
       execute: async (_toolCallId, params) => {
         const typedParams = params as { threadId: string; findingId: string; evidence: string };
-        const thread = access.store.getThread(typedParams.threadId);
         const report = access.store.getWorkerReport(typedParams.threadId);
-        const finding = thread?.executionContract?.reviewResults?.find((entry) =>
-          entry.id === typedParams.findingId &&
-          entry.turnId === report?.turnId &&
-          entry.reportUpdatedAt === report?.updatedAt
-        );
+        const latestReview = access.store.getLatestReviewRecord(typedParams.threadId);
+        if (!latestReview || !report || latestReview.reportUpdatedAt !== report.updatedAt) throw new Error("The review finding is not part of the current Worker report.");
+        const finding = latestReview.findings.find((f) => f.id === typedParams.findingId);
         if (!finding) throw new Error("The review finding is not part of the current Worker report.");
         if (!finding.blocking) throw new Error("Only blocking review findings need an explicit Butler resolution.");
         const evidence = typedParams.evidence.trim();
-        access.store.recordWorkerReviewResults(typedParams.threadId, [{
-          ...finding,
-          waived: true,
-          waiverReason: `Butler disproved this finding: ${evidence}`,
-          updatedAt: Date.now()
-        }]);
-
-        // Dual-write: update the canonical ReviewRecord finding as waived
-        const latestReview = access.store.getLatestReviewRecord(typedParams.threadId);
         if (latestReview) {
           const updatedFindings = latestReview.findings.map((f) =>
             f.id === typedParams.findingId
@@ -808,7 +796,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
         access.store.addEvent(typedParams.threadId, "butler.adversarial_review.disproved", `Butler disproved review finding ${finding.id}: ${evidence}`);
         return {
           content: [{ type: "text", text: `Review finding ${finding.id} marked disproved from stronger evidence.` }],
-          details: { finding: access.store.getThread(typedParams.threadId)?.executionContract?.reviewResults?.find((entry) => entry.id === finding.id) ?? null }
+          details: { finding: access.store.getLatestReviewRecord(typedParams.threadId)?.findings.find((f) => f.id === finding.id) ?? null }
         };
       }
     }),

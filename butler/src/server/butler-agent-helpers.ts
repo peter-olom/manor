@@ -859,9 +859,10 @@ export function buildCallbackReviewPrompt(
       const latestEvidence = item.evidence.at(-1);
       return `${item.id}: ${item.status} - ${item.text}${latestEvidence ? ` | latest evidence: ${latestEvidence.summary}` : ""}${item.butlerNote ? ` | Butler note: ${item.butlerNote}` : ""}${item.queuedInstruction ? ` | queued instruction: ${item.queuedInstruction}` : ""}`;
     }) ?? [];
-  const adversarialReviewLines = relevantWorkerReport
-    ? (contract?.reviewResults ?? []).filter((entry) => entry.turnId === relevantWorkerReport.turnId && entry.reportUpdatedAt === relevantWorkerReport.updatedAt && entry.automationFailure !== true)
-        .map((entry) => `${entry.id} | ${entry.severity}${entry.waived ? " disproved" : entry.blocking ? " blocking" : ""}: ${entry.findingSummary}${entry.waiverReason ? ` | resolution: ${entry.waiverReason}` : ""}${entry.linkedClaimIds.length > 0 ? ` | claims: ${entry.linkedClaimIds.join(", ")}` : ""}`)
+  const latestReviewRecord = store.getLatestReviewRecord(callback.threadId);
+  const adversarialReviewLines = relevantWorkerReport && latestReviewRecord && latestReviewRecord.reportUpdatedAt === relevantWorkerReport.updatedAt
+    ? latestReviewRecord.findings
+        .map((f) => `${f.id} | ${f.severity}${f.waived ? " disproved" : f.blocking ? " blocking" : ""}: ${f.summary}${f.waiverReason ? ` | resolution: ${f.waiverReason}` : ""}`)
     : [];
   const proofCoverageLines = buildCurrentReportProofCoverageLines(relevantWorkerReport, store.listPreviewProofs(), callback.threadId);
   const payload = store.getThreadJobPayload(callback.threadId);

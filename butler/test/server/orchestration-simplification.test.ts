@@ -16,8 +16,7 @@ import { buildThreadExecutionContract } from "../../src/server/thread-contract.j
 import type {
   ButlerRoutingDecisionView,
   CodexThreadExecutionContractView,
-  WorkerClaimsReportView,
-  WorkerReviewResultRecordView
+  WorkerClaimsReportView
 } from "../../src/server/types.js";
 
 async function createStore(): Promise<ButlerStateStore> {
@@ -77,7 +76,6 @@ function makeContract(overrides: Partial<CodexThreadExecutionContractView> = {})
   return {
     ...base,
     orchestration: routingDecision(),
-    reviewResults: [],
     ...overrides
   };
 }
@@ -442,27 +440,48 @@ test("review gate requires a completed adversarial review and blocks serious fin
 
   assert.match(getOperatorCloseoutBlocker(store, contract.threadId) ?? "", /Adversarial review must finish/);
 
-  const blocking: WorkerReviewResultRecordView = {
+  const blocking = {
     id: "review-blocking",
-    reviewSource: "adversarial_review",
-    turnId: report.turnId,
-    reportUpdatedAt: report.updatedAt,
-    severity: "high",
-    findingSummary: "Missing failure-path verification.",
+    severity: "high" as const,
+    summary: "Missing failure-path verification.",
     blocking: true,
     waived: false,
-    waiverReason: null,
-    linkedClaimIds: ["claim-1"],
-    modelProvider: "openai-codex",
-    modelId: "gpt-5.5",
-    reasoningLevel: "high",
+    waiverReason: null as string | null,
+    source: "adversarial_review" as const,
+    proofRunId: null as string | null,
+    checklistItemId: null as string | null,
+    createdAt: 1
+  };
+  store.upsertReviewRecord(contract.threadId, {
+    id: "record-blocking",
+    threadId: contract.threadId,
+    attemptId: contract.threadId,
+    scopeId: report.turnId,
+    reportUpdatedAt: report.updatedAt,
+    outputManifestHash: null,
+    state: "rejected",
+    findings: [blocking],
+    workerInstruction: "Missing failure-path verification.",
+    reviewedAt: 1,
     createdAt: 1,
     updatedAt: 1
-  };
-  store.recordWorkerReviewResults(contract.threadId, [blocking]);
+  });
   assert.match(getOperatorCloseoutBlocker(store, contract.threadId) ?? "", /Missing failure-path verification/);
 
-  store.recordWorkerReviewResults(contract.threadId, [{ ...blocking, id: "review-waived", waived: true, waiverReason: "Operator accepted risk." }]);
+  store.upsertReviewRecord(contract.threadId, {
+    id: "record-waived",
+    threadId: contract.threadId,
+    attemptId: contract.threadId,
+    scopeId: report.turnId,
+    reportUpdatedAt: report.updatedAt,
+    outputManifestHash: null,
+    state: "rejected",
+    findings: [{ ...blocking, id: "review-waived", waived: true, waiverReason: "Operator accepted risk." }],
+    workerInstruction: "Missing failure-path verification.",
+    reviewedAt: 1,
+    createdAt: 1,
+    updatedAt: 1
+  });
   assert.match(getOperatorCloseoutBlocker(store, contract.threadId) ?? "", /Missing failure-path verification/);
 
   const store2 = await createStore();
@@ -476,17 +495,31 @@ test("review gate requires a completed adversarial review and blocks serious fin
     claims: claims()
   });
   acceptChecklist(store2, contract2.threadId);
-  store2.recordWorkerReviewResults(contract2.threadId, [
-    {
-      ...blocking,
+  store2.upsertReviewRecord(contract2.threadId, {
+    id: "record-nonserious",
+    threadId: contract2.threadId,
+    attemptId: contract2.threadId,
+    scopeId: report2.turnId,
+    reportUpdatedAt: report2.updatedAt,
+    outputManifestHash: null,
+    state: "accepted",
+    findings: [{
       id: "review-note",
-      turnId: report2.turnId,
-      reportUpdatedAt: report2.updatedAt,
-      severity: "low",
-      findingSummary: "Minor naming note.",
-      blocking: false
-    }
-  ]);
+      severity: "low" as const,
+      summary: "Minor naming note.",
+      blocking: false,
+      waived: false,
+      waiverReason: null,
+      source: "adversarial_review" as const,
+      proofRunId: null,
+      checklistItemId: null,
+      createdAt: 1
+    }],
+    workerInstruction: null,
+    reviewedAt: 1,
+    createdAt: 1,
+    updatedAt: 1
+  });
   assert.equal(getOperatorCloseoutBlocker(store2, contract2.threadId), null);
 });
 
@@ -496,23 +529,31 @@ test("Butler can disprove a blocking review finding from stronger evidence", asy
   createThread(store, contract);
   const report = store.recordWorkerReport(contract.threadId, { turnId: "turn-1", status: "completed", summary: "Done.", details: null, claims: claims() });
   acceptChecklist(store, contract.threadId);
-  store.recordWorkerReviewResults(contract.threadId, [{
-    id: "review-false-positive",
-    reviewSource: "adversarial_review",
-    turnId: report.turnId,
+  store.upsertReviewRecord(contract.threadId, {
+    id: "record-false-positive",
+    threadId: contract.threadId,
+    attemptId: contract.threadId,
+    scopeId: report.turnId,
     reportUpdatedAt: report.updatedAt,
-    severity: "high",
-    findingSummary: "The failure path is untested.",
-    blocking: true,
-    waived: false,
-    waiverReason: null,
-    linkedClaimIds: [],
-    modelProvider: "openai-codex",
-    modelId: "gpt-5.5",
-    reasoningLevel: "high",
+    outputManifestHash: null,
+    state: "rejected",
+    findings: [{
+      id: "review-false-positive",
+      severity: "high" as const,
+      summary: "The failure path is untested.",
+      blocking: true,
+      waived: false,
+      waiverReason: null,
+      source: "adversarial_review" as const,
+      proofRunId: null,
+      checklistItemId: null,
+      createdAt: 1
+    }],
+    workerInstruction: "The failure path is untested.",
+    reviewedAt: 1,
     createdAt: 1,
     updatedAt: 1
-  }]);
+  });
   const tool = buildButlerCodexTools({
     defineButlerTool: (definition) => definition,
     getToolUiEffects: () => [],
@@ -526,7 +567,8 @@ test("Butler can disprove a blocking review finding from stronger evidence", asy
   });
 
   assert.equal(getOperatorCloseoutBlocker(store, contract.threadId), null);
-  const finding = store.getThread(contract.threadId)?.executionContract?.reviewResults?.find((entry) => entry.id === "review-false-positive");
+  const record = store.getLatestReviewRecord(contract.threadId);
+  const finding = record?.findings.find((entry) => entry.id === "review-false-positive");
   assert.equal(finding?.waived, true);
   assert.match(finding?.waiverReason ?? "", /persisted integration run/);
 });
@@ -535,24 +577,31 @@ test("thread summary refresh preserves orchestration and review results", async 
   const store = await createStore();
   const contract = makeContract();
   createThread(store, contract);
-  const review: WorkerReviewResultRecordView = {
-    id: "review-preserved",
-    reviewSource: "adversarial_review",
-    turnId: "turn-1",
+  store.upsertReviewRecord(contract.threadId, {
+    id: "record-preserved",
+    threadId: contract.threadId,
+    attemptId: contract.threadId,
+    scopeId: "turn-1",
     reportUpdatedAt: 12,
-    severity: "info",
-    findingSummary: "No actionable findings.",
-    blocking: false,
-    waived: false,
-    waiverReason: null,
-    linkedClaimIds: [],
-    modelProvider: "openai-codex",
-    modelId: "gpt-5.5",
-    reasoningLevel: "high",
+    outputManifestHash: null,
+    state: "accepted",
+    findings: [{
+      id: "review-preserved",
+      severity: "info" as const,
+      summary: "No actionable findings.",
+      blocking: false,
+      waived: false,
+      waiverReason: null,
+      source: "adversarial_review" as const,
+      proofRunId: null,
+      checklistItemId: null,
+      createdAt: 1
+    }],
+    workerInstruction: null,
+    reviewedAt: 1,
     createdAt: 1,
     updatedAt: 1
-  };
-  store.recordWorkerReviewResults(contract.threadId, [review]);
+  });
 
   store.upsertThreadSummary({
     id: contract.threadId,
@@ -563,7 +612,8 @@ test("thread summary refresh preserves orchestration and review results", async 
 
   const refreshed = store.getThread(contract.threadId)?.executionContract;
   assert.equal(refreshed?.orchestration?.taskClass, "generic_code");
-  assert.equal(refreshed?.reviewResults?.[0]?.id, "review-preserved");
+  const record = store.getLatestReviewRecord(contract.threadId);
+  assert.equal(record?.findings[0]?.id, "review-preserved");
 });
 
 test("sub-agent summaries are normalized without raw transcript requirements", () => {

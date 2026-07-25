@@ -157,7 +157,7 @@ export function mapButlerMessage(message: ButlerMessageView): PairMessage {
   };
 }
 
-function blockedCloseoutReason(shell: ReturnType<ButlerAgentService["getShellSnapshot"]>): string | null {
+export function blockedCloseoutReason(shell: ReturnType<ButlerAgentService["getShellSnapshot"]>): string | null {
   const callback = shell.supervision.callbacks.find((entry) =>
     entry.owesOperatorReply &&
     entry.callbackState !== "closed" &&

@@ -21,7 +21,7 @@ import { piThinkingLevelForModelOption } from "./pi-thinking-levels.js";
 import { buildReviewWorkspaceSnapshot, cleanupScopedReviewWorkspace, createNonGitReviewWorkspace, createScopedReviewWorkspace, resolveGitRoot, resolveReviewWorkspaceCwd } from "./git-review-scope.js";
 import { isolatedModelResourceOptions } from "./isolated-model-resources.js";
 import type { ButlerStateStore } from "./state-store.js";
-import type { ButlerThinkingLevel, CodexThreadRecord, CodexWorkerReportView, WorkerReviewResultRecordView } from "./types.js";
+import type { ButlerThinkingLevel, CodexThreadRecord, CodexWorkerReportView } from "./types.js";
 import type { ReviewFinding, ReviewRecord } from "./orchestration-types.js";
 import { workerExecutionEndAt } from "./worker-execution-window.js";
 import { workerFileChangeAttribution } from "./worker-review-attribution.js";
@@ -449,7 +449,7 @@ export async function ensureButlerAdversarialReview(input: {
   createScopedWorkspace?: typeof createScopedReviewWorkspace;
   isCurrent?: () => boolean;
   onProgress?: (progress: AdversarialReviewProgress) => void;
-}): Promise<WorkerReviewResultRecordView[]> {
+}): Promise<void> {
   const thread = input.store.getThread(input.threadId);
   const report = input.store.getWorkerReport(input.threadId);
   const model = input.model;
@@ -460,7 +460,7 @@ export async function ensureButlerAdversarialReview(input: {
     !model ||
     (input.expectedReportTurnId && report.turnId !== input.expectedReportTurnId) ||
     (typeof input.minimumReportUpdatedAt === "number" && report.updatedAt < input.minimumReportUpdatedAt)
-  ) return [];
+  ) return;
 
   const reportIsCurrent = (): boolean => {
     const current = input.store.getWorkerReport(input.threadId);
@@ -470,15 +470,10 @@ export async function ensureButlerAdversarialReview(input: {
       (!input.expectedReportTurnId || current.turnId === input.expectedReportTurnId);
   };
 
-  const existing = (thread.executionContract?.reviewResults ?? []).filter((result) =>
-    result.turnId === report.turnId &&
-    result.reportUpdatedAt === report.updatedAt &&
-    result.automationFailure !== true &&
-    result.modelProvider === model.provider &&
-    result.modelId === model.id &&
-    result.reasoningLevel === input.thinkingLevel
-  );
-  if (existing.length > 0) return existing;
+  const latestReview = input.store.getLatestReviewRecord(input.threadId);
+  if (latestReview && latestReview.reportUpdatedAt === report.updatedAt && latestReview.state !== "queued" && latestReview.state !== "running") {
+    return;
+  }
 
   if (thread.executionContract?.reviewBaselineCaptureFailed) {
     throw new Error("Worker review isolation was not captured at delegation. Butler will retry instead of reviewing an unsafe shared checkout.");
@@ -545,7 +540,7 @@ export async function ensureButlerAdversarialReview(input: {
       scopedReview ? null : baselineTreeSha,
       scopedReview ? null : baselineObjectDir
     );
-    if (!reportIsCurrent()) return [];
+    if (!reportIsCurrent()) return;
     const workspaceSnapshot = scopedReview ? `${scopedReview.scopeNote}\n\n${rawWorkspaceSnapshot}` : rawWorkspaceSnapshot;
     const payload = input.store.getThreadJobPayload(input.threadId);
     const outputManifest = payload ? await formatResolvedJobOutputManifestForReview(payload, input.store) : null;
@@ -572,80 +567,47 @@ export async function ensureButlerAdversarialReview(input: {
       isCurrent: input.isCurrent,
       inspectJobOutput
     }));
-    if (!reportIsCurrent()) return [];
+    if (!reportIsCurrent()) return;
     let results = normalizeWorkerReviewResults({
       raw,
       threadId: input.threadId,
       turnId: report.turnId,
-      reportUpdatedAt: report.updatedAt,
-      modelProvider: model.provider,
-      modelId: model.id,
-      reasoningLevel: input.thinkingLevel
+      reportUpdatedAt: report.updatedAt
     });
     if (scopedReview?.ownershipAmbiguous || thread.executionContract?.reviewPeerContextOverflow) {
-      const now = Date.now();
       results.push({
         id: `review-${report.turnId}-ownership-${crypto.randomUUID().slice(0, 8)}`,
-        reviewSource: "adversarial_review",
-        turnId: report.turnId,
-        reportUpdatedAt: report.updatedAt,
         severity: "high",
-        findingSummary: scopedReview?.ownershipAmbiguous
+        summary: scopedReview?.ownershipAmbiguous
           ? `Butler could not safely attribute the shared-checkout changes to this Worker (${scopedReview.attributedPaths.length}/${scopedReview.changedPathCount} paths attributed; ${scopedReview.ambiguousPathCount} conflicting). The Worker must report exact changed paths or rerun in an isolated workspace.`
           : "Butler's deleted-Worker attribution exceeded its safe retained scope. The Worker must rerun in an isolated workspace before acceptance.",
         blocking: true,
         waived: false,
         waiverReason: null,
-        automationFailure: false,
-        linkedClaimIds: [],
-        modelProvider: model.provider,
-        modelId: model.id,
-        reasoningLevel: input.thinkingLevel,
-        createdAt: now,
-        updatedAt: now
+        source: "adversarial_review" as const,
+        proofRunId: null,
+        checklistItemId: null,
+        createdAt: Date.now()
       });
     }
     if (results.length === 0) {
-      const now = Date.now();
       results = [{
         id: `review-${report.turnId}-none-${crypto.randomUUID().slice(0, 8)}`,
-        reviewSource: "adversarial_review",
-        turnId: report.turnId,
-        reportUpdatedAt: report.updatedAt,
-        severity: "info",
-        findingSummary: "Adversarial review found no actionable findings.",
+        severity: "info" as const,
+        summary: "Adversarial review found no actionable findings.",
         blocking: false,
         waived: false,
         waiverReason: null,
-        automationFailure: false,
-        linkedClaimIds: [],
-        modelProvider: model.provider,
-        modelId: model.id,
-        reasoningLevel: input.thinkingLevel,
-        createdAt: now,
-        updatedAt: now
+        source: "adversarial_review" as const,
+        proofRunId: null,
+        checklistItemId: null,
+        createdAt: Date.now()
       }];
     }
-    if (!reportIsCurrent()) return [];
-    const stored = input.store.recordWorkerReviewResults(input.threadId, results, {
-      turnId: report.turnId,
-      reportUpdatedAt: report.updatedAt
-    });
-    if (!stored || !reportIsCurrent()) return [];
+    if (!reportIsCurrent()) return;
 
     const blockingFindings = results.filter((r) => r.blocking && !r.waived);
-    const reviewFindings: ReviewFinding[] = results.map((r) => ({
-      id: r.id,
-      severity: r.severity,
-      summary: r.findingSummary,
-      blocking: r.blocking,
-      waived: r.waived,
-      waiverReason: r.waiverReason,
-      source: "adversarial_review" as const,
-      proofRunId: null,
-      checklistItemId: null,
-      createdAt: r.createdAt
-    }));
+    const reviewFindings: ReviewFinding[] = results;
     const contract = input.store.getThread(input.threadId)?.executionContract;
     if (contract) {
       const reviewRecord: ReviewRecord = {
@@ -657,17 +619,18 @@ export async function ensureButlerAdversarialReview(input: {
         outputManifestHash: null,
         state: blockingFindings.length > 0 ? "rejected" : "accepted",
         findings: reviewFindings,
-        workerInstruction: blockingFindings.length > 0 ? blockingFindings[0]!.findingSummary : null,
+        workerInstruction: blockingFindings.length > 0 ? blockingFindings[0]!.summary : null,
         reviewedAt: Date.now(),
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
       input.store.upsertReviewRecord(input.threadId, reviewRecord);
+      input.store.addEvent(input.threadId, "butler.adversarial_review.recorded", `Adversarial review ${reviewRecord.state}: ${reviewFindings.length} finding${reviewFindings.length === 1 ? "" : "s"}.`);
     }
 
-    return results;
+    return;
   } catch (error) {
-    if (input.isCurrent?.() === false) return [];
+    if (input.isCurrent?.() === false) return;
     const rawMessage = error instanceof Error ? error.message : String(error);
     const message = /auth|log.?in|sign.?in|unauthori[sz]ed|\b401\b|\b403\b/i.test(rawMessage)
       ? `Adversarial review could not authenticate ${formatProviderModelRef({ provider: model.provider, model: model.id }) ?? model.id}. Open Settings → Providers and reconnect that provider, then retry.`

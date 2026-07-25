@@ -430,23 +430,31 @@ test("adversarial review brief carries Butler's latest steering and unresolved d
   for (let index = 1; index <= 7; index += 1) {
     store.addEvent(target.threadId, "butler.context.held", `Held correction ${index}.`);
   }
-  store.recordWorkerReviewResults(target.threadId, [{
-    id: "finding-old",
-    reviewSource: "adversarial_review",
-    turnId: "turn-old",
+  store.upsertReviewRecord(target.threadId, {
+    id: "record-old",
+    threadId: target.threadId,
+    attemptId: target.threadId,
+    scopeId: "turn-old",
     reportUpdatedAt: 1,
-    severity: "high",
-    findingSummary: "The retry loop hides the original error.",
-    blocking: true,
-    linkedClaimIds: [],
-    automationFailure: false,
-    modelProvider: "openai",
-    modelId: "gpt-5-codex",
-    reasoningLevel: "high",
-    waived: false,
-    waiverReason: null,
-    createdAt: 1
-  }]);
+    outputManifestHash: null,
+    state: "rejected",
+    findings: [{
+      id: "finding-old",
+      severity: "high" as const,
+      summary: "The retry loop hides the original error.",
+      blocking: true,
+      waived: false,
+      waiverReason: null,
+      source: "adversarial_review" as const,
+      proofRunId: null,
+      checklistItemId: null,
+      createdAt: 1
+    }],
+    workerInstruction: "The retry loop hides the original error.",
+    reviewedAt: 1,
+    createdAt: 1,
+    updatedAt: 1
+  });
 
   const brief = buildCallbackAdversarialReviewBrief(store, target);
   assert.match(brief, /Check the timeout recovery path/);
@@ -487,42 +495,56 @@ test("callback review brief includes blocking findings only for the current repo
     evidence: [],
     claims: null
   });
-  store.recordWorkerReviewResults(target.threadId, [
-    {
+  store.upsertReviewRecord(target.threadId, {
+    id: "record-stale",
+    threadId: target.threadId,
+    attemptId: target.threadId,
+    scopeId: "turn-old",
+    reportUpdatedAt: 1,
+    outputManifestHash: null,
+    state: "rejected",
+    findings: [{
       id: "finding-stale",
-      reviewSource: "adversarial_review",
-      turnId: "turn-old",
-      reportUpdatedAt: 1,
-      severity: "high",
-      findingSummary: "Stale blocker",
+      severity: "high" as const,
+      summary: "Stale blocker",
       blocking: true,
-      linkedClaimIds: [],
-      automationFailure: false,
-      modelProvider: "openai",
-      modelId: "gpt-5-codex",
-      reasoningLevel: "high",
       waived: false,
       waiverReason: null,
+      source: "adversarial_review" as const,
+      proofRunId: null,
+      checklistItemId: null,
       createdAt: 1
-    },
-    {
+    }],
+    workerInstruction: "Stale blocker",
+    reviewedAt: 1,
+    createdAt: 1,
+    updatedAt: 1
+  });
+  store.upsertReviewRecord(target.threadId, {
+    id: "record-current",
+    threadId: target.threadId,
+    attemptId: target.threadId,
+    scopeId: report.turnId,
+    reportUpdatedAt: report.updatedAt,
+    outputManifestHash: null,
+    state: "rejected",
+    findings: [{
       id: "finding-current",
-      reviewSource: "adversarial_review",
-      turnId: report.turnId,
-      reportUpdatedAt: report.updatedAt,
-      severity: "high",
-      findingSummary: "Current blocker",
+      severity: "high" as const,
+      summary: "Current blocker",
       blocking: true,
-      linkedClaimIds: [],
-      automationFailure: false,
-      modelProvider: "openai",
-      modelId: "gpt-5-codex",
-      reasoningLevel: "high",
       waived: false,
       waiverReason: null,
+      source: "adversarial_review" as const,
+      proofRunId: null,
+      checklistItemId: null,
       createdAt: report.updatedAt
-    }
-  ]);
+    }],
+    workerInstruction: "Current blocker",
+    reviewedAt: report.updatedAt,
+    createdAt: report.updatedAt,
+    updatedAt: report.updatedAt
+  });
 
   const brief = buildCallbackAdversarialReviewBrief(store, target);
   assert.match(brief, /Current blocker/);

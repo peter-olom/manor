@@ -78,8 +78,10 @@ test("isolated adversarial review stores only compact findings and reuses the ex
     }
   });
 
-  const first = await review();
-  const second = await review();
+  await review();
+  const first = store.getLatestReviewRecord(threadId)?.findings ?? [];
+  await review();
+  const second = store.getLatestReviewRecord(threadId)?.findings ?? [];
 
   assert.equal(runs, 1);
   assert.deepEqual(progress, [
@@ -92,16 +94,10 @@ test("isolated adversarial review stores only compact findings and reuses the ex
   assert.match(reviewerPrompt, /diff --git/);
   assert.deepEqual(messages, [{ role: "user", content: "operator context" }]);
   assert.deepEqual(first.map((finding) => ({
-    summary: finding.findingSummary,
-    provider: finding.modelProvider,
-    model: finding.modelId,
-    reasoning: finding.reasoningLevel,
+    summary: finding.summary,
     blocking: finding.blocking
   })), [{
     summary: "The retry failure path lacks an assertion.",
-    provider: "openai-codex",
-    model: "gpt-5.5",
-    reasoning: "high",
     blocking: true
   }]);
 
@@ -121,7 +117,6 @@ test("isolated adversarial review stores only compact findings and reuses the ex
       return { findings: [] };
     }
   });
-  assert.deepEqual(stale, []);
   assert.equal(runs, 1);
 });
 
@@ -289,7 +284,8 @@ test("OpenAI review runs through the isolated Pi reviewer", async () => {
     buildWorkspaceSnapshot: async () => "No changes.",
     runReview: async () => ({ findings: [] })
   });
-  assert.equal(results[0]?.findingSummary, "Adversarial review found no actionable findings.");
+  const record = store.getLatestReviewRecord(threadId);
+  assert.equal(record?.findings[0]?.summary, "Adversarial review found no actionable findings.");
 });
 
 test("adversarial review rejects malformed clean-looking output", () => {
@@ -318,7 +314,7 @@ test("adversarial review accepts findings without an arbitrary character cap", a
     threadId: "thread-long",
     turnId: "turn-long",
     reportUpdatedAt: 1
-  })[0]?.findingSummary, findingSummary);
+  })[0]?.summary, findingSummary);
 });
 
 test("Pi adversarial review submission tool captures only schema-valid findings", async () => {
@@ -644,8 +640,9 @@ test("ambiguous shared-checkout ownership becomes a blocking review finding", as
     runReview: async () => ({ findings: [] })
   });
 
-  assert.equal(results.some((finding) => finding.blocking && /could not safely attribute/i.test(finding.findingSummary)), true);
-  assert.match(getOrchestrationCloseoutBlocker({ thread: store.getThread(threadId), workerReport: store.getWorkerReport(threadId) }) ?? "", /could not safely attribute/i);
+  const reviewRecord = store.getLatestReviewRecord(threadId);
+  assert.equal(reviewRecord?.findings.some((finding) => finding.blocking && /could not safely attribute/i.test(finding.summary)), true);
+  assert.match(getOrchestrationCloseoutBlocker({ thread: store.getThread(threadId), workerReport: store.getWorkerReport(threadId), latestReview: store.getLatestReviewRecord(threadId) }) ?? "", /could not safely attribute/i);
 });
 
 test("a failed concurrent isolation never reviews the shared checkout", async () => {
@@ -729,8 +726,8 @@ test("a superseded reviewer persists neither findings nor failure events", async
   await started;
   current = false;
   release();
-  assert.deepEqual(await review, []);
-  assert.deepEqual(store.getThread(threadId)?.executionContract?.reviewResults ?? [], []);
+  await review;
+  assert.equal(store.getLatestReviewRecord(threadId), null);
   assert.equal(store.getThread(threadId)?.eventLog.some((event) => event.method === "adversarial/review/failed"), false);
 });
 
@@ -758,6 +755,5 @@ test("adversarial review persists nothing when the accepted Worker report change
     }
   });
 
-  assert.deepEqual(results, []);
-  assert.deepEqual(store.getThread(threadId)?.executionContract?.reviewResults ?? [], []);
+  assert.equal(store.getLatestReviewRecord(threadId), null);
 });

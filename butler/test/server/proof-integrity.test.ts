@@ -38,7 +38,7 @@ function thread(): CodexThreadRecord {
       threadId: "thread-1", workspaceCwd: "/workspace", projectId: "project-1", projectLabel: "Project One", branch: "main", requestedTask: "Build UI", operatorGoal: null,
       acceptancePoints: ["Show page"], proofExpectation: "requested", proofExpectationLabel: "proof requested", inferredWorkDepth: "standard", taskCategory: "ui",
       verificationMatrix: [{ id: "row-1", acceptancePointId: "point-1", text: "Show page", requiredChecks: [], checkKinds: ["screenshot"], expectedEvidence: [], owner: "worker", status: "pending", evidenceIds: [], artifactRefs: [], commandRefs: [], reviewerNote: null, updatedAt: null }],
-      reviewPanel: [], reviewPanelSummary: { required: false, roles: [], summary: "" }, notes: []
+      notes: []
     }
   } as CodexThreadRecord;
 }
@@ -148,15 +148,28 @@ test("completed UI closeout requires a credible Butler proof review", async () =
   store.setThreadExecutionContract(currentThread.id, currentThread.executionContract!);
   const recorded = store.recordBrowserVerification({ threadId: currentThread.id, projectId: "project-1", projectLabel: "Project One", title: "Proof", verification: proof("proof-1").verification });
   const report = store.recordWorkerReport(currentThread.id, { turnId: "turn-1", status: "completed", summary: "Done", details: null, evidence: [evidence()] });
-  store.recordWorkerReviewResults(currentThread.id, [{ id: "review", reviewSource: "adversarial_review", turnId: report.turnId, reportUpdatedAt: report.updatedAt, severity: "info", findingSummary: "No findings", blocking: false, waived: false, waiverReason: null, linkedClaimIds: [], modelProvider: "test", modelId: "test", reasoningLevel: "off", createdAt: 2000, updatedAt: 2000 }]);
+  store.upsertReviewRecord(currentThread.id, {
+    id: "review-record",
+    threadId: currentThread.id,
+    attemptId: currentThread.id,
+    scopeId: report.turnId,
+    reportUpdatedAt: report.updatedAt,
+    outputManifestHash: null,
+    state: "accepted",
+    findings: [{ id: "review", severity: "info" as const, summary: "No findings", blocking: false, waived: false, waiverReason: null, source: "adversarial_review" as const, proofRunId: null, checklistItemId: null, createdAt: 2000 }],
+    workerInstruction: null,
+    reviewedAt: 2000,
+    createdAt: 2000,
+    updatedAt: 2000
+  });
   for (const item of store.getSupervisionChecklist(currentThread.id)?.items ?? []) {
     store.reviewAcceptancePoint({ threadId: currentThread.id, pointId: item.id, status: "accepted" });
   }
 
   assert.match(getOperatorCloseoutBlocker(store, currentThread.id) ?? "", /must be reviewed/);
-  store.recordPreviewProofReview(recorded.id, { id: "unclear", verdict: "unclear", visibleState: "Unclear", evidence: "Image", concern: "Wrong state", expectedOutcome: null, reviewedAt: 1000, modelId: "test", modelProvider: "test" });
-  assert.match(getOperatorCloseoutBlocker(store, currentThread.id) ?? "", /latest review is unclear/);
-  store.recordPreviewProofReview(recorded.id, { id: "credible", verdict: "credible", visibleState: "Correct", evidence: "Image", concern: "", expectedOutcome: null, reviewedAt: 2000, modelId: "test", modelProvider: "test" });
+  store.addProofReviewFinding(currentThread.id, "proof-1", "failed", "Wrong state");
+  assert.ok(getOperatorCloseoutBlocker(store, currentThread.id), "closeout should be blocked by failed proof review");
+  store.addProofReviewFinding(currentThread.id, "proof-1", "credible", "");
   assert.equal(getOperatorCloseoutBlocker(store, currentThread.id, { workerReport: report }), null);
 });
 

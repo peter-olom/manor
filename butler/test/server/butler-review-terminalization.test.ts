@@ -51,6 +51,7 @@ test("late closeout persistence cannot close a review that has moved to retry", 
   });
   await agent.notifyDirectCodexMessage({ threadId, text: "Finish it.", requestedAt: 1, scopeDisposition: "replace" });
   for (const item of store.getSupervisionChecklist(threadId)?.items ?? []) store.reviewAcceptancePoint({ threadId, pointId: item.id, status: "accepted" });
+  store.upsertReviewRecord(threadId, { id: "review-1", threadId, attemptId: threadId, scopeId: "turn-1", reportUpdatedAt: 1, outputManifestHash: null, state: "accepted", findings: [], workerInstruction: null, reviewedAt: Date.now(), createdAt: Date.now(), updatedAt: Date.now() });
   const access = agent as unknown as OperatorJobReplyAccess & { pendingChatCallbacks: Map<string, ButlerThreadCallbackView> };
   const pending = access.pendingChatCallbacks.get(threadId)!;
   pending.reviewState = "running";
@@ -101,6 +102,7 @@ test("closeout persistence merges messages added by another thread while saving"
   });
   await agent.notifyDirectCodexMessage({ threadId, text: "Finish it.", requestedAt: 1, scopeDisposition: "replace" });
   for (const item of store.getSupervisionChecklist(threadId)?.items ?? []) store.reviewAcceptancePoint({ threadId, pointId: item.id, status: "accepted" });
+  store.upsertReviewRecord(threadId, { id: "review-1", threadId, attemptId: threadId, scopeId: "turn-1", reportUpdatedAt: 1, outputManifestHash: null, state: "accepted", findings: [], workerInstruction: null, reviewedAt: Date.now(), createdAt: Date.now(), updatedAt: Date.now() });
   const access = agent as unknown as OperatorJobReplyAccess & { pendingChatCallbacks: Map<string, ButlerThreadCallbackView> };
   const pending = access.pendingChatCallbacks.get(threadId)!;
   pending.reviewState = "running";

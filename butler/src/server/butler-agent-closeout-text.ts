@@ -14,22 +14,20 @@ export function buildOperatorCloseoutText(input: {
     return trimmed;
   }
   const checklist = input.thread.supervisionChecklist;
-  if (!checklist || checklist.items.length === 0 || checklist.reviewState !== "reviewed") {
+  const latestReviewRecord = input.store.getLatestReviewRecord(input.thread.id);
+  if (!checklist || checklist.items.length === 0 || (latestReviewRecord?.state !== "accepted" && latestReviewRecord?.state !== "rejected")) {
     return trimmed;
   }
   const proofs = input.store.listPreviewProofs().filter((proof) => proof.threadId === input.thread.id);
-  const latestProofReview =
-    proofs
-      .flatMap((proof) => proof.proofReviews)
-      .sort((left, right) => right.reviewedAt - left.reviewedAt)[0] ?? null;
   const reviewedItems = checklist.items.filter((item) => item.status === "accepted" || item.status === "waived");
   const acceptedLines = reviewedItems.slice(0, 5).map((item) => {
     const latestEvidence = item.evidence.at(-1);
     return `- ${item.text}${latestEvidence ? ` (${latestEvidence.summary})` : ""}`;
   });
   const waived = checklist.items.filter((item) => item.status === "waived");
-  const proofLine = latestProofReview
-    ? `Proof reviewed: ${latestProofReview.verdict}; visible state: ${latestProofReview.visibleState}`
+  const proofFindings = latestReviewRecord?.findings.filter((f) => f.proofRunId) ?? [];
+  const proofLine = proofFindings.length > 0
+    ? `Proof reviewed: ${proofFindings.length} finding${proofFindings.length === 1 ? "" : "s"}. ${proofFindings.slice(0, 3).map((f) => f.summary).join(" ")}`
     : proofs.length > 0
       ? `Proof recorded: ${proofs.length} bundle${proofs.length === 1 ? "" : "s"}`
       : "Proof recorded: none";
@@ -37,17 +35,10 @@ export function buildOperatorCloseoutText(input: {
     waived.length > 0
       ? `Risks or waivers: ${waived.map((item) => item.butlerNote || item.text).join("; ")}`
       : "Risks or waivers: none called out.";
-  const reviewPanel = input.thread.executionContract?.reviewPanel ?? [];
-  const challenged = reviewPanel
-    .filter((entry) => entry.concerns.length > 0 || entry.requiredFollowUp)
-    .map((entry) => `${entry.label}: ${entry.requiredFollowUp ?? entry.concerns[0]}`)
-    .slice(0, 3);
-  const reviewerLine =
-    reviewPanel.length > 0
-      ? challenged.length > 0
-        ? `Reviewers challenged: ${challenged.join("; ")}`
-        : `Reviewers challenged: none; ${reviewPanel.filter((entry) => entry.verdict === "passed").length}/${reviewPanel.length} passed.`
-      : "Reviewers challenged: none.";
+  const reviewFindings = latestReviewRecord?.findings.filter((f) => f.source === "adversarial_review") ?? [];
+  const reviewerLine = reviewFindings.length > 0
+    ? `Review findings: ${reviewFindings.filter((f) => f.blocking && !f.waived).length} blocking, ${reviewFindings.length} total.`
+    : "Review findings: none.";
   return [
     trimmed,
     "Proof dossier",

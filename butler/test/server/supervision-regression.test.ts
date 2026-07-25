@@ -27,7 +27,6 @@ import {
 import { validateCompletedWorkerEvidence } from "../../src/server/codex-harness-report-validation.js";
 import { contractRequiresVisualProof, hasVisualProof, taskHasUiImplication } from "../../src/server/proof-policy.js";
 import { listWorkspaceProjectDirectories, resolveWorkspaceProjectInfo } from "../../src/server/repo-worktree.js";
-import { buildReviewPanel, summarizeReviewPanel } from "../../src/server/review-panel.js";
 import { ButlerStateStore } from "../../src/server/state-store.js";
 import { evaluateOperatorCloseoutGate } from "../../src/server/supervision-checklist.js";
 import { buildThreadExecutionContract, buildVerificationMatrix } from "../../src/server/thread-contract.js";
@@ -42,7 +41,6 @@ function makeContract(overrides: Partial<CodexThreadExecutionContractView> = {})
   const acceptancePoints = overrides.acceptancePoints ?? ["Acknowledge delegation", "Record callback", "Post closeout"];
   const taskCategory = overrides.taskCategory ?? "generic_code";
   const inferredWorkDepth = overrides.inferredWorkDepth ?? "deep";
-  const reviewPanel = overrides.reviewPanel ?? buildReviewPanel({ taskCategory, inferredWorkDepth, requestedTask: "Verify the delegated flow with proof." });
   return {
     threadId: "thread-1",
     workspaceCwd: "/workspace",
@@ -57,8 +55,6 @@ function makeContract(overrides: Partial<CodexThreadExecutionContractView> = {})
     inferredWorkDepth,
     taskCategory,
     verificationMatrix: buildVerificationMatrix({ acceptancePoints, taskCategory, inferredWorkDepth }),
-    reviewPanel,
-    reviewPanelSummary: overrides.reviewPanelSummary ?? summarizeReviewPanel(reviewPanel),
     notes: [],
     ...overrides
   };
@@ -641,6 +637,20 @@ test("completed worker reports cannot close out until Butler accepts the checkli
   for (const item of store.getSupervisionChecklist(contract.threadId)?.items ?? []) {
     store.reviewAcceptancePoint({ threadId: contract.threadId, pointId: item.id, status: "accepted" });
   }
+  store.upsertReviewRecord(contract.threadId, {
+    id: "review-record",
+    threadId: contract.threadId,
+    attemptId: contract.threadId,
+    scopeId: completedReport.turnId,
+    reportUpdatedAt: completedReport.updatedAt,
+    outputManifestHash: null,
+    state: "accepted",
+    findings: [],
+    workerInstruction: null,
+    reviewedAt: Date.now(),
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  });
 
   assert.equal(evaluateOperatorCloseoutGate(store.getSupervisionChecklist(contract.threadId), completedReport).ok, true);
 });

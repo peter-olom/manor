@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { recordReviewPanelVerdict } from "../../src/server/review-panel.js";
 import { ScratchPadStore } from "../../src/server/scratch-pad-store.js";
 import { buildThreadExecutionContract } from "../../src/server/thread-contract.js";
 import type { CodexThreadRecord } from "../../src/server/types.js";
@@ -92,7 +91,21 @@ test("scratch pad items persist, launch, derive ready state, review, and cleanup
               reviewState: "reviewed",
               createdAt: started.updatedAt,
               updatedAt: started.updatedAt + 2
-            }
+            },
+            reviewRecords: [{
+              id: "review-ok",
+              threadId,
+              attemptId: threadId,
+              scopeId: "turn-1",
+              reportUpdatedAt: started.updatedAt + 1,
+              outputManifestHash: null,
+              state: "accepted",
+              findings: [],
+              workerInstruction: null,
+              reviewedAt: started.updatedAt + 2,
+              createdAt: started.updatedAt + 2,
+              updatedAt: started.updatedAt + 2
+            }]
           } as CodexThreadRecord)
         : null
     );
@@ -219,7 +232,7 @@ test("scratch pad review-panel concerns keep results in needs rework", async () 
 
     const created = store.create({ text: "Prototype the scratchpad workflow and prove it locally." });
     const started = store.start(created.id, { threadId: "thread-panel-rework" });
-    const baseContract = buildThreadExecutionContract({
+    const contract = buildThreadExecutionContract({
       threadId: "thread-panel-rework",
       workspaceCwd: "/repos/manor",
       projectId: "manor",
@@ -232,18 +245,6 @@ test("scratch pad review-panel concerns keep results in needs rework", async () 
       inferredWorkDepth: "deep",
       attachmentCount: 0,
       notes: []
-    });
-    let contract = recordReviewPanelVerdict(baseContract, {
-      role: "qa",
-      verdict: "concern",
-      concerns: ["The local proof is too thin."],
-      requiredFollowUp: "Run one focused browser smoke before operator closeout."
-    });
-    contract = recordReviewPanelVerdict(contract, {
-      role: "product",
-      verdict: "concern",
-      concerns: ["The local proof is too thin."],
-      requiredFollowUp: "Run one focused browser smoke before operator closeout."
     });
     const snapshot = store.getSnapshot((threadId) =>
       threadId === "thread-panel-rework"
@@ -268,9 +269,9 @@ test("scratch pad review-panel concerns keep results in needs rework", async () 
                 {
                   id: "point-1",
                   text: "Prototype the scratchpad workflow",
-                  status: "accepted",
-                  butlerNote: "Accepted base prototype evidence.",
-                  queuedInstruction: null,
+                  status: "rejected",
+                  butlerNote: "The local proof is too thin.",
+                  queuedInstruction: "Run one focused browser smoke before operator closeout.",
                   decidedAt: started.updatedAt + 2,
                   evidence: []
                 }
@@ -284,7 +285,24 @@ test("scratch pad review-panel concerns keep results in needs rework", async () 
               reviewState: "needs_review",
               createdAt: started.updatedAt,
               updatedAt: started.updatedAt + 2
-            }
+            },
+            reviewRecords: [{
+              id: "review-1",
+              threadId,
+              attemptId: threadId,
+              scopeId: "turn-1",
+              reportUpdatedAt: started.updatedAt + 1,
+              outputManifestHash: null,
+              state: "accepted",
+              findings: [
+                { id: "f1", severity: "high", summary: "Run one focused browser smoke before operator closeout.", blocking: true, waived: false, waiverReason: null, source: "adversarial_review", proofRunId: null, checklistItemId: null, createdAt: started.updatedAt + 2 },
+                { id: "f2", severity: "medium", summary: "The local proof is too thin.", blocking: true, waived: false, waiverReason: null, source: "adversarial_review", proofRunId: null, checklistItemId: null, createdAt: started.updatedAt + 2 }
+              ],
+              workerInstruction: "Run one focused browser smoke before operator closeout.",
+              reviewedAt: started.updatedAt + 2,
+              createdAt: started.updatedAt + 2,
+              updatedAt: started.updatedAt + 2
+            }]
           } as CodexThreadRecord)
         : null
     );
@@ -292,7 +310,7 @@ test("scratch pad review-panel concerns keep results in needs rework", async () 
     assert.equal(snapshot.items[0]?.status, "exploring");
     assert.equal(snapshot.items[0]?.readiness.status, "needs_rework");
     assert.equal(snapshot.items[0]?.dossier.nextAction, "Send one private rework pass.");
-    assert.match(snapshot.items[0]?.dossier.reviewerSummary ?? "", /QA reviewer/);
+    assert.match(snapshot.items[0]?.dossier.reviewerSummary ?? "", /Run one focused browser smoke/);
     assert.deepEqual(snapshot.items[0]?.dossier.reviewerConcerns, [
       "Run one focused browser smoke before operator closeout.",
       "The local proof is too thin."

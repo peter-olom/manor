@@ -165,13 +165,11 @@ export function evaluateOperatorCloseoutGate(
     .filter((item) => item.status !== "accepted" && item.status !== "waived")
     .map((item) => ({ id: item.id, status: item.status, text: item.text }));
 
-  if (checklist.reviewState === "reviewed" && openItems.length === 0) {
+  if (openItems.length === 0) {
     return { ok: true };
   }
 
-  const openSummary = openItems.length > 0
-    ? openItems.map((item) => `${item.id}:${item.status}:${item.text}`).join(" | ")
-    : "checklist review state is not reviewed";
+  const openSummary = openItems.map((item) => `${item.id}:${item.status}:${item.text}`).join(" | ");
   return {
     ok: false,
     reason: `Completed worker reports are evidence only. Butler must accept or waive every checklist point before posting a completed closeout. Open items: ${openSummary}`,

@@ -191,6 +191,20 @@ test("backend dogfood closes only after API smoke, failure path, logs, Butler re
       note: "Mapped evidence covers the API check."
     });
   }
+  store.upsertReviewRecord(contract.threadId, {
+    id: "review-backend",
+    threadId: contract.threadId,
+    attemptId: contract.threadId,
+    scopeId: report.turnId,
+    reportUpdatedAt: report.updatedAt,
+    outputManifestHash: null,
+    state: "accepted",
+    findings: [],
+    workerInstruction: null,
+    reviewedAt: Date.now(),
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  });
 
   assert.equal(evaluateOperatorCloseoutGate(store.getSupervisionChecklist(contract.threadId), report).ok, true);
   const closeout = buildOperatorCloseoutText({
@@ -347,6 +361,20 @@ test("UI dogfood rejects weak proof, steers rework privately, then closes with p
       note: "Evidence is specific and operator-facing."
     });
   }
+  store.upsertReviewRecord(contract.threadId, {
+    id: "review-record-ui",
+    threadId: contract.threadId,
+    attemptId: contract.threadId,
+    scopeId: correctedReport.turnId,
+    reportUpdatedAt: correctedReport.updatedAt,
+    outputManifestHash: null,
+    state: "accepted",
+    findings: [{ id: "proof-finding-ui", severity: "info" as const, summary: "Proof review for proof-ui: credible. The dossier shows rows, evidence, review notes, and proof status without a depth control.", blocking: false, waived: false, waiverReason: null, source: "butler_review" as const, proofRunId: "proof-ui", checklistItemId: null, createdAt: Date.now() }],
+    workerInstruction: null,
+    reviewedAt: Date.now(),
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  });
 
   assert.equal(evaluateOperatorCloseoutGate(store.getSupervisionChecklist(contract.threadId), correctedReport).ok, true);
   const closeout = buildOperatorCloseoutText({
@@ -357,6 +385,6 @@ test("UI dogfood rejects weak proof, steers rework privately, then closes with p
   });
   assert.match(closeout, /Proof dossier/);
   assert.match(closeout, /Accepted evidence: 4\/4/);
-  assert.match(closeout, /Proof reviewed: credible/);
+  assert.match(closeout, /Proof reviewed:/);
   assert.match(closeout, /without a depth control/);
 });

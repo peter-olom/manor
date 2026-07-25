@@ -1072,7 +1072,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
           signal
         });
         const deterministicFailure = !proof.verification.ok || proof.verification.failureKind !== "none";
-        const reviewVerdict = deterministicFailure ? "failed" as const : review.verdict;
+        const reviewVerdict: "credible" | "unclear" | "failed" = deterministicFailure ? "failed" : (review.verdict === "credible" || review.verdict === "failed" ? review.verdict : "unclear");
         const reviewConcern = deterministicFailure
           ? proof.verification.error ?? `Recorded proof failed with signal ${proof.verification.failureKind}.`
           : review.concern;
@@ -1081,8 +1081,8 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         if (proof.proofRecordId) {
           const reviewRecord: PreviewProofReviewView = {
             id: crypto.randomUUID(),
-            verdict: reviewVerdict === "credible" || reviewVerdict === "failed" ? reviewVerdict : "unclear",
-            visibleState: review.visibleState,
+            verdict: reviewVerdict,
+            visibleState: review.visibleState ?? "",
             evidence: review.evidence,
             concern: reviewConcern,
             expectedOutcome:
@@ -1109,9 +1109,7 @@ export function buildButlerStackPreviewTools(access: ButlerAgentToolAccess): But
         const proofSummary = [
           `Verdict=${proofVerdict}`,
           `FailureKind=${proof.verification.failureKind}`,
-          `Visible=${review.visibleState}`,
           `Evidence=${review.evidence}`,
-          `Concern=${availableArtifactCount > 0 ? reviewConcern : "Recorded proof artifacts are missing."}`,
           `RecordedVideo=${proof.video ? "yes" : "no"}`,
           `Artifacts=${artifactSummary}`
         ].join("\n");

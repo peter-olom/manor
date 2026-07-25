@@ -279,15 +279,13 @@ export function buildCallbackAdversarialReviewBrief(store: ButlerStateStore, cal
     .filter((item) => item.status === "pending" || item.status === "rejected" || Boolean(item.queuedInstruction))
     .slice(0, 20)
     .map((item) => `${item.id} ${item.status}: ${item.text}${item.butlerNote ? ` | Butler note: ${item.butlerNote}` : ""}${item.queuedInstruction ? ` | required next step: ${item.queuedInstruction}` : ""}`) ?? [];
-  const priorBlockingFindings = thread?.executionContract?.reviewResults
-    ?.filter((finding) =>
-      finding.blocking &&
-      !finding.waived &&
-      currentReport?.updatedAt === finding.reportUpdatedAt &&
-      currentReport.turnId === finding.turnId
-    )
-    .slice(-10)
-    .map((finding) => `${finding.id} ${finding.severity}: ${finding.findingSummary}`) ?? [];
+  const latestReview = thread ? (thread.reviewRecords ?? []).sort((a, b) => b.reportUpdatedAt - a.reportUpdatedAt)[0] : null;
+  const priorBlockingFindings = latestReview && currentReport && latestReview.reportUpdatedAt === currentReport.updatedAt
+    ? latestReview.findings
+        .filter((f) => f.blocking && !f.waived)
+        .slice(-10)
+        .map((f) => `${f.id} ${f.severity}: ${f.summary}`)
+    : [];
   const operatorRequestText = callback.operatorRequestText?.trim() || null;
   const boundedSection = (value: string | null, maxChars: number): string | null => {
     if (!value || value.length <= maxChars) return value;

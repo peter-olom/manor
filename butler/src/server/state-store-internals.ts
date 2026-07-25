@@ -510,16 +510,16 @@ export function normalizeStateStorePreviewProofRecord(
             const verdict: PreviewProofReviewView["verdict"] =
               review.verdict === "credible" || review.verdict === "failed" ? review.verdict : "unclear";
             return {
-              id: typeof review.id === "string" && review.id.trim() ? review.id.trim() : crypto.randomUUID(),
-              verdict,
-              visibleState: review.visibleState.trim(),
-              evidence: typeof review.evidence === "string" ? review.evidence.trim() : "",
-              concern: typeof review.concern === "string" ? review.concern.trim() : "",
-              expectedOutcome:
-                typeof review.expectedOutcome === "string" && review.expectedOutcome.trim() ? review.expectedOutcome.trim() : null,
-              reviewedAt: typeof review.reviewedAt === "number" && Number.isFinite(review.reviewedAt) ? review.reviewedAt : Date.now(),
-              modelId: typeof review.modelId === "string" ? review.modelId : "",
-              modelProvider: typeof review.modelProvider === "string" ? review.modelProvider : ""
+            id: typeof review.id === "string" && review.id.trim() ? review.id.trim() : crypto.randomUUID(),
+            verdict,
+            visibleState: review.visibleState.trim(),
+            evidence: typeof review.evidence === "string" ? review.evidence.trim() : "",
+            concern: typeof review.concern === "string" ? review.concern.trim() : "",
+            expectedOutcome:
+              typeof review.expectedOutcome === "string" && review.expectedOutcome.trim() ? review.expectedOutcome.trim() : null,
+            reviewedAt: typeof review.reviewedAt === "number" && Number.isFinite(review.reviewedAt) ? review.reviewedAt : Date.now(),
+            modelId: typeof review.modelId === "string" ? review.modelId : "",
+            modelProvider: typeof review.modelProvider === "string" ? review.modelProvider : ""
             };
           })
           .slice(-8)
