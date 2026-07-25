@@ -865,6 +865,7 @@ export class ButlerStateStore extends EventEmitter {
     this.removePreviewProofsForThread(threadId);
     this.persistedSupervisionByThreadId.delete(threadId);
     this.persistedExecutionContractsByThreadId.delete(threadId); this.persistedSupervisionChecklistsByThreadId.delete(threadId);
+    this.getInternalAccess().persistedReviewRecordsByThreadId.delete(threadId);
     this.latestStartedTurnIds.delete(threadId);
     this.latestCompletedTurnIds.delete(threadId); this.latestBlockedTurnIds.delete(threadId);
     this.windows = this.windows.filter((window) => window.threadId !== threadId);
@@ -901,6 +902,7 @@ export class ButlerStateStore extends EventEmitter {
       this.removePreviewProofsForThread(threadId);
       this.persistedSupervisionByThreadId.delete(threadId);
       this.persistedExecutionContractsByThreadId.delete(threadId); this.persistedSupervisionChecklistsByThreadId.delete(threadId);
+      this.getInternalAccess().persistedReviewRecordsByThreadId.delete(threadId);
       this.latestStartedTurnIds.delete(threadId);
       this.latestCompletedTurnIds.delete(threadId); this.latestBlockedTurnIds.delete(threadId);
     }

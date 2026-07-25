@@ -89,7 +89,7 @@ const DURABLE_REFERENCE_EVIDENCE_KINDS = new Set<WorkerEvidenceKind>([
   "trace",
   "file"
 ]);
-const LOCAL_FILESYSTEM_REFERENCE_PATTERN = /(?:^file:\/\/|^(?:~\/|[A-Za-z]:[\\/]|\\\\)|\/var\/folders\/|\/private\/var\/folders\/|TemporaryItems|screencaptureui|NSIRD_|\/(?:private\/)?tmp\/)/i;
+const LOCAL_FILESYSTEM_REFERENCE_PATTERN = /(?:^file:\/\/?|^(?:~\/|[A-Za-z]:[\\/]|\\\\)|\/var\/folders\/|\/private\/var\/folders\/|TemporaryItems|screencaptureui|NSIRD_|\/(?:private\/)?tmp\/)/i;
 
 function assertDurableReferenceId(value: string | null | undefined, label: string): void {
   if (value && (/\s/.test(value) || /[\\/]/.test(value) || /^file:/i.test(value))) {

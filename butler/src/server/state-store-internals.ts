@@ -28,6 +28,7 @@ import {
   normalizeSupervisionChecklist,
   normalizeWorkerEvidence
 } from "./state-store-contract-normalizers.js";
+import { normalizeReviewRecord } from "./state-store-review-records.js";
 import type {
   ButlerWindow,
   CodexEventEntry,
@@ -196,22 +197,18 @@ function normalizeMemoryTaskStatus(value: unknown): MemoryTaskView["status"] {
 function normalizeMemorySynthesisQueueStatus(value: unknown): MemorySynthesisQueueEntryView["status"] {
   return value === "running" || value === "completed" || value === "failed" || value === "skipped" ? value : "pending";
 }
-
 export function reconcileStateStoreThreadWindows(access: StateStoreInternalAccess): boolean {
   if (!access.threadInventoryReady) {
     return false;
   }
-
   const knownThreadIds = new Set(access.threads.keys());
   const seenThreadIds = new Set<string>();
   const nextWindows: ButlerWindow[] = [];
-
   for (const window of access.windows) {
     const threadId = typeof window.threadId === "string" ? window.threadId.trim() : "";
     if (!threadId || !knownThreadIds.has(threadId) || seenThreadIds.has(threadId)) {
       continue;
     }
-
     seenThreadIds.add(threadId);
     const thread = access.threads.get(threadId);
     nextWindows.push(
@@ -788,7 +785,10 @@ export async function loadStateStore(access: StateStoreInternalAccess): Promise<
       }
     }
     for (const [tid, recs] of Object.entries(data.reviewRecordsByThreadId ?? {})) {
-      if (Array.isArray(recs)) access.persistedReviewRecordsByThreadId.set(tid, recs as ReviewRecord[]);
+      if (Array.isArray(recs)) {
+        const normalized = recs.map((r) => normalizeReviewRecord(r)).filter((r): r is ReviewRecord => r !== null);
+        if (normalized.length > 0) access.persistedReviewRecordsByThreadId.set(tid, normalized);
+      }
     }
     for (const [threadId, memory] of Object.entries(data.jobMemoriesByThreadId ?? {})) {
       if (!memory || typeof memory !== "object" || typeof memory.threadId !== "string") {

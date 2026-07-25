@@ -651,7 +651,7 @@ export async function ensureButlerAdversarialReview(input: {
       const reviewRecord: ReviewRecord = {
         id: `review-${input.threadId}-${report.turnId}-${crypto.randomUUID().slice(0, 8)}`,
         threadId: input.threadId,
-        attemptId: contract.threadId,
+        attemptId: payload?.protocol.currentAttemptId ?? contract.threadId,
         scopeId: input.store.getThreadJobPayload(input.threadId)?.protocol.currentScopeId ?? report.turnId,
         reportUpdatedAt: report.updatedAt,
         outputManifestHash: null,

@@ -648,6 +648,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
         if (typedParams.status === "rejected" && !typedParams.nextInstruction?.trim()) {
           throw new Error("Rejected acceptance points require nextInstruction so Butler can batch one worker follow-up.");
         }
+        assertCallbackReviewCurrent(typedParams.threadId);
         const checklist = access.store.reviewAcceptancePoint({
           threadId: typedParams.threadId,
           pointId: typedParams.pointId,
@@ -655,6 +656,36 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
           note: typedParams.note,
           nextInstruction: typedParams.nextInstruction
         });
+        const report = access.store.getWorkerReport(typedParams.threadId);
+        const payload = access.store.getThreadJobPayload(typedParams.threadId);
+        if (report) {
+          const now = Date.now();
+          access.store.upsertReviewRecord(typedParams.threadId, {
+            id: `butler-${typedParams.threadId}-${report.turnId}-${now}`,
+            threadId: typedParams.threadId,
+            attemptId: payload?.protocol.currentAttemptId ?? typedParams.threadId,
+            scopeId: payload?.protocol.currentScopeId ?? report.turnId,
+            reportUpdatedAt: report.updatedAt,
+            outputManifestHash: null,
+            state: typedParams.status === "rejected" ? "rejected" : "accepted",
+            findings: [{
+              id: `butler-${typedParams.pointId}-${now}`,
+              severity: typedParams.status === "rejected" ? "high" : "info",
+              summary: `${typedParams.status}: ${typedParams.note ?? ""}`.trim(),
+              blocking: typedParams.status === "rejected",
+              waived: typedParams.status === "waived",
+              waiverReason: typedParams.status === "waived" ? (typedParams.note ?? "Butler waived this point.") : null,
+              source: "butler_review" as const,
+              proofRunId: null,
+              checklistItemId: typedParams.pointId,
+              createdAt: now
+            }],
+            workerInstruction: typedParams.status === "rejected" ? (typedParams.nextInstruction ?? "Fix rejected acceptance point.") : null,
+            reviewedAt: now,
+            createdAt: now,
+            updatedAt: now
+          });
+        }
         const item = checklist.items.find((entry) => entry.id === typedParams.pointId);
         return {
           content: [{ type: "text", text: `${typedParams.pointId} marked ${typedParams.status}${item ? `: ${item.text}` : ""}.` }],
@@ -706,7 +737,7 @@ export function buildButlerWorkerTools(access: ButlerAgentToolAccess): ButlerCus
           const reviewRecord: ReviewRecord = {
             id: `butler-${typedParams.threadId}-${report.turnId}-${now}`,
             threadId: typedParams.threadId,
-            attemptId: typedParams.threadId,
+            attemptId: payload?.protocol.currentAttemptId ?? typedParams.threadId,
             scopeId: payload?.protocol.currentScopeId ?? report.turnId,
             reportUpdatedAt: report.updatedAt,
             outputManifestHash: null,

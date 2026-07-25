@@ -11,7 +11,8 @@ import type {
   PreviewProofRecordView,
   ServiceLeaseView,
   StackLeaseView,
-  SupervisionChecklistView
+  SupervisionChecklistView,
+  ReviewRecord
 } from "./types.js";
 
 type ThreadDeletionSnapshot = {
@@ -23,6 +24,7 @@ type ThreadDeletionSnapshot = {
   supervision: { butlerTurnsUsed: number; maxButlerTurns: number | null } | undefined;
   executionContract: CodexThreadExecutionContractView | undefined;
   supervisionChecklist: SupervisionChecklistView | undefined;
+  reviewRecords: ReviewRecord[] | undefined;
   latestStartedTurnId: string | undefined;
   latestCompletedTurnId: string | undefined;
   latestBlockedTurnId: string | undefined;
@@ -46,6 +48,7 @@ function captureThreadDeletion(access: StateStoreInternalAccess, threadId: strin
     supervision: access.persistedSupervisionByThreadId.get(threadId),
     executionContract: access.persistedExecutionContractsByThreadId.get(threadId),
     supervisionChecklist: access.persistedSupervisionChecklistsByThreadId.get(threadId),
+    reviewRecords: access.persistedReviewRecordsByThreadId.get(threadId),
     latestStartedTurnId: access.latestStartedTurnIds.get(threadId),
     latestCompletedTurnId: access.latestCompletedTurnIds.get(threadId),
     latestBlockedTurnId: access.latestBlockedTurnIds.get(threadId),
@@ -67,6 +70,7 @@ function restoreThreadDeletion(access: StateStoreInternalAccess, threadId: strin
   restoreEntry(access.persistedSupervisionByThreadId, threadId, snapshot.supervision);
   restoreEntry(access.persistedExecutionContractsByThreadId, threadId, snapshot.executionContract);
   restoreEntry(access.persistedSupervisionChecklistsByThreadId, threadId, snapshot.supervisionChecklist);
+  if (snapshot.reviewRecords) access.persistedReviewRecordsByThreadId.set(threadId, snapshot.reviewRecords);
   restoreEntry(access.latestStartedTurnIds, threadId, snapshot.latestStartedTurnId);
   restoreEntry(access.latestCompletedTurnIds, threadId, snapshot.latestCompletedTurnId);
   restoreEntry(access.latestBlockedTurnIds, threadId, snapshot.latestBlockedTurnId);
