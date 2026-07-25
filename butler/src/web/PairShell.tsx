@@ -1496,6 +1496,4 @@ export function PairShell() {
       {manorRestartDialog}
     </main>
   );
-}
-
-export type { PairMessage };
+}export type { PairMessage };
