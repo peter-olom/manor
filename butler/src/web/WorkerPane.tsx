@@ -46,6 +46,20 @@ export type WorkerTurnGroup = {
   finalIndex: number | null;
 };
 
+export type WorkerReviewVerdictView = {
+  state: "queued" | "running" | "accepted" | "rejected";
+  findings: Array<{
+    id: string;
+    severity: string;
+    summary: string;
+    blocking: boolean;
+    waived: boolean;
+    source: string;
+  }>;
+  workerInstruction: string | null;
+  reviewedAt: number | null;
+} | null;
+
 export type WorkerReport = {
   turnId?: string | null;
   status: string;
@@ -179,6 +193,7 @@ export type WorkerTimeline = {
   payload: WorkerJobPayload | null;
   outputManifest: WorkerJobOutputManifest | null;
   checklist: WorkerChecklistItem[] | null;
+  reviewVerdict: WorkerReviewVerdictView;
   fallback: WorkerItem[];
 };
 
@@ -1183,6 +1198,37 @@ export function WorkerPane({ pair, timeline, loading = false, hasMore = false, l
   );
 }
 
+const WorkerReviewVerdict = memo(function WorkerReviewVerdict({ verdict }: { verdict: WorkerReviewVerdictView }) {
+  if (!verdict) return null;
+  const stateLabel = verdict.state === "accepted" ? "Accepted" : verdict.state === "rejected" ? "Rejected" : verdict.state === "running" ? "Reviewing" : "Queued";
+  const stateClass = verdict.state === "accepted" ? "is-ok" : verdict.state === "rejected" ? "is-failed" : "is-unclear";
+  return (
+    <section className="worker-review-verdict" aria-label="Review verdict">
+      <header className="worker-review-verdict-head">
+        <span>Review verdict{verdict.reviewedAt ? ` · ${new Date(verdict.reviewedAt).toLocaleString()}` : ""}</span>
+        <span className={stateClass}>{stateLabel}</span>
+      </header>
+      {verdict.findings.length > 0 ? (
+        <ol className="worker-review-findings">
+          {verdict.findings.map((f) => (
+            <li key={f.id} className={`worker-review-finding ${f.blocking ? "is-blocking" : ""} ${f.waived ? "is-waived" : ""}`}>
+              <span className="worker-review-finding-severity">{f.severity}</span>
+              <span className="worker-review-finding-summary">{f.summary}</span>
+              {f.waived ? <span className="worker-review-finding-waived">Waived</span> : null}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {verdict.state === "rejected" && verdict.workerInstruction ? (
+        <div className="worker-review-instruction">
+          <span>Rework: </span>
+          <Markdown text={verdict.workerInstruction} />
+        </div>
+      ) : null}
+    </section>
+  );
+});
+
 function WorkerTimelineView({
   loading,
   hasMore,
@@ -1217,7 +1263,7 @@ function WorkerTimelineView({
   const outputStateKey = outputManifest?.entries
     .map((entry) => `${entry.id}:${entry.available}:${entry.integrity}:${entry.status ?? ""}:${entry.currentAttempt}`)
     .join("|") ?? "";
-  const bottomKey = `${lastTurn?.id ?? ""}:${lastItem?.id ?? ""}:${lastItem?.at ?? 0}:${report?.updatedAt ?? 0}:${outputStateKey}:${fallback.at(-1)?.id ?? ""}`;
+  const bottomKey = `${lastTurn?.id ?? ""}:${lastItem?.id ?? ""}:${lastItem?.at ?? 0}:${report?.updatedAt ?? 0}:${outputStateKey}:${fallback.at(-1)?.id ?? ""}:${timeline.reviewVerdict?.state ?? ""}:${timeline.reviewVerdict?.reviewedAt ?? 0}`;
   const prependKey = turns[0]?.id ?? null;
   const { ref, onScroll, unreadCount, scrollToBottom } = useAnchoredScroll<HTMLDivElement>({
     bottomKey,
@@ -1278,6 +1324,7 @@ function WorkerTimelineView({
         {turns.length === 0 && !report
           ? fallback.map((row) => <FallbackRow key={row.id} row={row} />)
           : null}
+        <WorkerReviewVerdict verdict={timeline.reviewVerdict} />
         <WorkerJobOutputManifestPanel manifest={outputManifest} />
       </div>
       <JumpToLatest count={unreadCount} onClick={() => scrollToBottom("smooth")} />

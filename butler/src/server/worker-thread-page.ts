@@ -15,6 +15,7 @@ export type WorkerThreadPageView = Pick<
       queuedInstruction: string | null;
     }>;
   } | null;
+  reviewRecords: CodexThreadDetailView["reviewRecords"];
   loadedStart: number;
   hasMore: boolean;
 };
@@ -71,6 +72,7 @@ export function pageWorkerThread(thread: CodexThreadDetailView, before: number |
     eventLog: pageEventLog(thread, start, end),
     jobPayload: pagePayload(thread.jobPayload, turnIds),
     supervisionChecklist: pageChecklist(thread),
+    reviewRecords: thread.reviewRecords,
     workerReport: thread.workerReport && turnIds.has(thread.workerReport.turnId) ? thread.workerReport : null,
     workerReports: thread.workerReports?.filter((report) => turnIds.has(report.turnId)),
     loadedStart: start,

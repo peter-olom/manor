@@ -39,6 +39,13 @@ export type WorkerThread = {
   supervisionChecklist?: {
     items?: Array<{ id: string; text: string; status: string; butlerNote?: string | null; queuedInstruction?: string | null }>;
   } | null;
+  reviewRecords?: Array<{
+    state: "queued" | "running" | "accepted" | "rejected";
+    findings: Array<{ severity: string; summary: string; blocking: boolean; waived: boolean; source: string }>;
+    workerInstruction: string | null;
+    reviewedAt: number | null;
+    reportUpdatedAt: number;
+  }>;
   loadedStart?: number;
   hasMore?: boolean;
   turnCount?: number;
@@ -104,7 +111,7 @@ function isFailedWorkerTurn(status: string): boolean {
 }
 
 export function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline {
-  if (!thread) return { turns: [], report: null, reports: [], payload: null, outputManifest: null, checklist: null, fallback: [] };
+  if (!thread) return { turns: [], report: null, reports: [], payload: null, outputManifest: null, checklist: null, reviewVerdict: null, fallback: [] };
   const checklist: WorkerChecklistItem[] | null = thread.supervisionChecklist?.items?.length
     ? thread.supervisionChecklist.items.map((item) => ({
         id: item.id,
@@ -175,6 +182,17 @@ export function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline
       };
     })
     .filter((turn) => turn.items.length > 0 || turn.completedAt === null || isFailedWorkerTurn(turn.status));
+  const reviewVerdict: import("./WorkerPane").WorkerReviewVerdictView = (() => {
+    const records = thread.reviewRecords ?? [];
+    if (records.length === 0) return null;
+    const latest = [...records].sort((a, b) => b.reportUpdatedAt - a.reportUpdatedAt)[0]!;
+    return {
+      state: latest.state,
+      findings: latest.findings.map((f) => ({ id: f.id, severity: f.severity, summary: f.summary, blocking: f.blocking, waived: f.waived, source: f.source })),
+      workerInstruction: latest.workerInstruction,
+      reviewedAt: latest.reviewedAt
+    };
+  })();
   return {
     turns,
     report: report && !turns.some((turn) => turn.id === report.turnId) ? report : null,
@@ -182,6 +200,7 @@ export function shapeWorkerTimeline(thread: WorkerThread | null): WorkerTimeline
     payload: thread.jobPayload ?? null,
     outputManifest: thread.jobOutputManifest ?? null,
     checklist,
+    reviewVerdict,
     fallback: []
   };
 }
