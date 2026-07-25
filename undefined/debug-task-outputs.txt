@@ -1,0 +1,80 @@
+[
+  {
+    "tag": "HTML",
+    "class": "",
+    "id": "",
+    "text": "Butler\n  /* geist-cyrillic-ext-wght-normal */\n@font-face {\n  font-family: 'Geist Variable';\n  font-s"
+  },
+  {
+    "tag": "BODY",
+    "class": "",
+    "id": "",
+    "text": "SessionsFilesMemoryImprove1Sessions7Kanban app - IntegratedThe Boardwalk memory dossier is complete "
+  },
+  {
+    "tag": "DIV",
+    "class": "",
+    "id": "root",
+    "text": "SessionsFilesMemoryImprove1Sessions7Kanban app - IntegratedThe Boardwalk memory dossier is complete "
+  },
+  {
+    "tag": "MAIN",
+    "class": "app   ",
+    "id": "",
+    "text": "SessionsFilesMemoryImprove1Sessions7Kanban app - IntegratedThe Boardwalk memory dossier is complete "
+  },
+  {
+    "tag": "SECTION",
+    "class": "workspace",
+    "id": "",
+    "text": "List Manor ModelsShared workspace/reposButlerWorkerBothCLIIdleButler26 messages · 3d16662aa9f4Turns1"
+  },
+  {
+    "tag": "DIV",
+    "class": "workspace-views",
+    "id": "",
+    "text": "Butler26 messages · 3d16662aa9f4Turns1/2040100∞Accepted3 findings | 1 earlierYou04:12 PMAre you able"
+  },
+  {
+    "tag": "DIV",
+    "class": "workspace-view is-conversation is-active",
+    "id": "",
+    "text": "Butler26 messages · 3d16662aa9f4Turns1/2040100∞Accepted3 findings | 1 earlierYou04:12 PMAre you able"
+  },
+  {
+    "tag": "DIV",
+    "class": "workspace-body is-split",
+    "id": "",
+    "text": "Butler26 messages · 3d16662aa9f4Turns1/2040100∞Accepted3 findings | 1 earlierYou04:12 PMAre you able"
+  },
+  {
+    "tag": "SECTION",
+    "class": "pane",
+    "id": "",
+    "text": "Worker · 012fd339202aidle · Ollama Cloud · Glm 5.2Glm 5.2ThinkingHighMaxSwitch worker…All outputs (3"
+  },
+  {
+    "tag": "DIV",
+    "class": "transcript",
+    "id": "",
+    "text": "All outputs (3)ReportRevised the markdown report to add Kimi K3 as a third, forward-looking model in"
+  },
+  {
+    "tag": "DIV",
+    "class": "worker-output-pinned ",
+    "id": "",
+    "text": "Task outputs3 available"
+  },
+  {
+    "tag": "BUTTON",
+    "class": "worker-output-pinned-toggle",
+    "id": "",
+    "text": "Task outputs3 available"
+  },
+  {
+    "tag": "SPAN",
+    "class": "worker-output-pinned-label",
+    "id": "",
+    "text": "Task outputs"
+  }
+]

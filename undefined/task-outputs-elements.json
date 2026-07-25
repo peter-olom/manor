@@ -1,0 +1,80 @@
+[
+  {
+    "tag": "HTML",
+    "class": "",
+    "id": "",
+    "text": "Butler\n  /* geist-cyrillic-ext-wght-normal */\n@font-face {\n  font-family: 'Geist Variable';\n  font-style: normal;\n  font-display: swap;\n  font-weight: 100 900;\n  src: url(/node_modules/@fontsource-var"
+  },
+  {
+    "tag": "BODY",
+    "class": "",
+    "id": "",
+    "text": "SessionsFilesMemoryImprove1Sessions7Kanban app - IntegratedThe Boardwalk memory dossier is complete and published as a private site.\n\n**Deliverables:**\n- 🔗 **Live URL:** https://graceful-pumice-je5p."
+  },
+  {
+    "tag": "DIV",
+    "class": "",
+    "id": "root",
+    "text": "SessionsFilesMemoryImprove1Sessions7Kanban app - IntegratedThe Boardwalk memory dossier is complete and published as a private site.\n\n**Deliverables:**\n- 🔗 **Live URL:** https://graceful-pumice-je5p."
+  },
+  {
+    "tag": "MAIN",
+    "class": "app   ",
+    "id": "",
+    "text": "SessionsFilesMemoryImprove1Sessions7Kanban app - IntegratedThe Boardwalk memory dossier is complete and published as a private site.\n\n**Deliverables:**\n- 🔗 **Live URL:** https://graceful-pumice-je5p."
+  },
+  {
+    "tag": "SECTION",
+    "class": "workspace",
+    "id": "",
+    "text": "List Manor ModelsShared workspace/reposButlerWorkerBothCLIIdleButler26 messages · 3d16662aa9f4Turns1/2040100∞Accepted3 findings | 1 earlierYou04:12 PMAre you able to list all manor providers/models?Th"
+  },
+  {
+    "tag": "DIV",
+    "class": "workspace-views",
+    "id": "",
+    "text": "Butler26 messages · 3d16662aa9f4Turns1/2040100∞Accepted3 findings | 1 earlierYou04:12 PMAre you able to list all manor providers/models?Thought for 1 step · 1.0sThinkingThe operator is asking about Ma"
+  },
+  {
+    "tag": "DIV",
+    "class": "workspace-view is-conversation is-active",
+    "id": "",
+    "text": "Butler26 messages · 3d16662aa9f4Turns1/2040100∞Accepted3 findings | 1 earlierYou04:12 PMAre you able to list all manor providers/models?Thought for 1 step · 1.0sThinkingThe operator is asking about Ma"
+  },
+  {
+    "tag": "DIV",
+    "class": "workspace-body is-split",
+    "id": "",
+    "text": "Butler26 messages · 3d16662aa9f4Turns1/2040100∞Accepted3 findings | 1 earlierYou04:12 PMAre you able to list all manor providers/models?Thought for 1 step · 1.0sThinkingThe operator is asking about Ma"
+  },
+  {
+    "tag": "SECTION",
+    "class": "pane",
+    "id": "",
+    "text": "Worker · 012fd339202aidle · Ollama Cloud · Glm 5.2Glm 5.2ThinkingHighMaxSwitch worker…All outputs (3)ReportRevised the markdown report to add Kimi K3 as a third, forward-looking model in the compariso"
+  },
+  {
+    "tag": "DIV",
+    "class": "transcript",
+    "id": "",
+    "text": "All outputs (3)ReportRevised the markdown report to add Kimi K3 as a third, forward-looking model in the comparison; kept the original GLM-5.2 vs Kimi K2.7-Code quota-drain finding central and registe"
+  },
+  {
+    "tag": "DIV",
+    "class": "worker-output-pinned ",
+    "id": "",
+    "text": "Task outputs3 available"
+  },
+  {
+    "tag": "BUTTON",
+    "class": "worker-output-pinned-toggle",
+    "id": "",
+    "text": "Task outputs3 available"
+  },
+  {
+    "tag": "SPAN",
+    "class": "worker-output-pinned-label",
+    "id": "",
+    "text": "Task outputs"
+  }
+]

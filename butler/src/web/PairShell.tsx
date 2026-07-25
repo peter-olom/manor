@@ -1396,6 +1396,7 @@ export function PairShell() {
                     onPairUpdate={(updatedPair) => setPair(updatedPair)}
                     contextItems={composerContextItems}
                     onContextItemsChange={setComposerContextItems}
+                    reviewRecords={activePair.reviewRecords}
                   />
                 ) : null}
                 {viewMode === "split" ? <div className="divider" /> : null}

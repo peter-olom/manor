@@ -17,6 +17,7 @@ import { buildProjectArtifactPreview, type ProjectArtifactPreview, type ProjectA
 
 import type { ProviderRuntimeLivePatch } from "../shared/provider-runtime";
 import type { PairButlerActivityOutcome, PairComposerInputItem, PairComposerSuggestion, PairDetail, PairMessage, PairModelOption, PairReviewActivity, PairTraceItem, PairWorkerSupervision } from "../shared/pairing";
+import { ButlerReviewVerdictPanel } from "./ButlerReviewVerdict";
 import { getJson, isVisionImageFile, type FileReference } from "./api";
 import type { PreviewMedia } from "./ImagePreviewModal";
 
@@ -53,6 +54,7 @@ type ButlerPaneProps = {
   onPairUpdate: (pair: PairDetail) => void;
   contextItems: PairComposerInputItem[];
   onContextItemsChange: (items: PairComposerInputItem[]) => void;
+  reviewRecords: import("../server/orchestration-types").ReviewRecord[];
 };
 
 function formatTime(value: number | null | undefined): string {
@@ -879,7 +881,8 @@ export function ButlerPane({
   onPreviewProjectFile,
   onPairUpdate,
   contextItems,
-  onContextItemsChange
+  onContextItemsChange,
+  reviewRecords
 }: ButlerPaneProps) {
   const live = useLiveButlerTurn(`butler:${pair.id}`);
   const [completedTraces, setCompletedTraces] = useState<Map<string, CompletedTrace>>(new Map());
@@ -1027,6 +1030,8 @@ export function ButlerPane({
           ) : null}
         </div>
       </div>
+      <div className="pane-body">
+      <ButlerReviewVerdictPanel records={reviewRecords} />
       <div className="transcript" ref={ref} onScroll={onScroll} data-count={totalCount}>
         {liveHasConnected && !liveConnected ? <div className="live-connection-warning" role="status">Live updates disconnected. Polling continues.</div> : null}
         {pair.hasMore ? (
@@ -1070,6 +1075,7 @@ export function ButlerPane({
             scrollToBottom("smooth");
           }}
         />
+      </div>
       </div>
       {activeQuestionMessage ? null : (pair.compose?.butler?.availableModels.length ?? 0) === 0 ? (
         <div className="empty-state">

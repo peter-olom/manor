@@ -47,20 +47,6 @@ export type WorkerTurnGroup = {
   finalIndex: number | null;
 };
 
-export type WorkerReviewVerdictView = {
-  state: "queued" | "running" | "accepted" | "rejected";
-  findings: Array<{
-    id: string;
-    severity: string;
-    summary: string;
-    blocking: boolean;
-    waived: boolean;
-    source: string;
-  }>;
-  workerInstruction: string | null;
-  reviewedAt: number | null;
-} | null;
-
 export type WorkerReport = {
   turnId?: string | null;
   status: string;
@@ -194,7 +180,6 @@ export type WorkerTimeline = {
   payload: WorkerJobPayload | null;
   outputManifest: WorkerJobOutputManifest | null;
   checklist: WorkerChecklistItem[] | null;
-  reviewVerdict: WorkerReviewVerdictView;
   fallback: WorkerItem[];
 };
 
@@ -220,12 +205,10 @@ function formatTime(value: number | null | undefined): string {
   if (!value) return "—";
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
-
 function shortId(value: string | null | undefined): string {
   if (!value) return "—";
   return value.split("-").at(-1) ?? value.slice(0, 8);
 }
-
 function formatDuration(ms: number | null | undefined): string {
   if (!ms || ms <= 0) return "";
   if (ms < 1000) return `${ms}ms`;
@@ -234,7 +217,6 @@ function formatDuration(ms: number | null | undefined): string {
   const seconds = Math.floor((ms % 60_000) / 1000);
   return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
 }
-
 const MESSAGE_TYPES = new Set(["agentMessage", "assistant_message", "userMessage", "user_message"]);
 const COMMAND_TYPES = new Set(["commandExecution", "command_execution"]);
 const TOOL_TYPES = new Set(["function_call", "mcpToolCall", "mcp_tool_call", "dynamicToolCall", "dynamic_tool_call"]);
@@ -260,7 +242,6 @@ function isReasoning(type: string): boolean {
 function isFileChange(type: string): boolean {
   return FILE_TYPES.has(type);
 }
-
 function itemTypeLabel(type: string): string {
   if (isCommand(type)) return "Command";
   if (isTool(type)) return "Tool";
@@ -270,13 +251,11 @@ function itemTypeLabel(type: string): string {
   if (isMessage(type)) return type.startsWith("agent") || type === "assistant_message" ? "Worker" : "Butler";
   return type.replace(/_/g, " ");
 }
-
 function shortText(value: string, max = 120): string {
   const trimmed = value.replace(/\s+/g, " ").trim();
   if (trimmed.length <= max) return trimmed;
   return `${trimmed.slice(0, max - 1).trimEnd()}…`;
 }
-
 function summarizeActivity(items: WorkerItem[], durationMs: number): string {
   let commands = 0;
   let tools = 0;
@@ -304,20 +283,17 @@ function summarizeActivity(items: WorkerItem[], durationMs: number): string {
   if (parts.length === 0) return "Activity";
   return parts.join(" · ");
 }
-
 function statusBadgeClass(status: string): string {
   if (status === "failed" || status === "declined") return "is-failed";
   if (status === "started" || status === "in_progress") return "is-active";
   return "is-done";
 }
-
 function statusLabel(status: string): string {
   if (status === "started" || status === "in_progress") return "running";
   if (status === "failed") return "failed";
   if (status === "declined") return "declined";
   return status === "completed" ? "done" : status;
 }
-
 function reportToWorkerItem(report: WorkerReport): WorkerItem {
   return {
     id: `report:${report.turnId ?? "latest"}:${report.updatedAt}`,
@@ -328,11 +304,9 @@ function reportToWorkerItem(report: WorkerReport): WorkerItem {
     at: report.updatedAt
   };
 }
-
 function isButlerMessage(item: WorkerItem): boolean {
   return item.type === "userMessage" || item.type === "user_message";
 }
-
 function snapshotMatchesMessage(snapshot: WorkerJobPayloadSnapshot, item: WorkerItem, turnId: string): boolean {
   const messageId = snapshot.delivery.messageId;
   if (messageId && (item.id === messageId || item.id.endsWith(`:${messageId}`))) {
@@ -340,18 +314,15 @@ function snapshotMatchesMessage(snapshot: WorkerJobPayloadSnapshot, item: Worker
   }
   return snapshot.delivery.turnId === turnId;
 }
-
 function payloadForMessage(payload: WorkerJobPayload | null, item: WorkerItem, turnId: string): WorkerPayloadDetailsView | null {
   if (!payload || !isButlerMessage(item)) {
     return null;
   }
-
   const snapshots = [...(payload.snapshots ?? [])].sort((left, right) => left.updatedAt - right.updatedAt);
   const exact = snapshots.filter((snapshot) => snapshotMatchesMessage(snapshot, item, turnId)).at(-1);
   if (exact) {
     return exact;
   }
-
   const temporal = snapshots
     .filter((snapshot) => snapshot.updatedAt <= item.at + 10_000)
     .at(-1);
@@ -361,15 +332,12 @@ function payloadForMessage(payload: WorkerJobPayload | null, item: WorkerItem, t
 
   return payload.delivery.turnId ? null : payload;
 }
-
 function messageSpeaker(item: WorkerItem): "Butler" | "Worker" {
   return isButlerMessage(item) ? "Butler" : "Worker";
 }
-
 function messageClass(item: WorkerItem): string {
   return isButlerMessage(item) ? "is-butler" : "is-codex";
 }
-
 function payloadLabel(tag: string): string {
   if (tag === "checklist") return "Checklist";
   if (tag === "proof") return "Proof";
@@ -377,7 +345,6 @@ function payloadLabel(tag: string): string {
   if (tag === "notes") return "Notes";
   return tag;
 }
-
 type WorkerPayloadDetailsView = Pick<
   WorkerJobPayload,
   "display" | "checklist" | "proof" | "constraints" | "notes"
@@ -389,20 +356,17 @@ function payloadSectionText(payload: WorkerPayloadDetailsView, tag: string): str
   if (tag === "notes") return payload.notes.length ? payload.notes.map((item) => `- ${item}`).join("\n") : "No notes.";
   return payload.display.summary;
 }
-
 function checklistStatusLabel(status: string): string {
   if (status === "accepted") return "Accepted";
   if (status === "waived") return "Waived";
   if (status === "rejected") return "Rejected";
   return "Pending";
 }
-
 function checklistStatusClass(status: string): string {
   if (status === "accepted" || status === "waived") return "is-accepted";
   if (status === "rejected") return "is-rejected";
   return "is-pending";
 }
-
 const WorkerPayloadChecklist = memo(function WorkerPayloadChecklist({ items }: { items: WorkerChecklistItem[] }) {
   if (items.length === 0) {
     return <p className="worker-payload-empty">No checklist items.</p>;
@@ -488,7 +452,6 @@ function outputKindLabel(kind: WorkerJobOutputManifestEntry["kind"]): string {
   if (kind === "worker_report") return "Report";
   return "Proof";
 }
-
 function outputIntegrityLabel(entry: WorkerJobOutputManifestEntry): string {
   if (entry.kind !== "project_artifact" && entry.available) return "Not checksum-backed";
   if (entry.integrity === "verified") return "Checksum verified";
@@ -496,7 +459,6 @@ function outputIntegrityLabel(entry: WorkerJobOutputManifestEntry): string {
   if (entry.integrity === "missing") return "Missing";
   return "Unverified";
 }
-
 function outputOutcome(entry: WorkerJobOutputManifestEntry): { label: string; className: string } | null {
   if (!entry.status) return null;
   if (entry.kind === "proof") {
@@ -512,12 +474,10 @@ function outputOutcome(entry: WorkerJobOutputManifestEntry): { label: string; cl
   }
   return null;
 }
-
 function outputAttemptLabel(entry: WorkerJobOutputManifestEntry, currentAttemptId: string, currentAttempt: number): string {
   if (entry.attemptId === currentAttemptId) return String(currentAttempt);
   return entry.attemptId.match(/-(\d+)$/)?.[1] ?? shortId(entry.attemptId);
 }
-
 export function outputArtifactPreview(entry: WorkerJobOutputManifestEntry): ProjectArtifactPreview | null {
   if (!entry.openUrl || !entry.fileName || !entry.contentType) return null;
   const input = { id: entry.referenceId, name: entry.fileName, mimeType: entry.contentType, url: entry.openUrl };
@@ -525,7 +485,6 @@ export function outputArtifactPreview(entry: WorkerJobOutputManifestEntry): Proj
   if (entry.kind === "proof") return buildProofArtifactPreview(input);
   return null;
 }
-
 function WorkerOutputEntryList({ entries, attempt, currentAttemptId, onOpenArtifact }: { entries: WorkerJobOutputManifestEntry[]; attempt: number; currentAttemptId: string; onOpenArtifact?: (entry: WorkerJobOutputManifestEntry) => void }) {
   const sorted = [...entries].sort((left, right) => left.createdAt - right.createdAt);
   const INLINE_PREVIEW_KINDS = new Set(["markdown", "pdf", "text", "html"]);
@@ -574,6 +533,50 @@ function WorkerOutputEntryList({ entries, attempt, currentAttemptId, onOpenArtif
     })}
   </ol>;
 }
+const WorkerOutputPinnedBar = memo(function WorkerOutputPinnedBar({ manifest, onOpenArtifact }: { manifest: WorkerJobOutputManifest; onOpenArtifact: (entry: WorkerJobOutputManifestEntry) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const allEntries = [
+    ...manifest.entries,
+    ...(manifest.otherCurrentScopeEntries ?? []),
+    ...(manifest.historicalEntries ?? [])
+  ];
+  const sortedEntries = [...allEntries].sort((a, b) => b.createdAt - a.createdAt);
+  const total = sortedEntries.length;
+  return (
+    <div className={`worker-output-pinned ${expanded ? "is-expanded" : ""}`}>
+      <button type="button" className="worker-output-pinned-toggle" onClick={() => setExpanded(!expanded)}>
+        <span className="worker-output-pinned-label">
+          <span className="worker-output-pinned-dot" />
+          Task outputs
+        </span>
+        <span className="worker-output-pinned-count">{total} available</span>
+        <span className="worker-output-pinned-chevron">{expanded ? <ChevronDownIcon /> : <ChevronRightIcon />}</span>
+      </button>
+      {expanded ? (
+        <div className="worker-output-pinned-list">
+          {total === 0 ? <p className="worker-output-pinned-empty">No outputs yet.</p> : null}
+          {sortedEntries.map((entry) => (
+            <WorkerOutputPinnedItem key={entry.id} entry={entry} onOpenArtifact={onOpenArtifact} isHistorical={entry.currentScope === false} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+const WorkerOutputPinnedItem = memo(function WorkerOutputPinnedItem({ entry, onOpenArtifact, isHistorical = false }: { entry: WorkerJobOutputManifestEntry; onOpenArtifact: (entry: WorkerJobOutputManifestEntry) => void; isHistorical?: boolean }) {
+  return (
+    <div className={`worker-output-pinned-item ${isHistorical ? "is-historical" : ""}`}>
+      <span className="worker-output-pinned-item-title">{entry.title}</span>
+      <span className="worker-output-pinned-item-time">{formatTime(entry.createdAt)}</span>
+      <span className="worker-output-pinned-item-kind">{entry.kind.replace("_", " ")}</span>
+      {entry.previewKind && entry.openUrl ? (
+        <button type="button" className="worker-output-pinned-item-open" onClick={() => onOpenArtifact(entry)}>Open</button>
+      ) : null}
+      {entry.downloadUrl ? <a href={entry.downloadUrl} className="worker-output-pinned-item-download" download>Download</a> : null}
+    </div>
+  );
+});
 
 export const WorkerJobOutputManifestPanel = memo(function WorkerJobOutputManifestPanel({ manifest, onOpenArtifact }: { manifest: WorkerJobOutputManifest | null; onOpenArtifact?: (entry: WorkerJobOutputManifestEntry) => void }) {
   if (!manifest) return null;
@@ -607,27 +610,22 @@ function proofStatusLabel(proof: WorkerProofRecord): string {
   if (review?.verdict) return review.verdict;
   return proof.verification.ok ? "recorded" : proof.verification.failureKind;
 }
-
 function proofArtifactLabel(artifact: WorkerProofArtifact): string {
   return artifact.label || artifact.fileName || artifact.kind;
 }
-
 export function isPreviewableProofImage(artifact: WorkerProofArtifact): boolean {
   return artifact.availability === "available"
     && Boolean(artifact.url)
     && (artifact.kind === "screenshot" || artifact.contentType.toLowerCase().startsWith("image/"));
 }
-
 export function isPreviewableProofVideo(artifact: WorkerProofArtifact): boolean {
   return artifact.availability === "available"
     && Boolean(artifact.url)
     && (artifact.kind === "video" || artifact.contentType.toLowerCase().startsWith("video/"));
 }
-
 function isPreviewableProofMedia(artifact: WorkerProofArtifact): boolean {
   return isPreviewableProofImage(artifact) || isPreviewableProofVideo(artifact);
 }
-
 function proofPreviewMedia(artifact: WorkerProofArtifact, name?: string): PreviewMedia {
   return {
     name: name || artifact.fileName || artifact.label || (isPreviewableProofVideo(artifact) ? "Proof video" : "Proof screenshot"),
@@ -636,7 +634,6 @@ function proofPreviewMedia(artifact: WorkerProofArtifact, name?: string): Previe
     downloadUrl: artifact.downloadUrl ?? artifact.url
   };
 }
-
 type OpenProofPreview = (media: PreviewMedia, gallery?: PreviewMedia[]) => void;
 
 type WorkerProofArtifactEntry = {
@@ -651,29 +648,24 @@ const BROWSER_PROOF_KINDS = new Set(["manifest", "screenshot", "video", "trace",
 function isBrowserProof(proof: WorkerProofRecord): boolean {
   return proof.verification.artifacts.some((artifact) => BROWSER_PROOF_KINDS.has(artifact.kind));
 }
-
 function proofEntryKey(entry: WorkerProofArtifactEntry): string {
   return proofArtifactKey(entry.proof.id, entry.artifact, entry.index);
 }
-
 function proofEntryLabel(entry: WorkerProofArtifactEntry): string {
   const label = proofArtifactLabel(entry.artifact);
   return entry.aliases.length > 0 ? `${label} · ${entry.aliases.join(" · ")}` : label;
 }
-
 function proofEntryIdentity(entry: WorkerProofArtifactEntry): string | null {
   const checksum = entry.artifact.checksumSha256?.trim().toLowerCase();
   if (checksum) return `sha256:${checksum}`;
   const url = entry.artifact.url?.split("?", 1)[0]?.trim();
   return url ? `url:${url}` : null;
 }
-
 function compareProofEntries(left: WorkerProofArtifactEntry, right: WorkerProofArtifactEntry): number {
   return proofTimestamp(left.proof) - proofTimestamp(right.proof)
     || left.index - right.index
     || proofEntryKey(left).localeCompare(proofEntryKey(right));
 }
-
 function proofGroupStatus(proofs: WorkerProofRecord[]): string {
   const reviews = proofs.map((proof) => proof.proofReviews?.at(-1)).filter(Boolean);
   if (reviews.some((review) => review?.verdict === "failed")) return "failed";
@@ -682,19 +674,16 @@ function proofGroupStatus(proofs: WorkerProofRecord[]): string {
   const failedProof = proofs.find((proof) => !proof.verification.ok);
   return failedProof?.verification.failureKind || "recorded";
 }
-
 function proofGroupTitle(proofs: WorkerProofRecord[]): string {
   const browserProof = [...proofs]
     .filter(isBrowserProof)
     .sort((left, right) => proofTimestamp(right) - proofTimestamp(left))[0];
   return browserProof?.previewTitle || proofs[0]?.previewTitle || "Worker evidence";
 }
-
 function proofArtifactKey(proofId: string, artifact: WorkerProofArtifact, index: number): string {
   const identity = artifact.url || artifact.downloadUrl || `${artifact.kind}:${artifact.fileName}:${artifact.label}`;
   return `${proofId}:${identity}:${index}`;
 }
-
 const WorkerProofMediaSection = memo(function WorkerProofMediaSection({
   label,
   runId,
@@ -869,7 +858,6 @@ function resolveTurnDurationMs(turn: WorkerTurnGroup, finalItem: WorkerItem | nu
   const lastAt = items.reduce((latest, item) => Math.max(latest, item.at), turn.startedAt);
   return Math.max(0, lastAt - turn.startedAt);
 }
-
 type WorkerMessageRowProps = {
   item: WorkerItem;
   streaming?: boolean;
@@ -1122,7 +1110,6 @@ export function WorkerPane({ pair, timeline, loading = false, hasMore = false, l
       </section>
     );
   }
-
   const worker = pair.compose.worker;
   const busy = pair.worker.status === "starting" || pair.worker.status === "running";
   const effort = pair.worker.requestedReasoningEffort ?? worker.effort ?? null;
@@ -1219,38 +1206,6 @@ export function WorkerPane({ pair, timeline, loading = false, hasMore = false, l
     </section>
   );
 }
-
-const WorkerReviewVerdict = memo(function WorkerReviewVerdict({ verdict }: { verdict: WorkerReviewVerdictView }) {
-  if (!verdict) return null;
-  const stateLabel = verdict.state === "accepted" ? "Accepted" : verdict.state === "rejected" ? "Rejected" : verdict.state === "running" ? "Reviewing" : "Queued";
-  const stateClass = verdict.state === "accepted" ? "is-ok" : verdict.state === "rejected" ? "is-failed" : "is-unclear";
-  return (
-    <section className="worker-review-verdict" aria-label="Review verdict">
-      <header className="worker-review-verdict-head">
-        <span>Review verdict{verdict.reviewedAt ? ` · ${new Date(verdict.reviewedAt).toLocaleString()}` : ""}</span>
-        <span className={stateClass}>{stateLabel}</span>
-      </header>
-      {verdict.findings.length > 0 ? (
-        <ol className="worker-review-findings">
-          {verdict.findings.map((f) => (
-            <li key={f.id} className={`worker-review-finding ${f.blocking ? "is-blocking" : ""} ${f.waived ? "is-waived" : ""}`}>
-              <span className="worker-review-finding-severity">{f.severity}</span>
-              <span className="worker-review-finding-summary">{f.summary}</span>
-              {f.waived ? <span className="worker-review-finding-waived">Waived</span> : null}
-            </li>
-          ))}
-        </ol>
-      ) : null}
-      {verdict.state === "rejected" && verdict.workerInstruction ? (
-        <div className="worker-review-instruction">
-          <span>Rework: </span>
-          <Markdown text={verdict.workerInstruction} />
-        </div>
-      ) : null}
-    </section>
-  );
-});
-
 function WorkerTimelineView({
   loading,
   hasMore,
@@ -1287,7 +1242,7 @@ function WorkerTimelineView({
   const outputStateKey = outputManifest?.entries
     .map((entry) => `${entry.id}:${entry.available}:${entry.integrity}:${entry.status ?? ""}:${entry.currentAttempt}`)
     .join("|") ?? "";
-  const bottomKey = `${lastTurn?.id ?? ""}:${lastItem?.id ?? ""}:${lastItem?.at ?? 0}:${report?.updatedAt ?? 0}:${outputStateKey}:${fallback.at(-1)?.id ?? ""}:${timeline.reviewVerdict?.state ?? ""}:${timeline.reviewVerdict?.reviewedAt ?? 0}`;
+  const bottomKey = `${lastTurn?.id ?? ""}:${lastItem?.id ?? ""}:${lastItem?.at ?? 0}:${report?.updatedAt ?? 0}:${outputStateKey}:${fallback.at(-1)?.id ?? ""}`;
   const prependKey = turns[0]?.id ?? null;
   const { ref, onScroll, unreadCount, scrollToBottom } = useAnchoredScroll<HTMLDivElement>({
     bottomKey,
@@ -1348,18 +1303,15 @@ function WorkerTimelineView({
         {turns.length === 0 && !report
           ? fallback.map((row) => <FallbackRow key={row.id} row={row} />)
           : null}
-        <WorkerReviewVerdict verdict={timeline.reviewVerdict} />
-        <WorkerJobOutputManifestPanel manifest={outputManifest} onOpenArtifact={onOpenArtifact} />
       </div>
+      {outputManifest ? <WorkerOutputPinnedBar manifest={outputManifest} onOpenArtifact={onOpenArtifact} /> : null}
       <JumpToLatest count={unreadCount} onClick={() => scrollToBottom("smooth")} />
     </div>
   );
 }
-
 function proofTimestamp(proof: WorkerProofRecord): number {
   return proof.verification.checkedAt || proof.updatedAt || proof.createdAt || 0;
 }
-
 export function proofsForLoadedWorkerWindow(
   turns: WorkerTurnGroup[],
   proofs: WorkerProofRecord[],
@@ -1378,7 +1330,6 @@ export function proofsForLoadedWorkerWindow(
     proofTimestamp(proof) >= firstLoadedTurnAt || proofMatchesReference(proof, references)
   );
 }
-
 function proofReferenceIds(report: WorkerReport): Set<string> {
   const ids = new Set<string>();
   for (const evidence of report.evidence ?? []) {
@@ -1390,11 +1341,9 @@ function proofReferenceIds(report: WorkerReport): Set<string> {
   }
   return ids;
 }
-
 function proofMatchesReference(proof: WorkerProofRecord, referenceIds: Set<string>): boolean {
   return referenceIds.has(proof.id) || referenceIds.has(proof.verification.runId);
 }
-
 export function proofsForFinalReport(
   report: WorkerReport | null,
   proofs: WorkerProofRecord[],
@@ -1430,7 +1379,6 @@ export function proofsForFinalReport(
     .filter((proof) => proof.verification.artifacts.some(isPreviewableProofMedia));
   return visualProofs.length > 0 ? visualProofs : [newestFirst[0]!];
 }
-
 export function groupProofsByTurn(
   turns: WorkerTurnGroup[],
   proofs: WorkerProofRecord[],
@@ -1460,7 +1408,6 @@ export function groupProofsByTurn(
     entries.sort((left, right) => proofTimestamp(right) - proofTimestamp(left));
     grouped.set(report.turnId, entries);
   }
-
   const orderedReports = reports
     .filter((report): report is WorkerReport & { turnId: string } => Boolean(report.turnId && completedTurnIds.has(report.turnId)))
     .sort((left, right) => left.updatedAt - right.updatedAt);

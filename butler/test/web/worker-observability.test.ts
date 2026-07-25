@@ -281,7 +281,6 @@ test("the Worker lane passes artifact preview handling into the timeline", () =>
         historicalEntries: []
       },
       checklist: null,
-      reviewVerdict: null,
       fallback: []
     },
     proofRecords: [],
@@ -294,9 +293,8 @@ test("the Worker lane passes artifact preview handling into the timeline", () =>
   }));
 
   assert.match(markup, /aria-label="Worker lane"/);
-  assert.match(markup, /aria-label="Open Preview report"/);
-  assert.match(markup, /aria-label="Open Preview proof report"/);
-  assert.match(markup, /worker-output-open-button/);
+  assert.match(markup, /worker-output-pinned/);
+  assert.match(markup, /worker-output-pinned-count/);
 });
 
 test("opening a markdown proof sends the proof file to the in-app viewer", async () => {

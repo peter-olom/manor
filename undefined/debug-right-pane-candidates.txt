@@ -1,0 +1,354 @@
+[
+  {
+    "tag": "SECTION",
+    "class": "pane",
+    "left": 929.5,
+    "top": 52,
+    "width": 648.5,
+    "height": 825
+  },
+  {
+    "tag": "DIV",
+    "class": "transcript",
+    "left": 929.5,
+    "top": 115.75,
+    "width": 648.5,
+    "height": 761.25
+  },
+  {
+    "tag": "DIV",
+    "class": "worker-timeline",
+    "left": 949.5,
+    "top": -2483.25,
+    "width": 608.5,
+    "height": 3292.015625
+  },
+  {
+    "tag": "OL",
+    "class": "worker-output-summary-list",
+    "left": 950.5,
+    "top": -2452.25,
+    "width": 606.5,
+    "height": 138.171875
+  },
+  {
+    "tag": "SECTION",
+    "class": "worker-turn is-complete",
+    "left": 949.5,
+    "top": -2367.25,
+    "width": 608.5,
+    "height": 118.8984375
+  },
+  {
+    "tag": "PRE",
+    "class": "worker-row-body",
+    "left": 950.5,
+    "top": -2286,
+    "width": 606.5,
+    "height": 320
+  },
+  {
+    "tag": "SECTION",
+    "class": "worker-turn is-complete",
+    "left": 949.5,
+    "top": -2232.3515625,
+    "width": 608.5,
+    "height": 118.8984375
+  },
+  {
+    "tag": "PRE",
+    "class": "worker-row-body",
+    "left": 950.5,
+    "top": -2117.8515625,
+    "width": 606.5,
+    "height": 320
+  },
+  {
+    "tag": "SECTION",
+    "class": "worker-turn is-complete",
+    "left": 949.5,
+    "top": -2097.453125,
+    "width": 608.5,
+    "height": 139.046875
+  },
+  {
+    "tag": "SECTION",
+    "class": "worker-turn is-complete",
+    "left": 949.5,
+    "top": -1942.40625,
+    "width": 608.5,
+    "height": 362.53125
+  },
+  {
+    "tag": "PRE",
+    "class": "worker-row-body",
+    "left": 950.5,
+    "top": -1861.15625,
+    "width": 606.5,
+    "height": 143.7421875
+  },
+  {
+    "tag": "SECTION",
+    "class": "worker-proof-bundles",
+    "left": 949.5,
+    "top": -1797.359375,
+    "width": 608.5,
+    "height": 217.484375
+  },
+  {
+    "tag": "ARTICLE",
+    "class": "worker-proof-card is-unclear",
+    "left": 949.5,
+    "top": -1773.609375,
+    "width": 608.5,
+    "height": 193.734375
+  },
+  {
+    "tag": "PRE",
+    "class": "worker-row-body",
+    "left": 950.5,
+    "top": -1482.625,
+    "width": 606.5,
+    "height": 320
+  },
+  {
+    "tag": "SECTION",
+    "class": "worker-turn is-complete",
+    "left": 949.5,
+    "top": -1461.625,
+    "width": 608.5,
+    "height": 139.046875
+  },
+  {
+    "tag": "DIV",
+    "class": "worker-activity-list",
+    "left": 949.5,
+    "top": -1408.625,
+    "width": 608.5,
+    "height": 101.7109375
+  },
+  {
+    "tag": "DIV",
+    "class": "",
+    "left": 949.5,
+    "top": -1408.625,
+    "width": 608.5,
+    "height": 101.7109375
+  },
+  {
+    "tag": "DETAILS",
+    "class": "worker-row-compact is-failed",
+    "left": 949.5,
+    "top": -1408.625,
+    "width": 608.5,
+    "height": 101.7109375
+  },
+  {
+    "tag": "SECTION",
+    "class": "worker-turn is-complete",
+    "left": 949.5,
+    "top": -1306.578125,
+    "width": 608.5,
+    "height": 139.046875
+  },
+  {
+    "tag": "PRE",
+    "class": "worker-row-body",
+    "left": 950.5,
+    "top": -1192.078125,
+    "width": 606.5,
+    "height": 320
+  },
+  {
+    "tag": "SECTION",
+    "class": "worker-turn is-complete",
+    "left": 949.5,
+    "top": -1151.53125,
+    "width": 608.5,
+    "height": 209.1953125
+  },
+  {
+    "tag": "PRE",
+    "class": "worker-row-body",
+    "left": 950.5,
+    "top": -1070.28125,
+    "width": 606.5,
+    "height": 108.1015625
+  },
+  {
+    "tag": "PRE",
+    "class": "worker-row-body",
+    "left": 950.5,
+    "top": -1003.78125,
+    "width": 606.5,
+    "height": 320
+  },
+  {
+    "tag": "ARTICLE",
+    "class": "worker-message is-codex ",
+    "left": 949.5,
+    "top": -1092.53125,
+    "width": 608.5,
+    "height": 150.1953125
+  },
+  {
+    "tag": "DIV",
+    "class": "worker-message-body is-report-details",
+    "left": 962.5,
+    "top": -952.3359375,
+    "width": 582.5,
+    "height": 1232.3125
+  },
+  {
+    "tag": "OL",
+    "class": "",
+    "left": 962.5,
+    "top": -759.296875,
+    "width": 582.5,
+    "height": 624.6015625
+  },
+  {
+    "tag": "LI",
+    "class": "",
+    "left": 1002.5,
+    "top": -739.1484375,
+    "width": 542.5,
+    "height": 120.890625
+  },
+  {
+    "tag": "LI",
+    "class": "",
+    "left": 1002.5,
+    "top": -517.515625,
+    "width": 542.5,
+    "height": 100.7421875
+  },
+  {
+    "tag": "P",
+    "class": "",
+    "left": 962.5,
+    "top": -88.546875,
+    "width": 582.5,
+    "height": 141.0390625
+  },
+  {
+    "tag": "P",
+    "class": "",
+    "left": 962.5,
+    "top": 98.640625,
+    "width": 582.5,
+    "height": 181.3359375
+  },
+  {
+    "tag": "PRE",
+    "class": "worker-row-body",
+    "left": 950.5,
+    "top": -845.0859375,
+    "width": 606.5,
+    "height": 250.6640625
+  },
+  {
+    "tag": "SECTION",
+    "class": "worker-turn is-complete",
+    "left": 949.5,
+    "top": -824.0859375,
+    "width": 608.5,
+    "height": 1368.09375
+  },
+  {
+    "tag": "ARTICLE",
+    "class": "worker-message is-codex ",
+    "left": 949.5,
+    "top": -802.3359375,
+    "width": 608.5,
+    "height": 1346.34375
+  },
+  {
+    "tag": "DIV",
+    "class": "worker-message-body",
+    "left": 962.5,
+    "top": -772.5859375,
+    "width": 582.5,
+    "height": 1306.59375
+  },
+  {
+    "tag": "OL",
+    "class": "",
+    "left": 962.5,
+    "top": -344.078125,
+    "width": 582.5,
+    "height": 523.859375
+  },
+  {
+    "tag": "LI",
+    "class": "",
+    "left": 1002.5,
+    "top": -323.9296875,
+    "width": 542.5,
+    "height": 100.7421875
+  },
+  {
+    "tag": "P",
+    "class": "",
+    "left": 962.5,
+    "top": 225.9296875,
+    "width": 582.5,
+    "height": 181.3359375
+  },
+  {
+    "tag": "SECTION",
+    "class": "worker-output-manifest-inline",
+    "left": 949.5,
+    "top": 568.0078125,
+    "width": 608.5,
+    "height": 232.7578125
+  },
+  {
+    "tag": "SECTION",
+    "class": "worker-output-manifest",
+    "left": 949.5,
+    "top": 568.0078125,
+    "width": 608.5,
+    "height": 232.7578125
+  },
+  {
+    "tag": "OL",
+    "class": "worker-output-manifest-list",
+    "left": 962.5,
+    "top": 625.296875,
+    "width": 582.5,
+    "height": 126.21875
+  },
+  {
+    "tag": "LI",
+    "class": "worker-output-manifest-entry",
+    "left": 962.5,
+    "top": 625.296875,
+    "width": 582.5,
+    "height": 126.21875
+  },
+  {
+    "tag": "OL",
+    "class": "worker-output-manifest-list",
+    "left": 962.5,
+    "top": 787.765625,
+    "width": 582.5,
+    "height": 286.0625
+  },
+  {
+    "tag": "LI",
+    "class": "worker-output-manifest-entry",
+    "left": 962.5,
+    "top": 787.765625,
+    "width": 582.5,
+    "height": 127.59375
+  },
+  {
+    "tag": "LI",
+    "class": "worker-output-manifest-entry",
+    "left": 962.5,
+    "top": 923.359375,
+    "width": 582.5,
+    "height": 150.46875
+  }
+]

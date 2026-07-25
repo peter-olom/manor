@@ -1,4 +1,5 @@
 import type { ManorRestartRequestView } from "./manor-restart.js";
+import type { ReviewRecord } from "../server/orchestration-types.js";
 
 export type PairRole = "user" | "butler" | "worker" | "system";
 export type PairLane = "butler" | "worker";
@@ -309,6 +310,7 @@ export type PairDetail = PairChat & {
   review: PairReviewActivity | null;
   workerSupervision: PairWorkerSupervision | null;
   pendingManorRestartRequest: ManorRestartRequestView | null;
+  reviewRecords: ReviewRecord[];
   loadedStart: number;
   hasMore: boolean;
   compose: PairComposeSettings;
