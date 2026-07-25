@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildProofArtifactPreview,
   buildProjectArtifactPreview,
   isProjectArtifactDownloadUrl,
+  parseProofArtifactPreviewTarget,
   parseProjectArtifactPreviewTarget
 } from "../../src/web/project-artifact-preview.js";
 
@@ -49,4 +51,31 @@ test("only previewable project artifact attachments open in the file previewer",
     mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     url: openUrl
   }), null);
+});
+
+test("same-origin proof artifacts become bounded in-app preview targets", () => {
+  const proofUrl = "/api/artifacts/files/thread-1/file-proof/report.md";
+  assert.deepEqual(parseProofArtifactPreviewTarget(proofUrl), {
+    openUrl: proofUrl,
+    previewUrl: `${proofUrl}?preview=1`,
+    downloadUrl: `${proofUrl}?download=1`
+  });
+  assert.equal(parseProofArtifactPreviewTarget(`${proofUrl}?download=1`), null);
+  assert.equal(parseProofArtifactPreviewTarget("https://example.com/api/artifacts/files/thread-1/file-proof/report.md"), null);
+  assert.equal(parseProofArtifactPreviewTarget("/api/project-artifacts/project-1/artifact-1/file"), null);
+  assert.equal(parseProofArtifactPreviewTarget("/api/artifacts/files/thread-1/%2Fetc/report.md"), null);
+
+  assert.deepEqual(buildProofArtifactPreview({
+    id: "file-proof",
+    name: "report.md",
+    mimeType: "text/markdown",
+    url: proofUrl
+  }), {
+    id: "file-proof",
+    name: "report.md",
+    mimeType: "text/markdown",
+    previewKind: "markdown",
+    previewUrl: `${proofUrl}?preview=1`,
+    downloadUrl: `${proofUrl}?download=1`
+  });
 });

@@ -201,6 +201,30 @@ test("job manifest registers and resolves artifacts, proofs, and Worker reports"
     /durable project artifact is unavailable/
   );
   assert.equal(store.getThreadJobPayload(threadId)?.outputManifest.entries.find((entry) => entry.artifactId === artifactId)?.availability, "missing");
+
+  const proof = store.listPreviewProofs().find((candidate) => candidate.verification.runId === proofRunId);
+  const proofFilePath = proof?.verification.artifacts[0]?.filePath;
+  assert.ok(proofFilePath);
+  assert.equal(store.markPreviewProofArtifactMissing(proofFilePath), true);
+  const healedProof = (await buildJobOutputManifestUiView(current, store)).entries.find((entry) => entry.referenceId === proofRunId);
+  assert.equal(healedProof?.status, "passed");
+  assert.equal(healedProof?.available, true);
+  assert.equal(store.findPreviewProofArtifactByFilePath(proofFilePath)?.artifact.availability, "available");
+
+  assert.equal(store.markPreviewProofArtifactExpired(proofFilePath), true);
+  assert.equal(store.markPreviewProofArtifactAvailable(proofFilePath), false);
+  const expiredProof = (await buildJobOutputManifestUiView(current, store)).entries.find((entry) => entry.referenceId === proofRunId);
+  assert.equal(expiredProof?.status, "expired");
+  assert.equal(expiredProof?.openUrl, null);
+
+  assert.equal(store.markPreviewProofArtifactMissing(proofFilePath), true);
+  const retainedUntilAt = store.findPreviewProofArtifactByFilePath(proofFilePath)?.artifact.retainedUntilAt;
+  assert.ok(retainedUntilAt);
+  assert.equal(store.markPreviewProofArtifactAvailable(proofFilePath, retainedUntilAt), false);
+  await rm(proofFilePath);
+  const missingProof = (await buildJobOutputManifestUiView(current, store)).entries.find((entry) => entry.referenceId === proofRunId);
+  assert.equal(missingProof?.status, "missing");
+  assert.equal(missingProof?.openUrl, null);
 });
 
 test("manifest-scoped review inspection reads long text and extracts Office content", { timeout: 15_000 }, async (t) => {

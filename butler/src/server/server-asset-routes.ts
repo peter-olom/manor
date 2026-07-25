@@ -368,6 +368,9 @@ export function registerServerAssetRoutes(options: {
     const downloadRequested = Array.isArray(request.query.download)
       ? request.query.download[0] === "1"
       : request.query.download === "1";
+    const previewRequested = Array.isArray(request.query.preview)
+      ? request.query.preview[0] === "1"
+      : request.query.preview === "1";
     const knownArtifact = store.findPreviewProofArtifactByFilePath(filePath);
     const retainedUntilAt =
       typeof knownArtifact?.artifact.retainedUntilAt === "number" && Number.isFinite(knownArtifact.artifact.retainedUntilAt)
@@ -412,13 +415,65 @@ export function registerServerAssetRoutes(options: {
       return;
     }
 
+    if (knownArtifact?.artifact.availability === "expired") {
+      sendUnavailable();
+      return;
+    }
+
     void fs
       .access(filePath)
       .then(() => {
+        const accessedAt = Date.now();
+        if (retainedUntilAt !== null && retainedUntilAt <= accessedAt) {
+          void fs.rm(filePath, { force: true }).catch(() => {});
+          store.markPreviewProofArtifactExpired(filePath, accessedAt);
+          void pruneEmptyArtifactParents(artifactsDir, filePath).catch(() => {});
+          sendUnavailable();
+          return;
+        }
+        if (knownArtifact?.artifact.availability === "missing") {
+          store.markPreviewProofArtifactAvailable(filePath, accessedAt);
+          if (store.findPreviewProofArtifactByFilePath(filePath)?.artifact.availability !== "available") {
+            sendUnavailable();
+            return;
+          }
+        }
         response.setHeader("Cache-Control", "private, max-age=3600");
         response.setHeader("X-Artifact-Availability", "available");
+        response.setHeader("X-Content-Type-Options", "nosniff");
         if (downloadRequested) {
           response.download(filePath, path.basename(filePath), handleSendError);
+          return;
+        }
+
+        if (previewRequested) {
+          const fileName = knownArtifact?.artifact.fileName ?? path.basename(filePath);
+          const contentType = knownArtifact?.artifact.contentType ?? "";
+          const previewKind = resolveReferencePreviewKind(fileName, contentType);
+          if (!previewKind) {
+            response.status(415).json({ error: "This file type cannot be previewed" });
+            return;
+          }
+          if (previewKind === "pdf") {
+            response.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
+            response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+            response.setHeader("Content-Disposition", "inline");
+            response.type("application/pdf");
+            response.sendFile(filePath, handleSendError);
+            return;
+          }
+          response.setHeader("Content-Security-Policy", "default-src 'none'");
+          response.type("application/json");
+          void readTextPreview(filePath)
+            .then((preview) => response.json(preview))
+            .catch((error) => {
+              if (error instanceof InvalidTextPreviewError) {
+                response.status(415).json({ error: error.message });
+                return;
+              }
+              console.error("Failed to read proof artifact preview", error);
+              response.status(500).json({ error: "The artifact preview could not be read" });
+            });
           return;
         }
 

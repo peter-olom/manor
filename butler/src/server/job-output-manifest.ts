@@ -25,7 +25,7 @@ export type ResolvedJobOutputManifestEntry = {
   checksumStatus: JobOutputManifestEntryView["checksumStatus"];
   integrityCheckedAt: number | null;
   integrity: "verified" | "mismatch" | "unverified" | "missing";
-  proofOutcome: "passed" | "failed" | "expired" | null;
+  proofOutcome: "passed" | "failed" | "missing" | "expired" | null;
   artifact: ProjectArtifactView | null;
   proof: PreviewProofRecordView | null;
   report: CodexWorkerReportView | null;
@@ -335,9 +335,26 @@ export async function resolveJobOutputManifest(
     const artifact = entry.artifactId
       ? store.getProjectArtifact(entry.projectId, entry.artifactId)
       : null;
-    const proof = entry.proofRunId
+    let proof = entry.proofRunId
       ? proofs.find((candidate) => candidate.threadId === entry.threadId && candidate.verification.runId === entry.proofRunId) ?? null
       : null;
+    if (proof) {
+      const now = Date.now();
+      await Promise.all(proof.verification.artifacts.map(async (candidate) => {
+        if (candidate.availability !== "missing" || !candidate.filePath) {
+          return;
+        }
+        if (candidate.retainedUntilAt !== null && candidate.retainedUntilAt <= now) {
+          store.markPreviewProofArtifactExpired(candidate.filePath, now);
+          return;
+        }
+        const inspection = await inspectArtifactFile(candidate.filePath, false);
+        if (inspection.available) {
+          store.markPreviewProofArtifactAvailable(candidate.filePath);
+        }
+      }));
+      proof = store.getPreviewProofById(proof.id) ?? proof;
+    }
     const report = entry.reportTurnId
       ? store.getWorkerReport(entry.threadId, entry.reportTurnId)
       : null;
@@ -358,7 +375,9 @@ export async function resolveJobOutputManifest(
       ? !proof.verification.ok
         ? "failed"
         : proof.verification.artifacts.length > 0 && proof.verification.artifacts.every((candidate) => candidate.availability !== "available")
-          ? "expired"
+          ? proof.verification.artifacts.every((candidate) => candidate.availability === "expired")
+            ? "expired"
+            : "missing"
           : "passed"
       : null;
     return {

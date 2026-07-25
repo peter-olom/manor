@@ -18,8 +18,20 @@ test("proof artifact videos support inline byte-range playback", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "manor-video-asset-route-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const videoPath = path.join(root, "previews", "run-1", "video.webm");
+  const markdownPath = path.join(root, "files", "thread-1", "file-proof", "report.md");
+  const binaryPath = path.join(root, "files", "thread-1", "binary-proof", "binary.md");
+  const expiredPath = path.join(root, "files", "thread-1", "expired-proof", "expired.md");
+  const pastDuePath = path.join(root, "files", "thread-1", "past-due-proof", "past-due.md");
   await fs.mkdir(path.dirname(videoPath), { recursive: true });
+  await fs.mkdir(path.dirname(markdownPath), { recursive: true });
+  await fs.mkdir(path.dirname(binaryPath), { recursive: true });
+  await fs.mkdir(path.dirname(expiredPath), { recursive: true });
+  await fs.mkdir(path.dirname(pastDuePath), { recursive: true });
   await fs.writeFile(videoPath, Buffer.from("0123456789"));
+  await fs.writeFile(markdownPath, "# Preview report\n\nOpened inside Manor.\n");
+  await fs.writeFile(binaryPath, Buffer.from([0x23, 0x00, 0xff]));
+  await fs.writeFile(expiredPath, "# Expired\n");
+  await fs.writeFile(pastDuePath, "# Past due\n");
 
   const referenceMutations = new ReferenceMutationQueue();
   const fileStore = new FileReferenceStore(path.join(root, "files"), "/api/files", referenceMutations);
@@ -35,13 +47,57 @@ test("proof artifact videos support inline byte-range playback", async (t) => {
     retainedUntilAt: Date.now() + 60_000,
     expiredAt: null
   };
+  const markdownArtifact = {
+    kind: "file",
+    label: "Preview report",
+    fileName: "report.md",
+    filePath: markdownPath,
+    contentType: "text/markdown",
+    availability: "missing",
+    retainedUntilAt: Date.now() + 60_000,
+    expiredAt: null
+  };
+  const binaryArtifact = { ...markdownArtifact, label: "Binary report", fileName: "binary.md", filePath: binaryPath, availability: "available" };
+  const expiredArtifact = {
+    ...markdownArtifact,
+    label: "Expired report",
+    fileName: "expired.md",
+    filePath: expiredPath,
+    availability: "expired"
+  };
+  const pastDueArtifact = {
+    ...markdownArtifact,
+    label: "Past due report",
+    fileName: "past-due.md",
+    filePath: pastDuePath,
+    retainedUntilAt: Date.now() - 1,
+    expiredAt: null as number | null
+  };
 
   const app = express();
   registerServerAssetRoutes({
     app,
     artifactsDir: root,
     store: {
-      findPreviewProofArtifactByFilePath: (candidate: string) => candidate === videoPath ? { artifact } : null
+      findPreviewProofArtifactByFilePath: (candidate: string) => {
+        if (candidate === videoPath) return { artifact };
+        if (candidate === markdownPath) return { artifact: markdownArtifact };
+        if (candidate === binaryPath) return { artifact: binaryArtifact };
+        if (candidate === expiredPath) return { artifact: expiredArtifact };
+        if (candidate === pastDuePath) return { artifact: pastDueArtifact };
+        return null;
+      },
+      markPreviewProofArtifactAvailable: (candidate: string) => {
+        if (candidate !== markdownPath || markdownArtifact.availability !== "missing") return false;
+        markdownArtifact.availability = "available";
+        return true;
+      },
+      markPreviewProofArtifactExpired: (candidate: string, expiredAt: number) => {
+        if (candidate !== pastDuePath) return false;
+        pastDueArtifact.availability = "expired";
+        pastDueArtifact.expiredAt = expiredAt;
+        return true;
+      }
     } as never,
     pairStore: {} as never,
     imageStore,
@@ -63,6 +119,32 @@ test("proof artifact videos support inline byte-range playback", async (t) => {
   assert.equal(response.headers.get("x-artifact-availability"), "available");
   assert.equal(response.headers.get("content-range"), "bytes 0-3/10");
   assert.equal(await response.text(), "0123");
+
+  const markdownResponse = await fetch(`http://127.0.0.1:${port}/api/artifacts/files/thread-1/file-proof/report.md?preview=1`);
+  assert.equal(markdownResponse.status, 200);
+  assert.equal(markdownResponse.headers.get("content-type"), "application/json; charset=utf-8");
+  assert.equal(markdownResponse.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(markdownResponse.headers.get("content-security-policy"), "default-src 'none'");
+  assert.deepEqual(await markdownResponse.json(), {
+    text: "# Preview report\n\nOpened inside Manor.\n",
+    truncated: false
+  });
+  assert.equal(markdownArtifact.availability, "available");
+
+  const binaryResponse = await fetch(`http://127.0.0.1:${port}/api/artifacts/files/thread-1/binary-proof/binary.md?preview=1`);
+  assert.equal(binaryResponse.status, 415);
+  assert.deepEqual(await binaryResponse.json(), { error: "This file contains binary data and cannot be previewed as text" });
+
+  const expiredResponse = await fetch(`http://127.0.0.1:${port}/api/artifacts/files/thread-1/expired-proof/expired.md?preview=1`);
+  assert.equal(expiredResponse.status, 410);
+  assert.equal(expiredResponse.headers.get("x-artifact-availability"), "expired");
+  assert.equal(await fs.readFile(expiredPath, "utf8"), "# Expired\n");
+
+  const pastDueResponse = await fetch(`http://127.0.0.1:${port}/api/artifacts/files/thread-1/past-due-proof/past-due.md?preview=1`);
+  assert.equal(pastDueResponse.status, 410);
+  assert.equal(pastDueResponse.headers.get("x-artifact-availability"), "expired");
+  assert.equal(pastDueArtifact.availability, "expired");
+  assert.equal(typeof pastDueArtifact.expiredAt, "number");
 });
 
 test("asset library lists references, downloads unsafe images, and deletes leaves", async (t) => {

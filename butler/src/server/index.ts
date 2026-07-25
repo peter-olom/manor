@@ -1244,7 +1244,7 @@ async function sweepExpiredArtifacts(): Promise<void> {
     const now = Date.now();
     for (const proof of store.listPreviewProofs()) {
       for (const artifact of proof.verification.artifacts) {
-        if (!artifact.filePath || artifact.availability !== "available") {
+        if (!artifact.filePath || artifact.availability === "expired") {
           continue;
         }
 
@@ -1259,7 +1259,7 @@ async function sweepExpiredArtifacts(): Promise<void> {
           await pruneEmptyArtifactParents(artifactsDir, artifact.filePath);
           continue;
         }
-
+        if (artifact.availability !== "available") continue;
         const exists = await fs
           .access(artifact.filePath)
           .then(() => true)

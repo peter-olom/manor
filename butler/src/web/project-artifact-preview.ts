@@ -18,6 +18,12 @@ export type ProjectArtifactPreview = {
   downloadUrl: string;
 };
 
+export type ProofArtifactPreviewTarget = {
+  openUrl: string;
+  previewUrl: string;
+  downloadUrl: string;
+};
+
 type ProjectArtifactFileInput = {
   id: string;
   name: string;
@@ -26,7 +32,8 @@ type ProjectArtifactFileInput = {
 };
 
 function currentOrigin(): string {
-  return typeof window === "undefined" ? "http://manor.local" : window.location.origin;
+  const origin = typeof window === "undefined" ? "" : window.location?.origin;
+  return origin && origin !== "null" ? origin : "http://manor.local";
 }
 
 function parseProjectArtifactUrl(value: string, acceptedSearch: "open" | "download"): URL | null {
@@ -67,8 +74,40 @@ export function isProjectArtifactDownloadUrl(value: string): boolean {
   return parseProjectArtifactUrl(value, "download") !== null;
 }
 
+export function parseProofArtifactPreviewTarget(value: string): ProofArtifactPreviewTarget | null {
+  try {
+    const origin = currentOrigin();
+    const url = new URL(value, origin);
+    const segments = url.pathname.split("/").filter(Boolean);
+    if (url.origin !== origin || url.hash || url.search || segments.length < 3 || segments[0] !== "api" || segments[1] !== "artifacts") return null;
+    const decodedSegments = segments.slice(2).map((segment) => decodeURIComponent(segment));
+    if (decodedSegments.some((segment) => !segment || segment === "." || segment === ".." || segment.includes("/") || segment.includes("\\"))) return null;
+    return {
+      openUrl: url.pathname,
+      previewUrl: `${url.pathname}?preview=1`,
+      downloadUrl: `${url.pathname}?download=1`
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function buildProjectArtifactPreview(input: ProjectArtifactFileInput): ProjectArtifactPreview | null {
   const target = parseProjectArtifactPreviewTarget(input.url);
+  const previewKind = resolveReferencePreviewKind(input.name, input.mimeType);
+  if (!target || !previewKind) return null;
+  return {
+    id: input.id,
+    name: input.name,
+    mimeType: input.mimeType,
+    previewKind,
+    previewUrl: target.previewUrl,
+    downloadUrl: target.downloadUrl
+  };
+}
+
+export function buildProofArtifactPreview(input: ProjectArtifactFileInput): ProjectArtifactPreview | null {
+  const target = parseProofArtifactPreviewTarget(input.url);
   const previewKind = resolveReferencePreviewKind(input.name, input.mimeType);
   if (!target || !previewKind) return null;
   return {

@@ -1415,6 +1415,7 @@ export function PairShell() {
                     onHandoff={onWorkerHandoff}
                     onOpenProviderSettings={() => selectSettingsSection("providers")}
                     onAttachAnnotatedProof={(payload) => attachAnnotatedProof(payload)}
+                    onPreviewProjectFile={openProjectArtifactFile}
                   />
                 ) : null}
               </div>

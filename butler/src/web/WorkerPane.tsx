@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
 import { BudgetSegmented } from "./BudgetSegmented";
 import { ImagePreviewModal, type PreviewMedia } from "./ImagePreviewModal";
@@ -8,6 +8,7 @@ import { Markdown } from "./Markdown";
 import { ModelPicker } from "./ModelPicker";
 import { WorkerSwitchDialog } from "./WorkerSwitchDialog";
 import { WorkerSessionControlsButton } from "./WorkerSessionControls";
+import { buildProjectArtifactPreview, buildProofArtifactPreview, type ProjectArtifactPreview } from "./project-artifact-preview";
 import {
   isSameWorkerRoute,
   workerModelForRoute,
@@ -212,6 +213,7 @@ type WorkerPaneProps = {
   onHandoff: (model: string, harness: PairWorkerHarness | null, effort: string | null) => Promise<boolean>;
   onOpenProviderSettings: () => void;
   onAttachAnnotatedProof: (payload: { attachment: FileReference; text: string }) => Promise<void>;
+  onPreviewProjectFile: (preview: ProjectArtifactPreview) => void;
 };
 
 function formatTime(value: number | null | undefined): string {
@@ -516,11 +518,21 @@ function outputAttemptLabel(entry: WorkerJobOutputManifestEntry, currentAttemptI
   return entry.attemptId.match(/-(\d+)$/)?.[1] ?? shortId(entry.attemptId);
 }
 
-function WorkerOutputEntryList({ entries, attempt, currentAttemptId }: { entries: WorkerJobOutputManifestEntry[]; attempt: number; currentAttemptId: string }) {
+export function outputArtifactPreview(entry: WorkerJobOutputManifestEntry): ProjectArtifactPreview | null {
+  if (!entry.openUrl || !entry.fileName || !entry.contentType) return null;
+  const input = { id: entry.referenceId, name: entry.fileName, mimeType: entry.contentType, url: entry.openUrl };
+  if (entry.kind === "project_artifact") return buildProjectArtifactPreview(input);
+  if (entry.kind === "proof") return buildProofArtifactPreview(input);
+  return null;
+}
+
+function WorkerOutputEntryList({ entries, attempt, currentAttemptId, onOpenArtifact }: { entries: WorkerJobOutputManifestEntry[]; attempt: number; currentAttemptId: string; onOpenArtifact?: (entry: WorkerJobOutputManifestEntry) => void }) {
   const sorted = [...entries].sort((left, right) => left.createdAt - right.createdAt);
+  const INLINE_PREVIEW_KINDS = new Set(["markdown", "pdf", "text", "html"]);
   return <ol className="worker-output-manifest-list">
     {sorted.map((entry) => {
       const outcome = outputOutcome(entry);
+      const useInlinePreview = entry.previewKind && INLINE_PREVIEW_KINDS.has(entry.previewKind) && onOpenArtifact && outputArtifactPreview(entry);
       return <li key={entry.id} className={`worker-output-manifest-entry${entry.available ? "" : " is-missing"}`}>
         <div className="worker-output-manifest-entry-head">
           <span className="worker-output-kind">{outputKindLabel(entry.kind)}</span>
@@ -533,7 +545,13 @@ function WorkerOutputEntryList({ entries, attempt, currentAttemptId }: { entries
         </div>
         {entry.available && (entry.openUrl || entry.downloadUrl) ? (
           <div className="worker-output-manifest-actions">
-            {entry.previewKind && entry.openUrl ? <a href={entry.openUrl} target="_blank" rel="noreferrer" aria-label={`Open ${entry.title}`}>Open</a> : null}
+            {entry.previewKind && entry.openUrl ? (
+              useInlinePreview ? (
+                <button type="button" className="worker-output-open-button" onClick={() => onOpenArtifact?.(entry)} aria-label={`Open ${entry.title}`}>Open</button>
+              ) : (
+                <a href={entry.openUrl} target="_blank" rel="noreferrer" aria-label={`Open ${entry.title}`}>Open</a>
+              )
+            ) : null}
             {entry.downloadUrl ? <a href={entry.downloadUrl} download aria-label={`Download ${entry.title}`}>Download</a> : null}
             {!entry.previewKind && entry.downloadUrl ? <span className="worker-output-download-only">Download only</span> : null}
           </div>
@@ -557,7 +575,7 @@ function WorkerOutputEntryList({ entries, attempt, currentAttemptId }: { entries
   </ol>;
 }
 
-export const WorkerJobOutputManifestPanel = memo(function WorkerJobOutputManifestPanel({ manifest }: { manifest: WorkerJobOutputManifest | null }) {
+export const WorkerJobOutputManifestPanel = memo(function WorkerJobOutputManifestPanel({ manifest, onOpenArtifact }: { manifest: WorkerJobOutputManifest | null; onOpenArtifact?: (entry: WorkerJobOutputManifestEntry) => void }) {
   if (!manifest) return null;
   const entries = manifest.entries.filter((entry) => entry.currentScope !== false);
   const otherEntries = (manifest.otherCurrentScopeEntries ?? []).filter((entry) => entry.currentScope !== false);
@@ -576,10 +594,10 @@ export const WorkerJobOutputManifestPanel = memo(function WorkerJobOutputManifes
       {entries.length === 0 ? (
         <p className="worker-output-manifest-empty">No outputs claimed by the current Worker report.</p>
       ) : (
-        <WorkerOutputEntryList entries={entries} attempt={manifest.attempt} currentAttemptId={manifest.currentAttemptId} />
+        <WorkerOutputEntryList entries={entries} attempt={manifest.attempt} currentAttemptId={manifest.currentAttemptId} onOpenArtifact={onOpenArtifact} />
       )}
-      {otherEntries.length > 0 ? <details className="worker-output-history"><summary>Other outputs from this task ({otherEntries.length})</summary><WorkerOutputEntryList entries={otherEntries} attempt={manifest.attempt} currentAttemptId={manifest.currentAttemptId} /></details> : null}
-      {historicalEntries.length > 0 ? <details className="worker-output-history"><summary>Earlier task outputs ({historicalEntries.length})</summary><WorkerOutputEntryList entries={historicalEntries} attempt={manifest.attempt} currentAttemptId={manifest.currentAttemptId} /></details> : null}
+      {otherEntries.length > 0 ? <details className="worker-output-history"><summary>Other outputs from this task ({otherEntries.length})</summary><WorkerOutputEntryList entries={otherEntries} attempt={manifest.attempt} currentAttemptId={manifest.currentAttemptId} onOpenArtifact={onOpenArtifact} /></details> : null}
+      {historicalEntries.length > 0 ? <details className="worker-output-history"><summary>Earlier task outputs ({historicalEntries.length})</summary><WorkerOutputEntryList entries={historicalEntries} attempt={manifest.attempt} currentAttemptId={manifest.currentAttemptId} onOpenArtifact={onOpenArtifact} /></details> : null}
     </section>
   );
 });
@@ -1041,11 +1059,15 @@ const FallbackRow = memo(function FallbackRow({ row }: { row: WorkerItem }) {
   );
 });
 
-export function WorkerPane({ pair, timeline, loading = false, hasMore = false, loadingOlder = false, onLoadOlder, proofRecords, onWorkerModelChange, onWorkerEffortChange, handoffPending = false, handoffError = null, onHandoff, onOpenProviderSettings, onAttachAnnotatedProof }: WorkerPaneProps) {
+export function WorkerPane({ pair, timeline, loading = false, hasMore = false, loadingOlder = false, onLoadOlder, proofRecords, onWorkerModelChange, onWorkerEffortChange, handoffPending = false, handoffError = null, onHandoff, onOpenProviderSettings, onAttachAnnotatedProof, onPreviewProjectFile }: WorkerPaneProps) {
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia | null>(null);
   const [previewGallery, setPreviewGallery] = useState<PreviewMedia[]>([]);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [switchOpen, setSwitchOpen] = useState(false);
+  const onOpenArtifact = useCallback((entry: WorkerJobOutputManifestEntry) => {
+    const preview = outputArtifactPreview(entry);
+    if (preview) onPreviewProjectFile(preview);
+  }, [onPreviewProjectFile]);
 
   useEffect(() => {
     setSwitchOpen(false);
@@ -1156,7 +1178,7 @@ export function WorkerPane({ pair, timeline, loading = false, hasMore = false, l
           <WorkerSessionControlsButton pairId={pair.id} disabled={handoffPending} />
         </div>
       </div>
-      <WorkerTimelineView loading={loading} hasMore={hasMore} loadingOlder={loadingOlder} onLoadOlder={onLoadOlder} timeline={timeline} proofRecords={proofRecords} resetKey={pair.worker?.threadId ?? pair.id} onPreviewImage={(media, gallery = [media]) => {
+      <WorkerTimelineView loading={loading} hasMore={hasMore} loadingOlder={loadingOlder} onLoadOlder={onLoadOlder} timeline={timeline} proofRecords={proofRecords} resetKey={pair.worker?.threadId ?? pair.id} onOpenArtifact={onOpenArtifact} onPreviewImage={(media, gallery = [media]) => {
         setPreviewError(null);
         setPreviewGallery(gallery.length > 0 ? gallery : [media]);
         setPreviewMedia(media);
@@ -1237,6 +1259,7 @@ function WorkerTimelineView({
   timeline,
   proofRecords,
   resetKey,
+  onOpenArtifact,
   onPreviewImage
 }: {
   loading: boolean;
@@ -1246,6 +1269,7 @@ function WorkerTimelineView({
   timeline: WorkerTimeline;
   proofRecords: WorkerProofRecord[];
   resetKey: string;
+  onOpenArtifact: (entry: WorkerJobOutputManifestEntry) => void;
   onPreviewImage: OpenProofPreview;
 }) {
   const { turns, report, reports, payload, outputManifest, checklist, fallback } = timeline;
@@ -1325,7 +1349,7 @@ function WorkerTimelineView({
           ? fallback.map((row) => <FallbackRow key={row.id} row={row} />)
           : null}
         <WorkerReviewVerdict verdict={timeline.reviewVerdict} />
-        <WorkerJobOutputManifestPanel manifest={outputManifest} />
+        <WorkerJobOutputManifestPanel manifest={outputManifest} onOpenArtifact={onOpenArtifact} />
       </div>
       <JumpToLatest count={unreadCount} onClick={() => scrollToBottom("smooth")} />
     </div>

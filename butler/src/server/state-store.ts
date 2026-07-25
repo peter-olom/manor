@@ -50,6 +50,7 @@ import {
   applyStateStoreLeaseLifecycle,
   type StateStoreInternalAccess
 } from "./state-store-internals.js";
+import { markStateStoreArtifactAvailable } from "./state-store-artifact-availability.js";
 import {
   buildQueuedRejectionInstruction,
   buildSupervisionChecklist,
@@ -1376,6 +1377,8 @@ export class ButlerStateStore extends EventEmitter {
       expiredAt
     }));
   }
+
+  markPreviewProofArtifactAvailable(filePath: string, availableAt = Date.now()): boolean { return markStateStoreArtifactAvailable(this.getInternalAccess(), filePath, availableAt); }
 
   markPreviewProofArtifactMissing(filePath: string, missingAt = Date.now()): boolean {
     const existing = this.findPreviewProofArtifactByFilePath(filePath);

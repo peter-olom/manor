@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import React from "react";
+import React, { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
+import { parseHTML } from "linkedom";
 
-import { WorkerJobOutputManifestPanel, WorkerTurnView } from "../../src/web/WorkerPane.js";
+import { WorkerJobOutputManifestPanel, WorkerPane, WorkerTurnView, outputArtifactPreview } from "../../src/web/WorkerPane.js";
 import { isCurrentWorkerHistoryRequest } from "../../src/web/useWorkerThreadHistory.js";
 import { mergeWorkerThreadPages, shapeWorkerTimeline, type WorkerThread } from "../../src/web/worker-timeline.js";
 
@@ -184,6 +186,192 @@ test("a cancelled no-item turn renders as a stopped terminal turn", () => {
   }));
   assert.match(markup, /aria-label="Worker turn 1 stopped"/);
   assert.match(markup, /worker-turn-status is-failed">stopped/);
+});
+
+test("the Worker lane passes artifact preview handling into the timeline", () => {
+  const markup = renderToStaticMarkup(React.createElement(WorkerPane, {
+    pair: {
+      id: "pair-artifact-preview",
+      worker: {
+        threadId: "worker-artifact-preview",
+        status: "idle",
+        provider: "openai-codex",
+        model: "gpt-5",
+        task: "Create a report",
+        cwd: "/repos/manor",
+        handoffPrompt: "Create a report",
+        startedAt: 1,
+        lastRevertAt: null,
+        lastReportAt: null,
+        lastReportStatus: null,
+        lastReportSummary: null,
+        lastReviewedReportAt: null
+      },
+      compose: {
+        worker: {
+          effort: null,
+          availableModels: [],
+          availableEfforts: []
+        }
+      }
+    } as never,
+    timeline: {
+      turns: [],
+      report: null,
+      reports: [],
+      payload: null,
+      outputManifest: {
+        jobId: "job-artifact-preview",
+        projectId: "workspace:shared",
+        currentAttemptId: "attempt-job-artifact-preview-1",
+        currentScopeId: "scope-current",
+        attempt: 1,
+        entries: [{
+          id: "artifact-entry",
+          kind: "project_artifact",
+          title: "Preview report",
+          threadId: "worker-artifact-preview",
+          projectId: "workspace:shared",
+          attemptId: "attempt-job-artifact-preview-1",
+          scopeId: "scope-current",
+          currentAttempt: true,
+          currentScope: true,
+          sourceTurnId: "turn-1",
+          referenceId: "artifact-report-1",
+          logicalPath: "report.md",
+          createdAt: 1,
+          available: true,
+          integrity: "verified",
+          checksumSha256: "abc123",
+          checksumStatus: "verified",
+          integrityCheckedAt: 2,
+          status: null,
+          fileName: "report.md",
+          contentType: "text/markdown",
+          previewKind: "markdown",
+          openUrl: "/api/project-artifacts/workspace%3Ashared/artifact-report-1/file",
+          downloadUrl: "/api/project-artifacts/workspace%3Ashared/artifact-report-1/file?download=1"
+        }],
+        otherCurrentScopeEntries: [{
+          id: "proof-entry",
+          kind: "proof",
+          title: "Preview proof report",
+          threadId: "worker-artifact-preview",
+          projectId: "workspace:shared",
+          attemptId: "attempt-job-artifact-preview-1",
+          scopeId: "scope-current",
+          currentAttempt: true,
+          currentScope: true,
+          sourceTurnId: "turn-1",
+          referenceId: "file-proof",
+          logicalPath: null,
+          createdAt: 2,
+          available: true,
+          integrity: "unverified",
+          checksumSha256: null,
+          checksumStatus: "unverified",
+          integrityCheckedAt: null,
+          status: "passed",
+          fileName: "proof-report.md",
+          contentType: "text/markdown",
+          previewKind: "markdown",
+          openUrl: "/api/artifacts/files/worker-artifact-preview/file-proof/proof-report.md",
+          downloadUrl: "/api/artifacts/files/worker-artifact-preview/file-proof/proof-report.md?download=1"
+        }],
+        historicalEntries: []
+      },
+      checklist: null,
+      reviewVerdict: null,
+      fallback: []
+    },
+    proofRecords: [],
+    onWorkerModelChange: () => undefined,
+    onWorkerEffortChange: () => undefined,
+    onHandoff: async () => false,
+    onOpenProviderSettings: () => undefined,
+    onAttachAnnotatedProof: async () => undefined,
+    onPreviewProjectFile: () => undefined
+  }));
+
+  assert.match(markup, /aria-label="Worker lane"/);
+  assert.match(markup, /aria-label="Open Preview report"/);
+  assert.match(markup, /aria-label="Open Preview proof report"/);
+  assert.match(markup, /worker-output-open-button/);
+});
+
+test("opening a markdown proof sends the proof file to the in-app viewer", async () => {
+  const originalDescriptors = new Map<PropertyKey, PropertyDescriptor | undefined>([
+    ["window", Object.getOwnPropertyDescriptor(globalThis, "window")],
+    ["document", Object.getOwnPropertyDescriptor(globalThis, "document")],
+    ["IS_REACT_ACT_ENVIRONMENT", Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT")]
+  ]);
+  const setGlobal = (key: PropertyKey, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  const dom = parseHTML("<html><body><div id=\"root\"></div></body></html>");
+  setGlobal("window", dom.window);
+  setGlobal("document", dom.document);
+  setGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = dom.document.getElementById("root");
+  assert.ok(container);
+  const root = createRoot(container);
+  let openedPreview: ReturnType<typeof outputArtifactPreview> = null;
+
+  try {
+    await act(async () => root.render(React.createElement(WorkerJobOutputManifestPanel, {
+      manifest: {
+        jobId: "job-proof-preview",
+        projectId: "workspace:shared",
+        currentAttemptId: "attempt-job-proof-preview-1",
+        currentScopeId: "scope-current",
+        attempt: 1,
+        entries: [{
+          id: "proof-markdown",
+          kind: "proof",
+          title: "Markdown proof",
+          threadId: "worker-proof-preview",
+          projectId: "workspace:shared",
+          attemptId: "attempt-job-proof-preview-1",
+          scopeId: "scope-current",
+          currentAttempt: true,
+          currentScope: true,
+          sourceTurnId: "turn-1",
+          referenceId: "file-proof",
+          logicalPath: null,
+          createdAt: 1,
+          available: true,
+          integrity: "unverified",
+          checksumSha256: null,
+          checksumStatus: "unverified",
+          integrityCheckedAt: null,
+          status: "passed",
+          fileName: "report.md",
+          contentType: "text/markdown",
+          previewKind: "markdown",
+          openUrl: "/api/artifacts/files/worker-proof-preview/file-proof/report.md",
+          downloadUrl: "/api/artifacts/files/worker-proof-preview/file-proof/report.md?download=1"
+        }],
+        otherCurrentScopeEntries: [],
+        historicalEntries: []
+      },
+      onOpenArtifact: (entry) => { openedPreview = outputArtifactPreview(entry); }
+    })));
+    const openButton = dom.document.querySelector('button[aria-label="Open Markdown proof"]') as HTMLButtonElement | null;
+    assert.ok(openButton);
+    await act(async () => openButton.click());
+    assert.deepEqual(openedPreview, {
+      id: "file-proof",
+      name: "report.md",
+      mimeType: "text/markdown",
+      previewKind: "markdown",
+      previewUrl: "/api/artifacts/files/worker-proof-preview/file-proof/report.md?preview=1",
+      downloadUrl: "/api/artifacts/files/worker-proof-preview/file-proof/report.md?download=1"
+    });
+  } finally {
+    await act(async () => root.unmount());
+    for (const [key, descriptor] of originalDescriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete (globalThis as Record<PropertyKey, unknown>)[key];
+    }
+  }
 });
 
 test("the Worker lane renders durable job outputs with provenance, integrity, and actions", () => {
@@ -402,12 +590,37 @@ test("the Worker output surface separates failed proof outcome and suppresses mi
           previewKind: null,
           openUrl: null,
           downloadUrl: null
+        },
+        {
+          id: "missing-proof",
+          kind: "proof",
+          title: "Missing browser proof",
+          threadId: "pi-job-status",
+          projectId: "workspace:shared",
+          attemptId: "attempt-pi-job-status-1",
+          currentAttempt: true,
+          sourceTurnId: "turn-1",
+          referenceId: "proof-missing",
+          logicalPath: null,
+          createdAt: 3,
+          available: true,
+          integrity: "unverified",
+          checksumSha256: null,
+          checksumStatus: "unverified",
+          integrityCheckedAt: null,
+          status: "missing",
+          fileName: null,
+          contentType: null,
+          previewKind: null,
+          openUrl: null,
+          downloadUrl: null
         }
       ]
     }
   }));
 
   assert.match(markup, /worker-output-outcome is-negative">Proof expired/);
+  assert.match(markup, /worker-output-outcome is-negative">Proof missing/);
   assert.match(markup, /worker-output-integrity is-record">Not checksum-backed/);
   assert.doesNotMatch(markup, /href="\/api\/project-artifacts\/workspace%3Ashared\/artifact-missing/);
   assert.doesNotMatch(markup, /aria-label="Open Missing report"/);

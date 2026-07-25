@@ -4283,6 +4283,19 @@ a:hover {
 .worker-output-manifest-actions a:hover {
   text-decoration: underline;
 }
+.worker-output-open-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent-ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+.worker-output-open-button:hover {
+  text-decoration: underline;
+}
 
 .worker-output-download-only {
   color: var(--text-subtle);
